@@ -407,11 +407,11 @@ def main(
 ### Success Criteria
 
 #### Automated Verification
-- [ ] `pip install -e .` succeeds
-- [ ] `adversarial-architect --help` prints usage without errors
-- [ ] `python -m pytest tests/test_config.py -v` passes
-- [ ] `ruff check deep_researcher/` passes
-- [ ] `mypy deep_researcher/` passes
+- [x] `pip install -e .` succeeds
+- [x] `adversarial-architect --help` prints usage without errors
+- [x] `python -m pytest tests/test_config.py -v` passes
+- [x] `ruff check deep_researcher/` passes
+- [x] `mypy deep_researcher/` passes
 
 #### Manual Verification
 - [ ] Running with no config file gives a clear, actionable error message
@@ -578,11 +578,11 @@ def save_round_log(output_dir: Path, sprint_number: int, round_num: int, data: d
 ### Success Criteria
 
 #### Automated Verification
-- [ ] `python -m pytest tests/test_models.py tests/test_files.py -v` passes
-- [ ] Round-trip: save contract → load contract returns identical object
-- [ ] `CriticResult.passed` is `False` when any `severity == "Critical"` even if avg ≥ 9.0
-- [ ] `CriticResult.passed` is `False` when avg < 9.0 even with no Critical/High
-- [ ] `mypy deep_researcher/models/ deep_researcher/io/` passes
+- [x] `python -m pytest tests/test_models.py tests/test_files.py -v` passes
+- [x] Round-trip: save contract → load contract returns identical object
+- [x] `CriticResult.passed` is `False` when any `severity == "Critical"` even if avg ≥ 9.0
+- [x] `CriticResult.passed` is `False` when avg < 9.0 even with no Critical/High
+- [x] `mypy deep_researcher/models/ deep_researcher/io/` passes
 
 ---
 
@@ -944,9 +944,9 @@ async def check_ping_pong(
 ### Success Criteria
 
 #### Automated Verification
-- [ ] `mypy deep_researcher/agents/ deep_researcher/sprints.py` passes
-- [ ] `ruff check deep_researcher/agents/` passes
-- [ ] All 7 sprints have non-empty `primary_files`
+- [x] `mypy deep_researcher/agents/ deep_researcher/sprints.py` passes
+- [x] `ruff check deep_researcher/agents/` passes
+- [x] All 7 sprints have non-empty `primary_files`
 
 #### Manual Verification
 - [ ] System prompts reviewed and confirm adversarial tone for Critic
@@ -1240,11 +1240,11 @@ async def run_final_agreement(
 ### Success Criteria
 
 #### Automated Verification
-- [ ] `python -m pytest tests/test_exit_criteria.py -v` passes
-- [ ] `sprint_passes` returns False when avg < 9.0
-- [ ] `sprint_passes` returns False when avg ≥ 9.0 but a Critical issue exists
-- [ ] `should_ping_pong_exit` returns True only when both conditions met
-- [ ] `mypy deep_researcher/harness.py deep_researcher/exit_criteria.py` passes
+- [x] `python -m pytest tests/test_exit_criteria.py -v` passes
+- [x] `sprint_passes` returns False when avg < 9.0
+- [x] `sprint_passes` returns False when avg ≥ 9.0 but a Critical issue exists
+- [x] `should_ping_pong_exit` returns True only when both conditions met
+- [x] `mypy deep_researcher/harness.py deep_researcher/exit_criteria.py` passes
 
 #### Manual Verification
 - [ ] Dry-run with mock endpoints shows correct logging output
@@ -1293,9 +1293,9 @@ class HarnessProgress(BaseModel):
 ### Success Criteria
 
 #### Automated Verification
-- [ ] `python -m pytest tests/test_git_ops.py -v` passes (uses a temp git repo)
+- [x] `python -m pytest tests/test_git_ops.py -v` passes (uses a temp git repo)
 - [ ] A commit is created after each generator pass in integration test
-- [ ] `progress.json` contains `seed` field
+- [x] `progress.json` contains `seed` field
 
 #### Manual Verification
 - [ ] Interrupt a run mid-sprint, verify `--resume` picks up from the correct sprint
@@ -1486,12 +1486,12 @@ Document:
 ### Success Criteria
 
 #### Automated Verification
-- [ ] `python -m pytest tests/ -v` — all tests pass
-- [ ] `ruff check deep_researcher/ tests/` — zero errors
-- [ ] `mypy deep_researcher/` — zero errors
-- [ ] `bandit -r deep_researcher/ -ll` — zero medium/high issues
-- [ ] `pip install -e .` succeeds in a fresh virtualenv
-- [ ] `adversarial-architect --help` works after fresh install
+- [x] `python -m pytest tests/ -v` — all tests pass
+- [x] `ruff check deep_researcher/ tests/` — zero errors
+- [x] `mypy deep_researcher/` — zero errors
+- [x] `bandit -r deep_researcher/ -ll` — zero medium/high issues
+- [x] `pip install -e .` succeeds in a fresh virtualenv
+- [x] `adversarial-architect --help` works after fresh install
 
 #### Manual Verification
 - [ ] End-to-end test run on llm-switch PRD produces files in `knowledge/architecture/`

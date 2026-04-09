@@ -1,0 +1,20 @@
+# ~/.deep-researcher.toml — deep-researcher configuration
+# Copy to ~/.deep-researcher.toml and fill in your endpoint details.
+
+[generator]
+base_url = "https://your-generator-endpoint/v1"
+api_key  = "your-generator-api-key"
+model    = "nemotron-122b"
+
+[critic]
+base_url = "https://your-critic-endpoint/v1"
+api_key  = "your-critic-api-key"
+model    = "qwen-27b"
+
+[thresholds]
+min_score                      = 9.0
+consecutive_passing_rounds     = 2
+max_rounds_per_sprint          = 6
+max_total_rounds               = 40
+timeout_hours                  = 3.0
+ping_pong_similarity_threshold = 0.85
