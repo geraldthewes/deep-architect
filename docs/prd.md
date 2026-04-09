@@ -1,0 +1,163 @@
+**Requirements Document: Adversarial C4 Architecture Harness**
+
+**Project**: LLM-Switch (https://github.com/geraldthewes/llm-switch)  
+**Phase**: Post-BMAD PRD → Hardened Architecture Document (`knowledge/architecture/`)  
+**Document Owner**: Grok (on behalf of the team)  
+**Target Implementer**: Any local coding agent (Claude Code, Qwen Code, OpenCode, Cursor, etc.)  
+**Language**: Python 3.12+  
+**Version**: 1.0 (April 2026)
+
+### 1. Purpose
+Build a **fully autonomous, no-babysitting adversarial harness** that turns the BMAD "Create Architecture" step into a high-quality, critique-driven process.  
+
+The harness will:
+- Take a BMAD PRD as input.
+- Iteratively generate and harden a complete C4-based architecture document (exactly matching the folder structure in your example: `c1-context.md`, `c2-container.md`, per-area subfolders, Mermaid diagrams, tech choices, etc.).
+- Use two separate models in an adversarial loop (Generator + Critic).
+- Automatically stop when quality is production-ready (no ping-pong, no manual intervention).
+- Output everything into `knowledge/architecture/` ready for the next BMAD agents (Developer, etc.).
+
+This directly implements the adversarial-dev pattern you referenced, but specialized for high-level architecture (C4 only — **no code-level design**).
+
+Concept Inspired from: https://github.com/coleam00/adversarial-dev
+
+### 2. Goals
+- **Autonomous**: Run once (`python -m bm ad.adversarial_architect`) and come back to a finished, hardened architecture.
+- **Adversarial quality**: Every artifact is critiqued by a separate model until it is robust.
+- **BMAD-native**: Output must match the exact Markdown + Mermaid style of your existing example project.
+- **Python-first**: Leverage your existing LLM-Switch router.
+- **Smart exit**: Stop when reviews reach "closure" (matching your manual experience of diminishing returns).
+
+### 3. Scope
+**In scope**:
+- Sprint-based generation of C1 Context, C2 Container (main + per-area), deployment view.
+- Technology choices + short ADRs.
+- Mermaid C4 diagrams (C1, C2, optional high-level C3).
+- Autonomous Generator ↔ Critic loop with the exact exit criteria defined below.
+- File-based communication (contracts, feedback, artifacts) for easy Git history and debugging.
+- CLI entry point + optional LangGraph/Deep Agents integration.
+
+**Out of scope** (for this harness only):
+- C4 Code-level (C4) diagrams or detailed component implementation.
+- Actual code generation (that's for later BMAD Developer agents).
+- UI or web interface — CLI only.
+
+### 4. Recommended Tech Stack & Approach
+**Preferred (recommended)**:  
+Use **deepagents** (LangChain's new Deep Agents harness — `pip install deepagents`). It is purpose-built for exactly this kind of long-running, multi-step, planning + subagent + filesystem work. You already know LangGraph; Deep Agents is the higher-level opinionated layer on top of it.
+
+**Fallback**: Pure LangGraph (stateful graph with custom nodes) if you prefer minimal dependencies.
+
+**Core libraries** (all already compatible with your stack):
+- `deepagents` (or `langgraph` + `langchain` if fallback)
+- Your existing `llm-switch` router (for model routing)
+- `sentence-transformers` or simple LLM-based similarity for ping-pong detection
+- `pydantic` for contracts/feedback schemas
+- `typer` or `click` for CLI
+- `gitpython` (optional — for auto-commits after each Generator pass)
+
+### 5. Functional Requirements
+
+#### 5.1 Agent Roles 
+Configurable in the system.
+
+- **Generator (Architect)**: 122B Nemotron 3 Super  
+  Prompt style: "You are Winston, the BMAD Architect. Produce the highest-quality C4 architecture possible."
+- **Critic (Adversary)**: 27B Qwen 3.5  
+  Prompt style: "You are a hostile senior architect. Ruthlessly try to kill this design before it reaches production. Be exhaustive and specific."
+
+Both agents communicate **only via files** (no shared memory between calls).
+
+#### 5.2 Sprints (Auto-generated from PRD)
+The harness automatically creates these sprints (in order):
+1. C1 System Context
+2. C2 Container (overall system + tech stack)
+3. Frontend container details
+4. Backend / Orchestration container
+5. Database + Knowledge Base
+6. Edge Functions / Deployment / Auth / Scaling / Observability
+7. Final integration + cross-cutting concerns (ADRs, non-functional requirements)
+
+#### 5.3 Per-Sprint Flow (Adversarial Loop)
+1. **Contract creation** — Generator proposes a JSON contract (success criteria).
+2. **Critic tightens contract** — Adds adversarial edge cases.
+3. **Generator builds/updates files** in `knowledge/architecture/`.
+4. **Critic critiques** — Scores every criterion 1–10 + severity (Critical/High/Medium/Low) + detailed feedback (with file:line references).
+5. **Repeat** until exit criteria met.
+
+#### 5.4 Exit Criteria (Smart, Autonomous)
+**Primary condition** (per sprint):
+- Average score ≥ **9.0/10**
+- Zero Critical or High severity issues
+- Condition true for **2 consecutive rounds**
+
+**Ping-pong / Diminishing Returns detection** (after round 3):
+- Embed last two Critic feedback texts → cosine similarity > 85% **and** no decrease in average severity → auto-exit as "good enough".
+
+**Global safety**:
+- Max 6 rounds per sprint
+- Max 40 total rounds
+- 3-hour hard timeout
+
+When all sprints pass → run one final "Mutual Agreement" round where both agents must independently output `READY_TO_SHIP`.
+
+#### 5.5 Output Folder Structure
+Must exactly match your example:
+```
+knowledge/architecture/
+├── c1-context.md
+├── c2-container.md
+├── deployment.md
+├── frontend/
+│   ├── c2-container.md
+│   ├── auth.md
+│   ├── knowledge-base.md
+│   ├── pitch-generation.md
+│   └── zod-schemas.md
+├── database/
+│   └── c2-container.md
+├── edge-functions/
+│   └── c2-container.md
+├── contracts/
+├── feedback/
+└── decisions/ (ADRs)
+```
+
+All diagrams in Mermaid.
+
+### 6. Non-Functional Requirements
+- Fully reproducible (seed + JSON logs of every round).
+- Git-friendly: auto-commit after every successful Generator pass (with message like "Generator pass 3 - sprint 2").
+- Logging: rich console output + `logs/architect-run-YYYYMMDD-HHMMSS/`.
+- Error resilience: if one model call fails, retry up to 3× with exponential backoff.
+- Configurable via `.env` or CLI flags (models, thresholds, max rounds).
+
+### 7. CLI Interface
+```bash
+llm-switch adversarial-architect \
+  --prd knowledge/prd.md \
+  --output knowledge/architecture \
+  [--resume] \
+  [--model-generator nemotron-122b] \
+  [--model-critic qwen-27b]
+```
+
+### 8. Acceptance Criteria for the Coding Agent
+When this harness runs on a real BMAD PRD it must:
+1. Produce the exact folder structure shown.
+2. All Mermaid diagrams render correctly in GitHub.
+3. The final architecture survives a manual "hostile review" by you (or another strong model) with zero Critical issues.
+4. The run completes without human intervention in < 3 hours for a typical LLM-Switch-scale project.
+
+---
+
+**Implementation Guidance for the Coding Agent**  
+Start by installing `deepagents` (it gives you planning, virtual filesystem, and sub-agent spawning out of the box — perfect for this).  
+If you prefer pure LangGraph, create a graph with nodes: `planner`, `generator`, `critic`, `evaluator`, and a conditional edge based on the exit criteria.
+
+Would you like me to also provide:
+- The exact system prompts for Generator and Critic?
+- The Pydantic schemas for contracts and feedback?
+- A starter skeleton (main.py + graph definition) right now?
+
+Just say the word and I’ll generate the next artifact the coding agent can use directly. This spec is ready to hand off to Claude Code / Qwen Code / OpenCode.:

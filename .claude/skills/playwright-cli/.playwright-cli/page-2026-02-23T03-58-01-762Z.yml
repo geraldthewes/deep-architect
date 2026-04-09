@@ -1,0 +1,214 @@
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - navigation [ref=e5]:
+      - link [ref=e6] [cursor=pointer]:
+        - /url: /
+        - img
+    - link "Sign In" [ref=e8] [cursor=pointer]:
+      - /url: /auth/sign-in?returnTo=%2Fthreads%2FT-0aeaa561-662a-466f-8a32-935b83ef961e
+    - link "Sign Up" [ref=e9] [cursor=pointer]:
+      - /url: /auth/sign-up?returnTo=%2Fthreads%2FT-0aeaa561-662a-466f-8a32-935b83ef961e
+  - generic [ref=e12]:
+    - generic [ref=e14]:
+      - generic [ref=e15]:
+        - heading "GitHub repository ui-dojo exploration" [level=1] [ref=e17]
+        - generic [ref=e18]:
+          - link "RC Ryan Carson • @ryancarson" [ref=e19] [cursor=pointer]:
+            - /url: /@ryancarson
+            - generic [ref=e23]: RC
+            - generic [ref=e24]:
+              - generic [ref=e25]: Ryan Carson
+              - generic [ref=e26]: •
+              - generic [ref=e27]: "@ryancarson"
+          - button "0" [ref=e28] [cursor=pointer]:
+            - img
+            - generic [ref=e29]: "0"
+      - generic [ref=e32]:
+        - button "Jump to message 1 Jump to message 2" [ref=e34]:
+          - button "Jump to message 1" [ref=e35] [cursor=pointer]
+          - button "Jump to message 2" [ref=e38] [cursor=pointer]
+        - generic [ref=e41]:
+          - link "Link to this block" [ref=e42] [cursor=pointer]:
+            - /url: "#message-0-block-0"
+            - img [ref=e43]
+          - generic [ref=e48]:
+            - generic:
+              - link "RC":
+                - /url: /@ryancarson
+                - generic [ref=e51] [cursor=pointer]: RC
+            - region "User message" [ref=e52]:
+              - generic [ref=e54]: tell me about https://github.com/mastra-ai/ui-dojo/tree/main use the librarian
+        - generic [ref=e55]:
+          - link "Link to this block" [ref=e56] [cursor=pointer]:
+            - /url: "#message-1-block-0"
+            - img [ref=e57]
+          - generic [ref=e61]:
+            - button "Thinking" [ref=e62] [cursor=pointer]:
+              - img
+              - paragraph [ref=e63]: Thinking
+            - paragraph [ref=e67]:
+              - text: The user wants me to use the librarian tool to learn about the GitHub repository
+              - link "https://github.com/mastra-ai/ui-dojo" [ref=e68] [cursor=pointer]:
+                - /url: https://github.com/mastra-ai/ui-dojo
+              - text: . This is a public GitHub repository, and the librarian is the right tool for exploring and understanding codebases on GitHub.
+        - generic [ref=e69]:
+          - link "Link to this block" [ref=e70] [cursor=pointer]:
+            - /url: "#message-1-block-1"
+            - img [ref=e71]
+          - generic [ref=e77]:
+            - img [ref=e79]
+            - generic [ref=e82]:
+              - generic [ref=e84]: Librarian
+              - generic [ref=e85]: Explain the architecture, purpose, and main features of the mastra-ai/ui-dojo repository. What does this project do, how is it structured, and what are the key components
+            - button "Show details" [ref=e86] [cursor=pointer]:
+              - img
+        - generic [ref=e87]:
+          - link "Link to this block" [ref=e88] [cursor=pointer]:
+            - /url: "#message-3-block-0"
+            - img [ref=e89]
+          - generic [ref=e93]:
+            - paragraph [ref=e94]:
+              - strong [ref=e95]: UI Dojo
+              - text: "is a Mastra showcase project that demonstrates integrations with three AI UI frameworks:"
+              - strong [ref=e96]: AI SDK
+              - text: ","
+              - strong [ref=e97]: Assistant UI
+              - text: ", and"
+              - strong [ref=e98]: CopilotKit
+              - text: .
+            - paragraph [ref=e99]:
+              - strong [ref=e100]: "Key highlights:"
+            - list [ref=e101]:
+              - listitem [ref=e102]:
+                - strong [ref=e103]: 11 agents
+                - text: (Ghibli, weather, routing, report generation, etc.)
+              - listitem [ref=e104]:
+                - strong [ref=e105]: 3 workflows
+                - text: (activities, order fulfillment, approval with suspend/resume)
+              - listitem [ref=e106]:
+                - strong [ref=e107]: 8 tools
+                - text: including weather, data analysis, and client-side tools
+              - listitem [ref=e108]:
+                - strong [ref=e109]: Advanced patterns
+                - text: ": Generative UIs, agent networks, human-in-the-loop approval, streaming"
+            - paragraph [ref=e110]: The project lets you compare how different frameworks approach the same problems side-by-side—useful for learning Mastra integration patterns and choosing the right UI framework for your needs.
+        - generic [ref=e111]:
+          - link "Link to this block" [ref=e112] [cursor=pointer]:
+            - /url: "#message-4-block-0"
+            - img [ref=e113]
+          - generic [ref=e118]:
+            - generic:
+              - link "RC":
+                - /url: /@ryancarson
+                - generic [ref=e121] [cursor=pointer]: RC
+            - region "User message" [ref=e122]:
+              - generic [ref=e124]:
+                - link "b34801fc" [ref=e125] [cursor=pointer]:
+                  - /url: https://ampcode.com/threads/T-b34801fc-bfa1-4dc9-af80-c6f6369b387a
+                  - generic [ref=e126]:
+                    - img [ref=e127]
+                    - generic [ref=e130]: b34801fc
+                - text: tell me what we did here
+        - generic [ref=e131]:
+          - link "Link to this block" [ref=e132] [cursor=pointer]:
+            - /url: "#message-5-block-0"
+            - img [ref=e133]
+          - generic [ref=e137]:
+            - button "Thinking" [ref=e138] [cursor=pointer]:
+              - img
+              - paragraph [ref=e139]: Thinking
+            - paragraph [ref=e143]: The user wants me to read a thread to understand what was done there. I should use the read_thread tool to extract the information from that thread.
+        - generic [ref=e144]:
+          - link "Link to this block" [ref=e145] [cursor=pointer]:
+            - /url: "#message-5-block-1"
+            - img [ref=e146]
+          - generic [ref=e153]:
+            - img [ref=e155]
+            - button "Extract what was accomplished in this thread - the main task, implementation details, code changes made, and the final outcome" [ref=e159] [cursor=pointer]:
+              - generic [ref=e161]: Extract what was accomplished in this thread - the main task, implementation details, code changes made, and the final outcome
+            - button "Show details" [ref=e162] [cursor=pointer]:
+              - img
+        - generic [ref=e163]:
+          - link "Link to this block" [ref=e164] [cursor=pointer]:
+            - /url: "#message-7-block-0"
+            - img [ref=e165]
+          - generic [ref=e169]:
+            - paragraph [ref=e170]:
+              - text: In that thread, we
+              - strong [ref=e171]:
+                - text: fixed a bug in the
+                - code [ref=e172]: inspect_trace
+                - text: bash script
+              - text: where it couldn't parse the trace ID argument.
+            - paragraph [ref=e173]:
+              - strong [ref=e174]: "Problem:"
+              - text: The script expected
+              - code [ref=e175]: traceId=value
+              - text: format but Amp was passing
+              - code [ref=e176]: "traceId: value"
+              - text: .
+            - paragraph [ref=e177]:
+              - strong [ref=e178]: "Fix:"
+              - text: Updated the parsing logic in
+              - code [ref=e179]: scripts/amp-toolbox/inspect_trace
+              - text: "to handle both formats:"
+            - code [ref=e181]:
+              - text: if [[
+              - generic [ref=e182]: "\"$line\""
+              - text: == traceId=* ]]; then TRACE_ID=
+              - generic [ref=e183]: "\"${line#traceId=}\""
+              - text: elif [[
+              - generic [ref=e184]: "\"$line\""
+              - text: "== \"traceId: \"* ]]; then TRACE_ID="
+              - generic [ref=e185]: "\"${line#traceId: }\""
+              - text: fi
+            - paragraph [ref=e186]: The tool now correctly parses trace IDs and returns trace details.
+        - 'button "Handed off to Untitled thread Instructions: \"Handoff from parent thread\"" [ref=e188] [cursor=pointer]':
+          - img [ref=e189]
+          - generic [ref=e191]:
+            - generic [ref=e192]: Handed off to Untitled thread
+            - paragraph [ref=e193]: "Instructions: \"Handoff from parent thread\""
+    - generic [ref=e197]:
+      - generic [ref=e200]:
+        - img [ref=e201]
+        - text: Public
+      - generic [ref=e205]:
+        - heading "Thread" [level=3] [ref=e206]
+        - generic [ref=e207]:
+          - img [ref=e208]
+          - generic [ref=e212]:
+            - generic [ref=e213]: 3mo
+            - text: ago
+        - link "snarktank/untangle" [ref=e214] [cursor=pointer]:
+          - /url: https://github.com/snarktank/untangle
+          - img [ref=e215]
+          - generic [ref=e219]: snarktank/untangle
+        - link "main" [ref=e220] [cursor=pointer]:
+          - /url: https://github.com/snarktank/untangle/tree/main
+          - img [ref=e221]
+          - generic [ref=e226]: main
+        - generic [ref=e227]:
+          - img [ref=e228]
+          - generic [ref=e233]: smart
+        - generic [ref=e234]:
+          - img [ref=e235]
+          - generic [ref=e239]: CLI
+        - generic [ref=e240]:
+          - img [ref=e241]
+          - generic [ref=e243]: 2 prompts
+        - generic [ref=e244]:
+          - img [ref=e245]
+          - generic [ref=e250]:
+            - text: 3% of 968k
+            - button [ref=e251] [cursor=pointer]:
+              - img [ref=e252]
+        - generic [ref=e256]:
+          - img [ref=e257]
+          - generic [ref=e259]: Uses Librarian
+      - generic [ref=e260]:
+        - heading "Reference Thread" [level=3] [ref=e261]
+        - generic "T-0aeaa561-662a-466f-8a32-935b83ef961e" [ref=e262]:
+          - code [ref=e263] [cursor=pointer]: T-0aeaa561-662a-466f-8a32-935b83ef961e
+          - button [ref=e264] [cursor=pointer]:
+            - generic [ref=e265]:
+              - img
