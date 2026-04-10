@@ -2,73 +2,101 @@
 
 `deep-researcher` turns a BMAD Product Requirements Document (PRD) into a complete, peer-reviewed C4 architecture document — automatically, without human intervention.
 
-It runs two LLM agents against each other: a **Generator** (Winston, the architect) who writes the architecture, and a **Critic** (a hostile senior architect) who tears it apart. They negotiate acceptance criteria, argue through rounds of feedback, and only stop when the architecture passes a rigorous quality bar. The result lands in `knowledge/architecture/` as a folder of Markdown + Mermaid files, ready for your development agents.
+It runs two Claude Code agents against each other: a **Generator** (Winston, the architect) who writes the architecture using real file tools, and a **Critic** (a hostile senior architect) who reads and tears it apart. They negotiate acceptance criteria, argue through rounds of feedback, and only stop when the architecture passes a rigorous quality bar. The result lands in `knowledge/architecture/` as a folder of Markdown + Mermaid files, ready for your development agents.
 
 ```
 PRD → adversarial-architect → knowledge/architecture/ (C4 diagrams + ADRs)
 ```
 
+The agents are powered by the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) — the generator writes files directly using the `Write` and `Edit` tools, and the critic inspects them using `Read`, `Glob`, and `Grep`. This is not a prompt chain; these are real agentic loops.
+
 ---
 
 ## Prerequisites
 
-- **Python 3.12+**
+- **Python 3.12+** and **[uv](https://docs.astral.sh/uv/getting-started/installation/)**
+- **Claude Code CLI** (`claude`) installed and accessible in your `PATH`
+  ```bash
+  claude --version
+  ```
+- **A Claude-compatible LLM endpoint** — either Anthropic's API directly, or a compatible proxy (e.g. LiteLLM in front of your cluster)
 - **A git repository** — the tool auto-commits architecture files after each generator pass
-- **Two LLM endpoints** with OpenAI-compatible APIs (one for the generator, one for the critic)
-  - The generator benefits from a large, creative model (e.g. Nemotron 70B+)
-  - The critic benefits from a sharp, analytical model (e.g. Qwen 32B+)
-  - Both can point to the same endpoint and model if needed
 
 ---
 
 ## Installation
 
 ```bash
-pip install git+https://github.com/geraldthewes/deep-researcher
+git clone https://github.com/geraldthewes/deep-researcher
+cd deep-researcher
+uv sync
 ```
 
 Verify the install:
 
 ```bash
-adversarial-architect --help
+uv run adversarial-architect --help
 ```
 
 ---
 
 ## Configuration
 
-The tool reads credentials and model settings from `~/.deep-researcher.toml`. Create this file once and it applies to all your projects.
+### Step 1: Set environment variables
 
-Copy the template to get started:
+The tool picks up endpoint and auth configuration from environment variables — the same ones the `claude` CLI uses. Add these to your shell profile:
+
+```bash
+export ANTHROPIC_BASE_URL=http://your-llm-proxy:9999
+export ANTHROPIC_AUTH_TOKEN=your-api-key          # used as Authorization: Bearer <token>
+export ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-standard
+export ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-standard
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-standard
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1  # disable telemetry/autoupdate
+```
+
+If you're using Anthropic's API directly, just set:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+The model aliases (`ANTHROPIC_DEFAULT_SONNET_MODEL`, etc.) tell the `claude` CLI what actual model ID to use when the config says `"sonnet"`, `"opus"`, or `"haiku"`. If you're using Anthropic's API without a proxy, these can be left unset and the defaults apply.
+
+### Step 2: Create `~/.deep-researcher.toml`
 
 ```bash
 cp .deep-researcher.toml.template ~/.deep-researcher.toml
 ```
 
-Then edit it with your endpoints and model names:
+The TOML config controls which model alias to use for each agent and the quality thresholds:
 
 ```toml
 [generator]
-base_url = "https://your-llm-endpoint/v1"
-api_key  = "your-api-key"
-model    = "nemotron-70b"
+model     = "sonnet"    # resolves via ANTHROPIC_DEFAULT_SONNET_MODEL
+max_turns = 50          # max agentic tool-use steps per generator invocation
 
 [critic]
-base_url = "https://your-llm-endpoint/v1"
-api_key  = "your-api-key"
-model    = "qwen-32b"
+model     = "sonnet"
+max_turns = 30
+
+[thresholds]
+min_score                      = 9.0   # critic score required to pass (out of 10)
+consecutive_passing_rounds     = 2     # must pass this many rounds in a row
+max_rounds_per_sprint          = 6     # give up on a sprint after this many rounds
+max_total_rounds               = 40    # hard limit across all sprints
+timeout_hours                  = 3.0   # wall-clock timeout
+ping_pong_similarity_threshold = 0.85  # auto-exit if feedback stops changing
 ```
 
-The `[thresholds]` section is optional — the defaults work well for most projects:
+You can use `"opus"` for a more capable (but slower/costlier) generator. For the critic, `"sonnet"` is usually sufficient.
+
+#### Using a custom `claude` binary path
+
+If `ANTHROPIC_BASE_URL` isn't being picked up (this can happen with some SDK installations), pin the CLI path explicitly:
 
 ```toml
-[thresholds]
-min_score                      = 9.0   # Critic score required to pass (out of 10)
-consecutive_passing_rounds     = 2     # Must pass this many rounds in a row
-max_rounds_per_sprint          = 6     # Give up on a sprint after this many rounds
-max_total_rounds               = 40    # Hard limit across all sprints
-timeout_hours                  = 3.0   # Wall-clock timeout
-ping_pong_similarity_threshold = 0.85  # Auto-exit if feedback stops changing
+cli_path = "/home/your-user/.local/bin/claude"
 ```
 
 ---
@@ -78,7 +106,7 @@ ping_pong_similarity_threshold = 0.85  # Auto-exit if feedback stops changing
 From inside a BMAD repo that has a PRD:
 
 ```bash
-adversarial-architect --prd knowledge/prd.md --output knowledge/architecture
+uv run adversarial-architect --prd knowledge/prd.md --output knowledge/architecture
 ```
 
 That's it. The tool runs unattended. When it finishes, `knowledge/architecture/` contains your architecture.
@@ -91,19 +119,17 @@ That's it. The tool runs unattended. When it finishes, `knowledge/architecture/`
 | `--output PATH` | Output directory for architecture files **(required)** |
 | `--resume` | Resume an interrupted run from the last completed sprint |
 | `--config PATH` | Config file path (default: `~/.deep-researcher.toml`) |
-| `--model-generator TEXT` | Override the generator model for this run |
-| `--model-critic TEXT` | Override the critic model for this run |
+| `--model-generator TEXT` | Override the generator model alias for this run |
+| `--model-critic TEXT` | Override the critic model alias for this run |
 
 ### Overriding Models Per-Run
 
-You can try a different model without editing your config:
-
 ```bash
-adversarial-architect \
+uv run adversarial-architect \
   --prd knowledge/prd.md \
   --output knowledge/architecture \
-  --model-generator llama-3.3-70b \
-  --model-critic mistral-large
+  --model-generator opus \
+  --model-critic sonnet
 ```
 
 ---
@@ -112,9 +138,9 @@ adversarial-architect \
 
 The tool works through **7 sprints**, each producing a specific part of the architecture. For each sprint:
 
-1. **Contract negotiation** — Generator proposes specific, testable acceptance criteria for the sprint. Critic tightens them (adds edge cases, raises standards).
-2. **Generator writes** — Produces Markdown files with C4 Mermaid diagrams and narrative.
-3. **Critic scores** — Evaluates every criterion 1–10, flags severity (Critical / High / Medium / Low), and gives detailed feedback with file references.
+1. **Contract negotiation** — Generator proposes specific, testable acceptance criteria. Critic tightens them (adds edge cases, raises standards).
+2. **Generator writes** — A Claude Code agent with `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep` tools creates Markdown files with C4 Mermaid diagrams and narrative directly on disk.
+3. **Critic scores** — A separate Claude Code agent with `Read`, `Glob`, `Grep` tools inspects the files, evaluates every criterion 1–10, flags severity (Critical / High / Medium / Low), and gives detailed feedback with file references.
 4. **Loop** — Generator revises based on feedback. Repeats until the average score reaches 9.0/10 with no Critical or High issues, held for 2 consecutive rounds.
 5. **Auto-commit** — Each generator pass is committed to git with a message like `Generator pass 2 - sprint 1 (C1 System Context)`.
 
@@ -134,8 +160,6 @@ After all 7 sprints, both agents independently review the complete architecture 
 
 ### Console Output
 
-You'll see live progress like this:
-
 ```
 ============================================================
 SPRINT 1/7: C1 System Context
@@ -154,11 +178,7 @@ Consecutive passes: 2/2
 Sprint 1 PASSED
 ```
 
-Logs are also written to `knowledge/architecture/logs/architect-run-YYYYMMDD-HHMMSS.log`.
-
-### Typical Run Time
-
-Expect 1–3 hours depending on model speed and how many revision rounds are needed. The 3-hour hard timeout prevents runaway costs.
+Logs are also written to `<output-dir>/logs/architect-run-YYYYMMDD-HHMMSS.log`.
 
 ---
 
@@ -170,7 +190,6 @@ knowledge/architecture/
 ├── c2-container.md            # C4 Level 2: Container overview + tech stack
 ├── frontend/
 │   └── c2-container.md        # Frontend container detail
-│   └── auth.md                # (if warranted by the PRD)
 ├── backend/
 │   └── c2-container.md        # Backend/orchestration detail
 ├── database/
@@ -198,7 +217,7 @@ The Mermaid diagrams in these files render natively on GitHub.
 If the run is interrupted (crash, timeout, Ctrl+C), resume from where it left off:
 
 ```bash
-adversarial-architect \
+uv run adversarial-architect \
   --prd knowledge/prd.md \
   --output knowledge/architecture \
   --resume
@@ -212,13 +231,13 @@ The harness reads `progress.json` to find the last completed sprint and picks up
 
 ### Critic Feedback
 
-To understand why a sprint took many rounds, read the feedback files:
+To understand why a sprint took many rounds:
 
 ```bash
 cat knowledge/architecture/feedback/sprint-1-round-1.json
 ```
 
-Each feedback file contains per-criterion scores, severity ratings, and specific comments.
+Each feedback file contains per-criterion scores, severity ratings, and specific comments with file references.
 
 ### Git History
 
@@ -247,8 +266,11 @@ cat knowledge/architecture/contracts/sprint-1.json
 
 ## Troubleshooting
 
+**`claude CLI not found in PATH`**
+Install Claude Code: follow the instructions at [claude.ai/code](https://claude.ai/code). Then verify with `claude --version`.
+
 **`Config file not found`**
-Create `~/.deep-researcher.toml` with your `[generator]` and `[critic]` sections. Copy `.deep-researcher.toml.template` as a starting point.
+Create `~/.deep-researcher.toml` from the template: `cp .deep-researcher.toml.template ~/.deep-researcher.toml`.
 
 **`Error: PRD file not found`**
 The `--prd` path must point to an existing file. Check the path is correct relative to your current directory.
@@ -256,11 +278,14 @@ The `--prd` path must point to an existing file. Check the path is correct relat
 **`not inside a git repository`**
 The output directory must be inside a git repo. Initialize one first: `git init`.
 
+**ANTHROPIC_BASE_URL not respected**
+The SDK may fall back to the bundled Claude binary, which can ignore custom env vars. Set `cli_path` in `~/.deep-researcher.toml` to the output of `which claude`.
+
 **A sprint fails after max rounds**
-The critic's bar wasn't met in 6 rounds. Check the feedback JSON for the sprint to understand the recurring issues. Common causes: the PRD lacks enough detail for the generator to work from, or the models are too small for reliable structured output.
+Check the feedback JSON for recurring issues. Common causes: the PRD lacks enough detail, or `max_turns` is too low for the model to complete a full architecture file in one agent loop. Try increasing `max_turns` in the config.
 
 **Run stops mid-way due to timeout**
-Use `--resume` to continue. If the 3-hour limit is too tight for your models, increase it in `~/.deep-researcher.toml`:
+Use `--resume` to continue. If 3 hours is too tight, increase it:
 ```toml
 [thresholds]
 timeout_hours = 6.0
@@ -270,10 +295,11 @@ timeout_hours = 6.0
 
 ## Tips for Best Results
 
-- **Use a strong generator model.** The generator needs to produce complete, well-structured Markdown with valid Mermaid syntax. Models with 70B+ parameters tend to be more reliable.
-- **Use a different model for critic and generator.** Having both agents on the same model creates an echo chamber. The adversarial dynamic works best when the models have different "opinions."
-- **Make your PRD specific.** The generator reads the PRD for every sprint. Vague PRDs produce vague architecture. Concrete technology choices and user journeys in the PRD lead to better output.
+- **Use a capable generator model.** The generator needs to produce complete, well-structured Markdown with valid Mermaid syntax in a single agentic loop. `opus` gives the best results; `sonnet` is a good cost/quality balance.
+- **Use a different model for critic and generator** if your setup allows it. The adversarial dynamic works best when the agents have different "opinions."
+- **Make your PRD specific.** The generator reads the PRD for every sprint. Concrete technology choices and user journeys lead to better architecture. Vague PRDs produce vague diagrams.
 - **Check Sprint 1 before walking away.** After sprint 1 completes, glance at `c1-context.md`. If the system boundary is wrong, the rest of the architecture will follow the wrong path — better to catch it early.
+- **Raise `max_turns` for complex systems.** If the generator is consistently cutting off before producing all required files, increase `max_turns` in the `[generator]` section.
 
 ---
 
@@ -282,10 +308,12 @@ timeout_hours = 6.0
 ```bash
 git clone https://github.com/geraldthewes/deep-researcher
 cd deep-researcher
-pip install -e ".[dev]"
+uv sync
 
-python -m pytest tests/ -v        # run tests
-ruff check deep_researcher/        # lint
-mypy deep_researcher/              # type check
-bandit -r deep_researcher/ -ll     # security scan
+uv run python -m pytest tests/ -v        # run tests
+uv run ruff check deep_researcher/        # lint
+uv run mypy deep_researcher/              # type check
+uv run bandit -r deep_researcher/ -ll     # security scan
 ```
+
+All four must pass before committing.
