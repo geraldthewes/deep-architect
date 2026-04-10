@@ -162,10 +162,11 @@ def make_agent_options(
     # --tools "" and actually disables all tools.
     sdk_tools: list[str] | None = [] if not allowed_tools else None
 
-    # Structured output calls must be single-shot: the model cannot use tools, so
-    # allowing multiple turns just causes it to retry failed tool calls until max_turns
-    # is exhausted.  Force max_turns=1 whenever output_format is specified.
-    max_turns = 1 if output_format is not None else config.max_turns
+    # Structured output calls WITHOUT tools must be single-shot: the model has no real
+    # tools, so extra turns just cause hallucinated tool-call retries until max_turns is
+    # exhausted.  When tools ARE provided (e.g. run_critic), the agent needs multiple
+    # turns to inspect files before it can produce structured output.
+    max_turns = 1 if (output_format is not None and not allowed_tools) else config.max_turns
 
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
