@@ -2,75 +2,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic_ai import Agent
-
+from deep_researcher.agents.client import (
+    make_agent_options,
+    run_agent,
+    run_agent_text,
+)
+from deep_researcher.config import AgentConfig
 from deep_researcher.models.contract import SprintContract
-from deep_researcher.models.feedback import CriticResult, GeneratorResult
+from deep_researcher.models.feedback import CriticResult
+from deep_researcher.prompts import load_prompt
 from deep_researcher.sprints import SprintDefinition
 
-GENERATOR_SYSTEM_PROMPT = """You are Winston, the BMAD Architect.
-Your role is to produce the highest-quality C4 architecture documentation possible.
-
-You will receive a PRD, a sprint contract, and optionally critic feedback from a previous round.
-
-## C4 Diagram Rules
-- C1 System Context: use `C4Context` Mermaid block
-- C2 Container: use `C4Container` Mermaid block
-- Always end diagrams with `UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")`
-- Use `_Ext` suffix (System_Ext, Person_Ext) for external systems
-- Include technology string in C2: Container(alias, "Name", "Tech", "Description")
-- Do NOT use %%{init}%% directives — GitHub ignores them
-
-## Output Rules
-- Write complete, standalone Markdown files
-- Each file must have a title heading, a brief narrative, the Mermaid diagram,
-  and a section describing relationships
-- When a Critic round provides feedback, address EVERY specific issue mentioned with file references
-
-## Response Format
-Return a JSON object with:
-- "files": list of {"path": "<relative path>", "content": "<full markdown content>"}
-- "summary": brief description of design decisions made
-"""
-
-CONTRACT_PROPOSAL_PROMPT = """You are proposing a sprint contract for the following sprint.
-
-## PRD
-{prd}
-
-## Sprint Definition
-Sprint {sprint_number}: {sprint_name}
-{sprint_description}
-
-Primary files to produce: {primary_files}
-
-Propose a sprint contract as a JSON object with this structure:
-{{
-  "sprint_number": {sprint_number},
-  "sprint_name": "{sprint_name}",
-  "files_to_produce": [...],
-  "criteria": [
-    {{"name": "...", "description": "Specific, testable criterion", "threshold": 9.0}},
-    ...
-  ]
-}}
-
-Include 5-10 criteria. Each must be SPECIFIC and TESTABLE — not vague.
-Criteria must cover: Mermaid diagram validity, C4 completeness, narrative quality,
-accuracy to PRD, and relationship documentation.
-Output ONLY the JSON."""
+# Tools the generator can use: full agentic access to write and inspect files
+GENERATOR_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 
 
 async def run_generator(
-    agent: Agent[None, GeneratorResult],
+    config: AgentConfig,
     sprint: SprintDefinition,
     contract: SprintContract,
     prd_content: str,
     previous_feedback: CriticResult | None,
     output_dir: Path,
     round_num: int,
-) -> list[Path]:
-    """Run the Generator for one round. Returns list of files written."""
+    *,
+    cli_path: str | None = None,
+    session_id: str | None = None,
+) -> str | None:
+    """Run the Generator for one round. Returns session_id for continuation across rounds."""
     feedback_section = ""
     if previous_feedback:
         feedback_lines = "\n".join(
@@ -87,37 +46,52 @@ async def run_generator(
     prompt = (
         f"## PRD\n{prd_content}\n\n"
         f"## Sprint Contract\n{contract.model_dump_json(indent=2)}\n\n"
-        f"## Output Directory (paths relative to this)\n{output_dir}\n"
-        f"{feedback_section}\n"
-        "Generate the architecture files specified in the contract. "
-        "Return a GeneratorResult with the file contents and a brief summary."
+        f"## Working Directory\n{output_dir}\n\n"
+        f"## Files to Produce\n"
+        + "\n".join(f"- {f}" for f in contract.files_to_produce)
+        + f"\n\n{feedback_section}\n"
+        "Use the Write tool to create each file in the working directory using absolute paths. "
+        "Use the Edit tool for targeted changes when addressing feedback on existing files. "
+        "Each file must be a complete, standalone Markdown document."
     )
 
-    result = await agent.run(prompt)
-    generator_result = result.output
+    system_prompt = load_prompt("generator_system")
+    options = make_agent_options(
+        config,
+        system_prompt,
+        allowed_tools=GENERATOR_TOOLS,
+        cwd=str(output_dir),
+        cli_path=cli_path,
+        resume=session_id,
+    )
 
-    written: list[Path] = []
-    for generated_file in generator_result.files:
-        path = output_dir / generated_file.path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(generated_file.content)
-        written.append(path)
-
-    return written
+    result = await run_agent(options, prompt)
+    return result.session_id
 
 
 async def propose_contract(
-    agent: Agent[None, str],
+    config: AgentConfig,
     sprint: SprintDefinition,
     prd_content: str,
+    *,
+    cli_path: str | None = None,
 ) -> str:
     """Generator proposes a sprint contract. Returns raw JSON string."""
-    prompt = CONTRACT_PROPOSAL_PROMPT.format(
+    prompt = load_prompt(
+        "contract_proposal",
         prd=prd_content,
-        sprint_number=sprint.number,
+        sprint_number=str(sprint.number),
         sprint_name=sprint.name,
         sprint_description=sprint.description,
-        primary_files=sprint.primary_files,
+        primary_files=str(sprint.primary_files),
     )
-    result = await agent.run(prompt)
-    return result.output
+
+    system_prompt = load_prompt("generator_system")
+    options = make_agent_options(
+        config,
+        system_prompt,
+        allowed_tools=[],  # No tools needed for contract proposal
+        cli_path=cli_path,
+    )
+
+    return await run_agent_text(options, prompt)

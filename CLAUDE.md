@@ -13,15 +13,15 @@ deep_researcher/
 ├── harness.py        # Main orchestration loop (run_harness)
 ├── sprints.py        # SPRINTS list — 7 fixed SprintDefinition objects
 ├── exit_criteria.py  # sprint_passes(), should_ping_pong_exit()
-├── git_ops.py        # validate_git_repo(), git_commit()
+├── git_ops.py        # validate_git_repo(), git_commit(), get_modified_files()
 ├── logger.py         # setup_logging(), get_logger()
 ├── agents/
-│   ├── client.py     # make_text_agent(), make_structured_agent()
+│   ├── client.py     # make_agent_options(), run_agent(), run_agent_text(), run_agent_structured()
 │   ├── generator.py  # run_generator(), propose_contract()
 │   └── critic.py     # run_critic(), review_contract(), check_ping_pong()
 ├── models/
 │   ├── contract.py   # SprintContract, SprintCriterion
-│   ├── feedback.py   # CriticResult, CriterionScore, GeneratorResult, PingPongResult
+│   ├── feedback.py   # CriticResult, CriterionScore, PingPongResult
 │   └── progress.py   # HarnessProgress, SprintStatus
 ├── io/
 │   └── files.py      # save/load for contracts, feedback, progress; init_workspace()
@@ -32,39 +32,53 @@ deep_researcher/
 
 ## Development Commands
 
+All commands run inside a `uv` virtual environment — never use the global Python.
+
 ```bash
 # Install (editable + dev deps)
-pip install -e ".[dev]"
+uv sync
 
 # Test
-python -m pytest tests/ -v
+uv run python -m pytest tests/ -v
 
 # Lint
-ruff check deep_researcher/ tests/
+uv run ruff check deep_researcher/ tests/
 
 # Type check (strict)
-mypy deep_researcher/
+uv run mypy deep_researcher/
 
 # Security scan
-bandit -r deep_researcher/ -ll
+uv run bandit -r deep_researcher/ -ll
 ```
 
 All four must pass clean before committing. Run them together:
 
 ```bash
-ruff check deep_researcher/ tests/ && mypy deep_researcher/ && python -m pytest tests/ -v && bandit -r deep_researcher/ -ll
+uv run ruff check deep_researcher/ tests/ && uv run mypy deep_researcher/ && uv run python -m pytest tests/ -v && uv run bandit -r deep_researcher/ -ll
 ```
 
 ## Key Architectural Decisions
 
-**pydantic-ai 1.78.0 API** — the installed version uses different names than older docs:
-- Constructor parameter: `output_type=` (not `result_type=`)
-- Result accessor: `result.output` (not `result.data`)
-- Custom endpoints: `OpenAIProvider(base_url=..., api_key=...)` passed as `provider=` to `OpenAIModel`
+**claude-agent-sdk** — agents run via the Claude Code CLI as a real agentic loop with tool use.
+- Python import: `claude_agent_sdk`
+- Core API: `query(prompt, options)` returns an async generator of messages
+- Options built via `ClaudeAgentOptions` (permission_mode, allowed_tools, model, max_turns, cwd, etc.)
+- Final result is a `ResultMessage` with `.result` (text) and `.structured_output` (parsed JSON)
 
-**Generator uses structured output** — `run_generator()` uses `Agent[None, GeneratorResult]` so the LLM returns `{"files": [{"path": "...", "content": "..."}], "summary": "..."}`. The harness then writes those files to disk. The LLM does not write files directly.
+**System-installed CLI binary** — always use `cli_path=shutil.which("claude")` (done automatically in `client.py`). The bundled SDK binary may ignore `ANTHROPIC_BASE_URL`; the system-installed binary respects all env vars.
 
-**Critic uses two agents** — `critic_agent: Agent[None, CriticResult]` for evaluation rounds, and `critic_text: Agent[None, str]` for contract review (which returns `APPROVED` or raw JSON). Do not pass the structured critic agent to `review_contract()`.
+**Generator writes files directly via tools** — `run_generator()` gives the agent `["Read", "Write", "Edit", "Bash", "Glob", "Grep"]`. The agent writes architecture files to disk using the Write tool. The harness detects written files via `get_modified_files()` (git status) after the agent finishes. The agent returns a `session_id` for persistence across rounds within the same sprint.
+
+**Critic reads files via tools** — `run_critic()` gives the agent `["Read", "Bash", "Glob", "Grep"]` (no Write/Edit). The agent inspects files directly rather than having content pasted into the prompt. Structured output is obtained via `output_format` with a JSON schema derived from `CriticResult.model_json_schema()`.
+
+**Endpoint configuration is via environment variables** — not in the TOML config:
+```bash
+export ANTHROPIC_BASE_URL=http://litellm.cluster:9999
+export ANTHROPIC_AUTH_TOKEN=$(vault kv get -field=master_key secret/litellm/app)
+export ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-standard
+export ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-standard
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+```
 
 **Prompts are `.md` files** — loaded at runtime via `load_prompt(name, **kwargs)`. Edit prompts without touching Python. All 13 prompt files must exist or `test_prompts.py` will fail.
 
@@ -83,13 +97,13 @@ Logic lives entirely in `exit_criteria.py`. The thresholds (`min_score`, `ping_p
 
 ## Config File
 
-Users create `~/.deep-researcher.toml` (template: `.deep-researcher.toml.template`). There are no environment variables — config is TOML only. `load_config()` in `config.py` raises `FileNotFoundError` with a clear message if the file is missing.
+Users create `~/.deep-researcher.toml` (template: `.deep-researcher.toml.template`). The TOML config controls model aliases and thresholds only. Authentication and endpoint are set via environment variables (see above). `load_config()` in `config.py` raises `FileNotFoundError` with a clear message if the file is missing.
 
 ## Testing Notes
 
 - `test_git_ops.py` creates real temporary git repos via `git.Repo.init(tmp_path)`
 - `test_files.py` tests full round-trip serialization for all Pydantic models
-- No mocking of LLM calls — agents are not tested end-to-end in unit tests
+- No mocking of LLM calls — claude-agent-sdk calls are not tested end-to-end in unit tests
 - `asyncio_mode = "auto"` is set in `pyproject.toml`; async tests need no decorator
 
 ## What NOT to Do
@@ -97,5 +111,7 @@ Users create `~/.deep-researcher.toml` (template: `.deep-researcher.toml.templat
 - Do not add LangGraph, LangChain, or any agent framework
 - Do not add more than 7 sprints without a strong reason — they are fixed by design
 - Do not hardcode threshold values; always read from `config.thresholds`
-- Do not use `result.data` or `result_type=` — those are the old pydantic-ai API
+- Do not use `result.data`, `result.output`, or `result_type=` — those are the old pydantic-ai API
+- Do not store endpoint URLs or API keys in the TOML config — use environment variables
+- Do not pass file contents as prompt text to the critic — it has Read tools for that
 - Do not swallow exceptions; log them and let them propagate

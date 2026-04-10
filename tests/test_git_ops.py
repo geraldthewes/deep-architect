@@ -3,7 +3,7 @@ from pathlib import Path
 import git
 import pytest
 
-from deep_researcher.git_ops import git_commit, validate_git_repo
+from deep_researcher.git_ops import get_modified_files, git_commit, validate_git_repo
 
 
 def test_validate_git_repo_success(tmp_path: Path) -> None:
@@ -49,3 +49,37 @@ def test_git_commit_initial_no_head(tmp_path: Path) -> None:
     git_commit(repo, "initial commit", [test_file])
 
     assert repo.head.commit.message == "initial commit"
+
+
+def test_get_modified_files_detects_new(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    repo.index.commit("init")
+
+    new_file = tmp_path / "new.md"
+    new_file.write_text("# New")
+
+    files = get_modified_files(repo)
+    assert any("new.md" in str(f) for f in files)
+
+
+def test_get_modified_files_detects_modified(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    existing = tmp_path / "existing.md"
+    existing.write_text("# Original")
+    repo.index.add([str(existing)])
+    repo.index.commit("init")
+
+    existing.write_text("# Modified")
+    files = get_modified_files(repo)
+    assert any("existing.md" in str(f) for f in files)
+
+
+def test_get_modified_files_empty_on_clean(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    existing = tmp_path / "clean.md"
+    existing.write_text("# Clean")
+    repo.index.add([str(existing)])
+    repo.index.commit("init")
+
+    files = get_modified_files(repo)
+    assert files == []

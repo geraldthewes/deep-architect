@@ -5,26 +5,14 @@ import re
 import time
 from pathlib import Path
 
-from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.providers.openai import OpenAIProvider
 from rich.console import Console
 
-from deep_researcher.agents.client import make_structured_agent, make_text_agent
-from deep_researcher.agents.critic import (
-    CRITIC_SYSTEM_PROMPT,
-    check_ping_pong,
-    review_contract,
-    run_critic,
-)
-from deep_researcher.agents.generator import (
-    GENERATOR_SYSTEM_PROMPT,
-    propose_contract,
-    run_generator,
-)
-from deep_researcher.config import HarnessConfig
+from deep_researcher.agents.client import make_agent_options, run_agent_text
+from deep_researcher.agents.critic import check_ping_pong, review_contract, run_critic
+from deep_researcher.agents.generator import propose_contract, run_generator
+from deep_researcher.config import AgentConfig, HarnessConfig
 from deep_researcher.exit_criteria import should_ping_pong_exit, sprint_passes
-from deep_researcher.git_ops import git_commit, validate_git_repo
+from deep_researcher.git_ops import get_modified_files, git_commit, validate_git_repo
 from deep_researcher.io.files import (
     init_workspace,
     load_progress,
@@ -35,8 +23,9 @@ from deep_researcher.io.files import (
 )
 from deep_researcher.logger import get_logger, setup_logging
 from deep_researcher.models.contract import SprintContract
-from deep_researcher.models.feedback import CriticResult, GeneratorResult, PingPongResult
+from deep_researcher.models.feedback import CriticResult
 from deep_researcher.models.progress import HarnessProgress, SprintStatus
+from deep_researcher.prompts import load_prompt
 from deep_researcher.sprints import SPRINTS, SprintDefinition
 
 logger = get_logger(__name__)
@@ -44,16 +33,18 @@ console = Console()
 
 
 async def negotiate_contract(
-    generator_agent: Agent[None, str],
-    critic_text_agent: Agent[None, str],
+    generator_config: AgentConfig,
+    critic_config: AgentConfig,
     sprint: SprintDefinition,
     prd_content: str,
+    *,
+    cli_path: str | None = None,
 ) -> SprintContract:
     """Generator proposes, Critic tightens. Returns final locked contract."""
     logger.info(f"[Sprint {sprint.number}] Negotiating contract...")
-    proposal = await propose_contract(generator_agent, sprint, prd_content)
+    proposal = await propose_contract(generator_config, sprint, prd_content, cli_path=cli_path)
 
-    review = await review_contract(critic_text_agent, proposal)
+    review = await review_contract(critic_config, proposal, cli_path=cli_path)
     final_json = proposal if review.upper().startswith("APPROVED") else review
 
     # Parse with fallback — try code blocks first, then raw text
@@ -72,24 +63,37 @@ async def negotiate_contract(
 
 
 async def run_final_agreement(
-    generator_agent: Agent[None, str],
-    critic_agent: Agent[None, CriticResult],
+    generator_config: AgentConfig,
+    critic_config: AgentConfig,
     output_dir: Path,
+    *,
+    cli_path: str | None = None,
 ) -> None:
     """Both agents must independently output READY_TO_SHIP."""
     logger.info("Running final mutual agreement round...")
 
-    final_prompt = (
-        f"Review the complete architecture in {output_dir}. "
-        "If it is production-ready and all C4 levels are complete, output exactly: READY_TO_SHIP\n"
-        "Otherwise describe what is missing."
+    final_prompt = load_prompt("final_agreement", output_dir=str(output_dir))
+
+    gen_options = make_agent_options(
+        generator_config,
+        load_prompt("generator_system"),
+        allowed_tools=["Read", "Glob", "Grep"],
+        cwd=str(output_dir),
+        cli_path=cli_path,
+    )
+    critic_options = make_agent_options(
+        critic_config,
+        load_prompt("critic_system"),
+        allowed_tools=["Read", "Glob", "Grep"],
+        cwd=str(output_dir),
+        cli_path=cli_path,
     )
 
-    gen_result = await generator_agent.run(final_prompt)
-    critic_result = await critic_agent.run(final_prompt)
+    gen_result = await run_agent_text(gen_options, final_prompt)
+    critic_result = await run_agent_text(critic_options, final_prompt)
 
-    gen_ready = "READY_TO_SHIP" in gen_result.output
-    critic_ready = "READY_TO_SHIP" in str(critic_result.output)
+    gen_ready = "READY_TO_SHIP" in gen_result
+    critic_ready = "READY_TO_SHIP" in critic_result
 
     if gen_ready and critic_ready:
         logger.info("Mutual agreement reached: READY_TO_SHIP")
@@ -115,24 +119,7 @@ async def run_harness(
     init_workspace(output_dir)
     prd_content = prd.read_text()
 
-    # Build agents
-    generator_text: Agent[None, str] = make_text_agent(config.generator, GENERATOR_SYSTEM_PROMPT)
-    generator_structured: Agent[None, GeneratorResult] = make_structured_agent(
-        config.generator, GeneratorResult, GENERATOR_SYSTEM_PROMPT
-    )
-    critic_model = OpenAIModel(
-        config.critic.model,
-        provider=OpenAIProvider(base_url=config.critic.base_url, api_key=config.critic.api_key),
-    )
-    critic_text: Agent[None, str] = Agent(
-        model=critic_model, output_type=str, system_prompt=CRITIC_SYSTEM_PROMPT
-    )
-    critic_agent: Agent[None, CriticResult] = Agent(
-        model=critic_model, output_type=CriticResult, system_prompt=CRITIC_SYSTEM_PROMPT
-    )
-    ping_pong_agent: Agent[None, PingPongResult] = Agent(
-        model=critic_model, output_type=PingPongResult, system_prompt=CRITIC_SYSTEM_PROMPT
-    )
+    cli_path = config.cli_path
 
     # Resume or initialize progress
     if resume and (output_dir / "progress.json").exists():
@@ -158,7 +145,9 @@ async def run_harness(
         logger.info("=" * 60)
 
         # Contract negotiation
-        contract = await negotiate_contract(generator_text, critic_text, sprint, prd_content)
+        contract = await negotiate_contract(
+            config.generator, config.critic, sprint, prd_content, cli_path=cli_path
+        )
         save_contract(output_dir, contract)
 
         sprint_status = progress.sprint_statuses[sprint.number - 1]
@@ -168,6 +157,7 @@ async def run_harness(
 
         last_result: CriticResult | None = None
         consecutive_passes = 0
+        generator_session_id: str | None = None  # persist context across rounds per sprint
 
         for round_num in range(1, t.max_rounds_per_sprint + 1):
             # Global safety checks
@@ -186,30 +176,35 @@ async def run_harness(
 
             logger.info(f"[Sprint {sprint.number}] Round {round_num}")
 
-            # Generator builds
+            # Generator builds — writes files directly via tool use
             sprint_status.status = "building"
             save_progress(output_dir, progress)
-            written = await run_generator(
-                generator_structured,
+            generator_session_id = await run_generator(
+                config.generator,
                 sprint,
                 contract,
                 prd_content,
                 last_result,
                 output_dir,
                 round_num,
+                cli_path=cli_path,
+                session_id=generator_session_id,
             )
 
-            # Auto-commit
+            # Detect files written by the generator and auto-commit
+            written = get_modified_files(repo)
             git_commit(
                 repo,
                 f"Generator pass {round_num} - sprint {sprint.number} ({sprint.name})",
                 written,
             )
 
-            # Critic evaluates
+            # Critic evaluates — reads files via tool use
             sprint_status.status = "evaluating"
             save_progress(output_dir, progress)
-            result = await run_critic(critic_agent, contract, output_dir, round_num)
+            result = await run_critic(
+                config.critic, contract, output_dir, round_num, cli_path=cli_path
+            )
             save_feedback(output_dir, sprint.number, round_num, result)
             save_round_log(
                 output_dir,
@@ -247,7 +242,9 @@ async def run_harness(
 
             # Ping-pong detection (after round 3)
             if round_num >= 3 and last_result is not None:
-                pp = await check_ping_pong(ping_pong_agent, result, last_result)
+                pp = await check_ping_pong(
+                    config.critic, result, last_result, cli_path=cli_path
+                )
                 if should_ping_pong_exit(
                     pp.similarity_score, result, last_result, t.ping_pong_similarity_threshold
                 ):
@@ -274,7 +271,7 @@ async def run_harness(
         save_progress(output_dir, progress)
 
     # Final mutual agreement round
-    await run_final_agreement(generator_text, critic_agent, output_dir)
+    await run_final_agreement(config.generator, config.critic, output_dir, cli_path=cli_path)
     progress.status = "complete"
     save_progress(output_dir, progress)
     logger.info("Harness COMPLETE — architecture is production-ready")

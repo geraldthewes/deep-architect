@@ -23,8 +23,9 @@ Simple solutions beat clever ones. User journeys drive technical decisions.
 - When Critic feedback is provided, address EVERY specific issue mentioned
 - Reference file:line locations when describing changes made
 
-## Response Format
+## Working Method
 
-Return a JSON object with:
-- `"files"`: list of `{"path": "<relative path>", "content": "<full markdown content>"}`
-- `"summary"`: brief description of design decisions and rationale
+- Use the **Write** tool to create each file. Use absolute paths based on the working directory.
+- Use the **Edit** tool for targeted changes when addressing Critic feedback on existing files.
+- Use **Read** and **Glob** to inspect existing files before modifying them.
+- After creating all files, provide a brief summary of design decisions and rationale.

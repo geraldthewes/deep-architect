@@ -7,9 +7,8 @@ from pydantic import BaseModel, Field
 
 
 class AgentConfig(BaseModel):
-    base_url: str
-    api_key: str
-    model: str
+    model: str = "sonnet"  # alias: "sonnet", "opus", "haiku", or full model ID
+    max_turns: int = 50
 
 
 class ThresholdConfig(BaseModel):
@@ -21,10 +20,19 @@ class ThresholdConfig(BaseModel):
     ping_pong_similarity_threshold: float = 0.85
 
 
+def _default_generator() -> AgentConfig:
+    return AgentConfig(model="sonnet", max_turns=50)
+
+
+def _default_critic() -> AgentConfig:
+    return AgentConfig(model="sonnet", max_turns=30)
+
+
 class HarnessConfig(BaseModel):
-    generator: AgentConfig
-    critic: AgentConfig
+    generator: AgentConfig = Field(default_factory=_default_generator)
+    critic: AgentConfig = Field(default_factory=_default_critic)
     thresholds: ThresholdConfig = Field(default_factory=ThresholdConfig)
+    cli_path: str | None = None  # Override claude CLI path; defaults to shutil.which("claude")
 
 
 def load_config(config_path: Path | None = None) -> HarnessConfig:
@@ -35,7 +43,9 @@ def load_config(config_path: Path | None = None) -> HarnessConfig:
     if not config_path.exists():
         raise FileNotFoundError(
             f"Config file not found: {config_path}\n"
-            "Create ~/.deep-researcher.toml with [generator] and [critic] sections."
+            "Create ~/.deep-researcher.toml with [generator] and [critic] sections.\n"
+            "Endpoint configuration is via environment variables:\n"
+            "  ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_DEFAULT_SONNET_MODEL, etc."
         )
 
     with open(config_path, "rb") as f:

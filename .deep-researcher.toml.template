@@ -1,15 +1,25 @@
 # ~/.deep-researcher.toml — deep-researcher configuration
-# Copy to ~/.deep-researcher.toml and fill in your endpoint details.
+# Copy to ~/.deep-researcher.toml and fill in your model preferences.
+#
+# Endpoint and authentication are configured via environment variables:
+#   ANTHROPIC_BASE_URL=http://litellm.cluster:9999
+#   ANTHROPIC_AUTH_TOKEN=<your-api-key>
+#   ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-standard
+#   ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-standard
+#   ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-standard
+#   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
 [generator]
-base_url = "https://your-generator-endpoint/v1"
-api_key  = "your-generator-api-key"
-model    = "nemotron-122b"
+model     = "sonnet"    # Model alias: "sonnet", "opus", "haiku", or full model ID
+max_turns = 50
 
 [critic]
-base_url = "https://your-critic-endpoint/v1"
-api_key  = "your-critic-api-key"
-model    = "qwen-27b"
+model     = "sonnet"
+max_turns = 30
+
+# Optional: override the claude CLI path (default: auto-detected from PATH).
+# Use this if the bundled SDK binary ignores ANTHROPIC_BASE_URL.
+# cli_path = "/home/gerald/.local/bin/claude"
 
 [thresholds]
 min_score                      = 9.0

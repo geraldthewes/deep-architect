@@ -28,6 +28,13 @@ Be exhaustive and specific.
 - Missing relationships between containers → High.
 - Vague or generic descriptions → Medium.
 
+## Inspection Method
+
+- Use the **Read** tool to examine each architecture file before scoring it.
+- Use **Glob** to discover all files in the working directory.
+- Use **Grep** to search for specific patterns (e.g. missing relationships, diagram keywords).
+- Include exact `file:line` references in your feedback details.
+
 ## Response Format
 
 Return a `CriticResult` JSON object:

@@ -17,6 +17,18 @@ def validate_git_repo(path: Path) -> git.Repo:
         )
 
 
+def get_modified_files(repo: git.Repo) -> list[Path]:
+    """Return new and modified files from the working tree (not yet committed)."""
+    working_dir = Path(repo.working_dir)
+    paths: list[Path] = []
+    for item in repo.untracked_files:
+        paths.append(working_dir / item)
+    for diff in repo.index.diff(None):
+        if diff.a_path:
+            paths.append(working_dir / diff.a_path)
+    return paths
+
+
 def git_commit(repo: git.Repo, message: str, paths: list[Path]) -> None:
     """Stage the given paths and create a commit. No-op if nothing changed."""
     str_paths = [str(p) for p in paths if p.exists()]

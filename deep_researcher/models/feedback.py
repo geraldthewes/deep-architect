@@ -31,13 +31,3 @@ class CriticResult(BaseModel):
 class PingPongResult(BaseModel):
     similarity_score: float = Field(ge=0.0, le=1.0)
     reasoning: str
-
-
-class GeneratedFile(BaseModel):
-    path: str
-    content: str
-
-
-class GeneratorResult(BaseModel):
-    files: list[GeneratedFile]
-    summary: str

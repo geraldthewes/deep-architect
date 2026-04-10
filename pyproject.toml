@@ -8,12 +8,11 @@ version = "0.1.0"
 description = "Autonomous adversarial C4 architecture harness for BMAD projects"
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic-ai>=0.1.0",
+    "claude-agent-sdk>=0.1.58",
     "pydantic>=2.0",
     "typer>=0.12",
     "gitpython>=3.1",
     "rich>=13.0",
-    "openai>=1.0",
 ]
 
 [project.scripts]
