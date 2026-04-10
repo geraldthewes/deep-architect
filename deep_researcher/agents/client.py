@@ -142,6 +142,13 @@ def _resolve_cli_path(override: str | None = None) -> str:
     return path
 
 
+# Max turns for tool-less structured output calls (--json-schema without --allowedTools).
+# The --json-schema protocol needs ≥2 turns (initial response + StructuredOutput call),
+# so this must be > 1.  It is deliberately lower than config.max_turns to prevent
+# criterion-named tool-call loops when the model ignores the no-tools constraint.
+STRUCTURED_OUTPUT_MAX_TURNS: int = 8
+
+
 def make_agent_options(
     config: AgentConfig,
     system_prompt: str,
@@ -162,11 +169,14 @@ def make_agent_options(
     # --tools "" and actually disables all tools.
     sdk_tools: list[str] | None = [] if not allowed_tools else None
 
-    # Structured output calls WITHOUT tools must be single-shot: the model has no real
-    # tools, so extra turns just cause hallucinated tool-call retries until max_turns is
-    # exhausted.  When tools ARE provided (e.g. run_critic), the agent needs multiple
-    # turns to inspect files before it can produce structured output.
-    max_turns = 1 if (output_format is not None and not allowed_tools) else config.max_turns
+    # Structured output calls WITHOUT tools need a few turns for the --json-schema
+    # protocol (model response + StructuredOutput tool call), but must be capped to
+    # prevent hallucinated-tool retry storms.  When tools ARE provided (e.g. run_critic),
+    # keep the full config.max_turns so the agent can read files first.
+    if output_format is not None and not allowed_tools:
+        max_turns = STRUCTURED_OUTPUT_MAX_TURNS
+    else:
+        max_turns = config.max_turns
 
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
