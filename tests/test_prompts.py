@@ -62,3 +62,15 @@ def test_ping_pong_variable_substitution() -> None:
 def test_final_agreement_variable_substitution() -> None:
     content = load_prompt("final_agreement", output_dir="/tmp/output")
     assert "/tmp/output" in content
+
+
+def test_generator_system_mentions_available_tools() -> None:
+    content = load_prompt("generator_system")
+    assert "ONLY use these tools" in content
+    assert "TodoWrite" in content
+
+
+def test_critic_system_mentions_available_tools() -> None:
+    content = load_prompt("critic_system")
+    assert "ONLY use these tools" in content
+    assert "TodoWrite" in content

@@ -77,3 +77,46 @@ model = "opus"
 """)
     cfg = load_config(cfg_file)
     assert isinstance(cfg, HarnessConfig)
+
+
+def test_agent_config_max_agent_retries_default() -> None:
+    from deep_researcher.config import AgentConfig
+
+    cfg = AgentConfig()
+    assert cfg.max_agent_retries == 2
+
+
+def test_threshold_config_max_round_retries_default() -> None:
+    from deep_researcher.config import ThresholdConfig
+
+    cfg = ThresholdConfig()
+    assert cfg.max_round_retries == 2
+
+
+def test_load_config_with_max_agent_retries(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text("""
+[generator]
+model = "sonnet"
+max_agent_retries = 3
+[critic]
+model = "sonnet"
+max_agent_retries = 1
+""")
+    cfg = load_config(cfg_file)
+    assert cfg.generator.max_agent_retries == 3
+    assert cfg.critic.max_agent_retries == 1
+
+
+def test_load_config_with_max_round_retries(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text("""
+[generator]
+model = "sonnet"
+[critic]
+model = "sonnet"
+[thresholds]
+max_round_retries = 0
+""")
+    cfg = load_config(cfg_file)
+    assert cfg.thresholds.max_round_retries == 0

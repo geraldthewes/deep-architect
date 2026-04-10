@@ -84,7 +84,7 @@ async def run_generator(
     )
 
     label = f"Generator sprint={sprint.number} round={round_num}"
-    result = await run_agent(options, prompt, label=label)
+    result = await run_agent(options, prompt, label=label, max_retries=config.max_agent_retries)
     return result.session_id
 
 

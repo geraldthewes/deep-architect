@@ -5,7 +5,7 @@ import os
 import shutil
 import time
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, TypeVar
 
 from claude_agent_sdk import (
@@ -32,6 +32,26 @@ _log = get_logger(__name__)
 KNOWN_TOOLS: frozenset[str] = frozenset({"Read", "Write", "Edit", "Bash", "Glob", "Grep"})
 # Internal CLI tool used when --json-schema is active; not a user tool but not a hallucination.
 _STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
+
+# CLI-internal tools that the model may hallucinate but must never invoke in SDK subprocesses.
+# Passed via --disallowedTools so the CLI rejects them before execution.
+DISALLOWED_TOOLS: list[str] = [
+    "TodoWrite",
+    "TodoRead",
+    "Agent",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskUpdate",
+    "WebSearch",
+    "WebFetch",
+    "NotebookEdit",
+    "NotebookRead",
+    "SendMessage",
+    "ToolSearch",
+    "Skill",
+    "Monitor",
+]
 
 
 def json_schema_format(model_class: type[BaseModel]) -> dict[str, Any]:
@@ -257,6 +277,7 @@ def make_agent_options(
         permission_mode="bypassPermissions",
         tools=sdk_tools,
         allowed_tools=allowed_tools,
+        disallowed_tools=DISALLOWED_TOOLS,
         model=config.model,
         max_turns=config.max_turns,
         cwd=cwd,
@@ -276,120 +297,155 @@ async def run_agent(
     options: ClaudeAgentOptions,
     prompt: str,
     label: str = "Agent",
+    max_retries: int = 0,
 ) -> ResultMessage:
-    """Run a query and return the ResultMessage."""
-    result: ResultMessage | None = None
-    turn_count = 0
-    tool_count = 0
-    text_block_count = 0
+    """Run a query and return the ResultMessage.
 
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            turn_count += 1
+    On a process-level failure (e.g. the CLI crashes because the model called a
+    disallowed tool), the query is retried up to *max_retries* times with a
+    fresh session (resume=None) so the corrupted subprocess state is discarded.
+    """
+    last_exc: Exception | None = None
 
-            if message.error is not None:
-                _log.warning("[%s] turn=%d API error: %s", label, turn_count, message.error)
+    for attempt in range(1, max_retries + 2):
+        result: ResultMessage | None = None
+        turn_count = 0
+        tool_count = 0
+        text_block_count = 0
 
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    text_block_count += 1
-                    snippet = block.text[:200].replace("\n", " ")
-                    if len(block.text) > 200:
-                        snippet += "..."
-                    _log.debug(
-                        "[%s] turn=%d text (%d chars): %s",
-                        label, turn_count, len(block.text), snippet,
-                    )
-                elif isinstance(block, ToolUseBlock):
-                    tool_count += 1
-                    if block.name == _STRUCTURED_OUTPUT_TOOL:
-                        _log.info(
-                            "[%s] turn=%d StructuredOutput (keys: %s)",
-                            label, turn_count, list(block.input.keys()),
-                        )
-                    elif block.name not in KNOWN_TOOLS:
+        try:
+            async for message in query(prompt=prompt, options=options):
+                if isinstance(message, AssistantMessage):
+                    turn_count += 1
+
+                    if message.error is not None:
                         _log.warning(
-                            "[%s] turn=%d unexpected tool call: %s (input keys: %s)",
-                            label, turn_count, block.name, list(block.input.keys()),
+                            "[%s] turn=%d API error: %s", label, turn_count, message.error
                         )
-                    else:
-                        _log.info("[%s] turn=%d %s", label, turn_count, _tool_summary(block))
 
-        elif isinstance(message, RateLimitEvent):
-            info = message.rate_limit_info
-            if info.status == "rejected":
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            text_block_count += 1
+                            snippet = block.text[:200].replace("\n", " ")
+                            if len(block.text) > 200:
+                                snippet += "..."
+                            _log.debug(
+                                "[%s] turn=%d text (%d chars): %s",
+                                label, turn_count, len(block.text), snippet,
+                            )
+                        elif isinstance(block, ToolUseBlock):
+                            tool_count += 1
+                            if block.name == _STRUCTURED_OUTPUT_TOOL:
+                                _log.info(
+                                    "[%s] turn=%d StructuredOutput (keys: %s)",
+                                    label, turn_count, list(block.input.keys()),
+                                )
+                            elif block.name not in KNOWN_TOOLS:
+                                _log.warning(
+                                    "[%s] turn=%d unexpected tool call: %s (input keys: %s)",
+                                    label, turn_count, block.name, list(block.input.keys()),
+                                )
+                            else:
+                                _log.info(
+                                    "[%s] turn=%d %s",
+                                    label, turn_count, _tool_summary(block),
+                                )
+
+                elif isinstance(message, RateLimitEvent):
+                    info = message.rate_limit_info
+                    if info.status == "rejected":
+                        _log.error(
+                            "[%s] Rate limit REJECTED (type=%s resets_at=%s)",
+                            label, info.rate_limit_type, info.resets_at,
+                        )
+                    elif info.status == "allowed_warning":
+                        util_pct = (
+                            f"{info.utilization * 100:.0f}%"
+                            if info.utilization is not None
+                            else "?"
+                        )
+                        _log.warning(
+                            "[%s] Rate limit warning (type=%s utilization=%s)",
+                            label, info.rate_limit_type, util_pct,
+                        )
+
+                elif isinstance(message, ResultMessage):
+                    result = message
+
+            if result is None:
+                raise RuntimeError("Agent query completed without a ResultMessage")
+            if result.is_error:
+                raise RuntimeError(f"Agent query failed: {result.result}")
+
+        except Exception as exc:
+            last_exc = exc
+            if attempt <= max_retries:
                 _log.error(
-                    "[%s] Rate limit REJECTED (type=%s resets_at=%s)",
-                    label, info.rate_limit_type, info.resets_at,
+                    "[%s] attempt %d/%d failed: %s — retrying with fresh session",
+                    label, attempt, max_retries + 1, exc,
                 )
-            elif info.status == "allowed_warning":
-                util_pct = f"{info.utilization * 100:.0f}%" if info.utilization is not None else "?"
-                _log.warning(
-                    "[%s] Rate limit warning (type=%s utilization=%s)",
-                    label, info.rate_limit_type, util_pct,
+                options = replace(options, resume=None)
+                continue
+            raise
+
+        # Turn-level summary
+        _log.info(
+            "[%s] summary: turns=%d (sdk=%d) tool_calls=%d text_blocks=%d",
+            label, turn_count, result.num_turns, tool_count, text_block_count,
+        )
+
+        # Per-call usage
+        cost = f"${result.total_cost_usd:.4f}" if result.total_cost_usd is not None else "n/a"
+        _log.info(
+            "[%s] done: duration=%.1fs cost=%s",
+            label,
+            result.duration_ms / 1000,
+            cost,
+        )
+        model_usage: dict[str, Any] = result.model_usage or {}
+        if model_usage:
+            for model_name, usage in sorted(model_usage.items()):
+                _log.info(
+                    "[%s]   model=%s input=%s output=%s cache_read=%s cache_write=%s",
+                    label,
+                    model_name,
+                    usage.get("input_tokens", "?"),
+                    usage.get("output_tokens", "?"),
+                    usage.get("cache_read_input_tokens", 0),
+                    usage.get("cache_creation_input_tokens", 0),
                 )
-
-        elif isinstance(message, ResultMessage):
-            result = message
-
-    if result is None:
-        raise RuntimeError("Agent query completed without a ResultMessage")
-    if result.is_error:
-        raise RuntimeError(f"Agent query failed: {result.result}")
-
-    # Turn-level summary
-    _log.info(
-        "[%s] summary: turns=%d (sdk=%d) tool_calls=%d text_blocks=%d",
-        label, turn_count, result.num_turns, tool_count, text_block_count,
-    )
-
-    # Per-call usage
-    cost = f"${result.total_cost_usd:.4f}" if result.total_cost_usd is not None else "n/a"
-    _log.info(
-        "[%s] done: duration=%.1fs cost=%s",
-        label,
-        result.duration_ms / 1000,
-        cost,
-    )
-    model_usage: dict[str, Any] = result.model_usage or {}
-    if model_usage:
-        for model_name, usage in sorted(model_usage.items()):
+        else:
+            usage = result.usage or {}
             _log.info(
                 "[%s]   model=%s input=%s output=%s cache_read=%s cache_write=%s",
                 label,
-                model_name,
+                options.model,
                 usage.get("input_tokens", "?"),
                 usage.get("output_tokens", "?"),
                 usage.get("cache_read_input_tokens", 0),
                 usage.get("cache_creation_input_tokens", 0),
             )
-    else:
-        usage = result.usage or {}
-        _log.info(
-            "[%s]   model=%s input=%s output=%s cache_read=%s cache_write=%s",
-            label,
-            options.model,
-            usage.get("input_tokens", "?"),
-            usage.get("output_tokens", "?"),
-            usage.get("cache_read_input_tokens", 0),
-            usage.get("cache_creation_input_tokens", 0),
-        )
 
-    # Accumulate into run totals if a stats context is active
-    stats = _run_stats.get()
-    if stats is not None:
-        stats.accumulate(result)
+        # Accumulate into run totals if a stats context is active
+        stats = _run_stats.get()
+        if stats is not None:
+            stats.accumulate(result)
 
-    return result
+        return result
+
+    # Unreachable: the loop always either returns or re-raises, but satisfies mypy.
+    assert last_exc is not None
+    raise last_exc
 
 
 async def run_agent_text(
     options: ClaudeAgentOptions,
     prompt: str,
     label: str = "Agent",
+    max_retries: int = 0,
 ) -> str:
     """Run a query and return the text result."""
-    result = await run_agent(options, prompt, label=label)
+    result = await run_agent(options, prompt, label=label, max_retries=max_retries)
     return result.result or ""
 
 
@@ -397,9 +453,10 @@ async def run_agent_structured(
     options: ClaudeAgentOptions,
     prompt: str,
     label: str = "Agent",
+    max_retries: int = 0,
 ) -> dict[str, Any]:
     """Run a query with output_format and return parsed structured output."""
-    result = await run_agent(options, prompt, label=label)
+    result = await run_agent(options, prompt, label=label, max_retries=max_retries)
     if result.structured_output is not None:
         output: dict[str, Any] = result.structured_output
         return output

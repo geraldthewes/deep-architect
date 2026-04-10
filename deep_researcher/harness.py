@@ -256,66 +256,98 @@ async def run_harness(
                 progress.total_rounds, elapsed_total / 60,
             )
 
-            # Generator builds — writes files directly via tool use
-            sprint_status.status = "building"
-            save_progress(output_dir, progress)
-            t0 = time.monotonic()
-            generator_session_id = await run_generator(
-                config.generator,
-                sprint,
-                contract,
-                prd_content,
-                last_result,
-                output_dir,
-                round_num,
-                cli_path=cli_path,
-                session_id=generator_session_id,
-            )
-            logger.info(
-                "[Sprint %d] Generator round %d completed in %.1fs",
-                sprint.number, round_num, time.monotonic() - t0,
-            )
+            # Inner retry loop — recovers from CLI crashes (e.g. disallowed tool call)
+            round_ok = False
+            result: CriticResult | None = None
+            for round_attempt in range(1, t.max_round_retries + 2):
+                try:
+                    # Generator builds — writes files directly via tool use
+                    sprint_status.status = "building"
+                    save_progress(output_dir, progress)
+                    t0 = time.monotonic()
+                    generator_session_id = await run_generator(
+                        config.generator,
+                        sprint,
+                        contract,
+                        prd_content,
+                        last_result,
+                        output_dir,
+                        round_num,
+                        cli_path=cli_path,
+                        session_id=generator_session_id,
+                    )
+                    logger.info(
+                        "[Sprint %d] Generator round %d completed in %.1fs",
+                        sprint.number, round_num, time.monotonic() - t0,
+                    )
 
-            # Detect files written by the generator and auto-commit
-            written = get_modified_files(repo)
-            if written:
-                logger.info(
-                    "[Sprint %d] Generator wrote %d files: %s",
-                    sprint.number, len(written), ", ".join(p.name for p in written),
-                )
-            else:
-                logger.warning("[Sprint %d] Generator produced no file changes", sprint.number)
-            git_commit(
-                repo,
-                f"Generator pass {round_num} - sprint {sprint.number} ({sprint.name})",
-                written,
-            )
+                    # Detect files written by the generator and auto-commit
+                    written = get_modified_files(repo)
+                    if written:
+                        logger.info(
+                            "[Sprint %d] Generator wrote %d files: %s",
+                            sprint.number, len(written), ", ".join(p.name for p in written),
+                        )
+                    else:
+                        logger.warning(
+                            "[Sprint %d] Generator produced no file changes", sprint.number
+                        )
+                    git_commit(
+                        repo,
+                        f"Generator pass {round_num} - sprint {sprint.number} ({sprint.name})",
+                        written,
+                    )
 
-            # Critic evaluates — reads files via tool use
-            sprint_status.status = "evaluating"
-            save_progress(output_dir, progress)
-            t0 = time.monotonic()
-            result = await run_critic(
-                config.critic, contract, output_dir, round_num, cli_path=cli_path
-            )
-            logger.info(
-                "[Sprint %d] Critic round %d completed in %.1fs",
-                sprint.number, round_num, time.monotonic() - t0,
-            )
-            save_feedback(output_dir, sprint.number, round_num, result)
-            save_round_log(
-                output_dir,
-                sprint.number,
-                round_num,
-                {
-                    "sprint": sprint.number,
-                    "round": round_num,
-                    "average_score": result.average_score,
-                    "passed": result.passed,
-                    "feedback_count": len(result.feedback),
-                },
-            )
+                    # Critic evaluates — reads files via tool use
+                    sprint_status.status = "evaluating"
+                    save_progress(output_dir, progress)
+                    t0 = time.monotonic()
+                    result = await run_critic(
+                        config.critic, contract, output_dir, round_num, cli_path=cli_path
+                    )
+                    logger.info(
+                        "[Sprint %d] Critic round %d completed in %.1fs",
+                        sprint.number, round_num, time.monotonic() - t0,
+                    )
+                    save_feedback(output_dir, sprint.number, round_num, result)
+                    save_round_log(
+                        output_dir,
+                        sprint.number,
+                        round_num,
+                        {
+                            "sprint": sprint.number,
+                            "round": round_num,
+                            "average_score": result.average_score,
+                            "passed": result.passed,
+                            "feedback_count": len(result.feedback),
+                        },
+                    )
+                    round_ok = True
+                    break
 
+                except Exception as exc:
+                    logger.error(
+                        "[Sprint %d] Round %d attempt %d/%d FAILED: %s",
+                        sprint.number, round_num, round_attempt, t.max_round_retries + 1, exc,
+                    )
+                    generator_session_id = None  # reset corrupted session
+                    if round_attempt <= t.max_round_retries:
+                        logger.info(
+                            "[Sprint %d] Retrying round %d with fresh generator session...",
+                            sprint.number, round_num,
+                        )
+                    else:
+                        logger.error(
+                            "[Sprint %d] Round %d exhausted all %d attempts",
+                            sprint.number, round_num, t.max_round_retries + 1,
+                        )
+
+            if not round_ok:
+                sprint_status.status = "failed"
+                sprint_status.final_score = last_result.average_score if last_result else 0.0
+                break
+
+            assert result is not None
             progress.total_rounds += 1
             sprint_status.rounds_completed = round_num
             logger.info(
@@ -387,6 +419,16 @@ async def run_harness(
                 sprint.number, t.max_rounds_per_sprint, elapsed_total / 60,
             )
             sprint_status.status = "failed"
+            progress.status = "failed"
+            save_progress(output_dir, progress)
+            return
+
+        if sprint_status.status == "failed":
+            # Round retry exhaustion caused the loop to break before passing
+            logger.error(
+                "[Sprint %d] Sprint failed due to unrecoverable round failure",
+                sprint.number,
+            )
             progress.status = "failed"
             save_progress(output_dir, progress)
             return

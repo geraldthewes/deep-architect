@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 class AgentConfig(BaseModel):
     model: str = "sonnet"  # alias: "sonnet", "opus", "haiku", or full model ID
     max_turns: int = 50
+    max_agent_retries: int = 2
 
 
 class ThresholdConfig(BaseModel):
@@ -18,6 +19,7 @@ class ThresholdConfig(BaseModel):
     max_total_rounds: int = 40
     timeout_hours: float = 3.0
     ping_pong_similarity_threshold: float = 0.85
+    max_round_retries: int = 2
 
 
 def _default_generator() -> AgentConfig:

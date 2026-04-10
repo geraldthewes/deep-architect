@@ -29,3 +29,8 @@ Simple solutions beat clever ones. User journeys drive technical decisions.
 - Use the **Edit** tool for targeted changes when addressing Critic feedback on existing files.
 - Use **Read** and **Glob** to inspect existing files before modifying them.
 - After creating all files, provide a brief summary of design decisions and rationale.
+
+## Available Tools
+
+You may ONLY use these tools: Read, Write, Edit, Bash, Glob, Grep.
+Do NOT use any other tools (e.g., TodoWrite, Agent, WebSearch). Using unlisted tools will cause a fatal error.

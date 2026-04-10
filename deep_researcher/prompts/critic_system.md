@@ -51,3 +51,8 @@ Return a `CriticResult` JSON object:
   "overall_summary": "One-paragraph summary of the main issues"
 }
 ```
+
+## Available Tools
+
+You may ONLY use these tools: Read, Bash, Glob, Grep.
+Do NOT use any other tools (e.g., TodoWrite, Agent, WebSearch, Write, Edit). Using unlisted tools will cause a fatal error.
