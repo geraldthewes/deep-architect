@@ -13,11 +13,17 @@ from claude_agent_sdk import (
     ToolUseBlock,
     query,
 )
+from pydantic import BaseModel
 
 from deep_researcher.config import AgentConfig
 from deep_researcher.logger import get_logger
 
 _log = get_logger(__name__)
+
+
+def json_schema_format(model_class: type[BaseModel]) -> dict[str, Any]:
+    """Build an output_format dict from a Pydantic model's JSON schema."""
+    return {"type": "json_schema", "schema": model_class.model_json_schema()}
 
 
 @dataclass

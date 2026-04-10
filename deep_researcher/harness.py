@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import os
-import re
 import time
 from pathlib import Path
 
@@ -33,20 +31,6 @@ logger = get_logger(__name__)
 console = Console()
 
 
-def _parse_contract_json(raw: str, sprint_number: int) -> SprintContract:
-    """Parse a raw JSON string (possibly fenced) into a SprintContract."""
-    candidates: list[str] = [raw.strip()]
-    for block in re.findall(r"```(?:json)?\s*([\s\S]*?)```", raw):
-        candidates.insert(0, block.strip())
-    for candidate in candidates:
-        try:
-            data = json.loads(candidate)
-            return SprintContract.model_validate(data)
-        except Exception:
-            continue
-    raise ValueError(f"Could not parse contract for sprint {sprint_number}: {raw[:200]}")
-
-
 async def negotiate_contract(
     generator_config: AgentConfig,
     critic_config: AgentConfig,
@@ -58,31 +42,26 @@ async def negotiate_contract(
 ) -> SprintContract:
     """Generator proposes, Critic tightens. Returns final locked contract.
 
-    Saves the proposal to disk immediately after it arrives, then overwrites
-    with the critic-revised version if the critic doesn't approve as-is.
+    Both operations use structured output (JSON schema) so the model is forced
+    onto the schema path and cannot generate criterion-named tool calls.
+    The proposal is saved to disk immediately; the critic revision overwrites it.
     """
     logger.info(f"[Sprint {sprint.number}] Negotiating contract...")
     logger.info(f"[Sprint {sprint.number}] Generator proposing contract...")
-    proposal = await propose_contract(generator_config, sprint, prd_content, cli_path=cli_path)
-
-    # Parse and persist the proposal immediately so it's visible on disk
-    contract = _parse_contract_json(proposal, sprint.number)
+    contract = await propose_contract(generator_config, sprint, prd_content, cli_path=cli_path)
     save_contract(output_dir, contract)
     logger.info(f"[Sprint {sprint.number}] Contract proposal saved.")
 
     logger.info(f"[Sprint {sprint.number}] Critic reviewing contract...")
-    review = await review_contract(critic_config, proposal, cli_path=cli_path)
-    approved = review.upper().startswith("APPROVED")
-    verdict = "approved as-is" if approved else "revised by critic"
+    review = await review_contract(critic_config, contract, cli_path=cli_path)
+    verdict = "approved as-is" if review.approved else "revised by critic"
     logger.info(f"[Sprint {sprint.number}] Contract {verdict}")
 
-    if approved:
+    if review.approved or review.revised_contract is None:
         return contract
 
-    # Critic revised it — parse and overwrite with the tightened version
-    contract = _parse_contract_json(review, sprint.number)
-    save_contract(output_dir, contract)
-    return contract
+    save_contract(output_dir, review.revised_contract)
+    return review.revised_contract
 
 
 async def run_preflight_check(

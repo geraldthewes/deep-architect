@@ -14,3 +14,10 @@ class SprintContract(BaseModel):
     sprint_name: str
     files_to_produce: list[str]
     criteria: list[SprintCriterion] = Field(min_length=3)
+
+
+class ContractReviewResult(BaseModel):
+    """Structured result from a critic contract review."""
+
+    approved: bool
+    revised_contract: SprintContract | None = None

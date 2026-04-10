@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
-from pydantic import BaseModel
 
 from deep_researcher.agents.client import (
+    json_schema_format,
     make_agent_options,
     run_agent_structured,
-    run_agent_text,
 )
 from deep_researcher.config import AgentConfig
-from deep_researcher.models.contract import SprintContract
+from deep_researcher.models.contract import ContractReviewResult, SprintContract
 from deep_researcher.models.feedback import CriticResult, PingPongResult
 from deep_researcher.prompts import load_prompt
 
@@ -19,31 +16,29 @@ from deep_researcher.prompts import load_prompt
 CRITIC_TOOLS = ["Read", "Bash", "Glob", "Grep"]
 
 
-def _json_schema_format(model_class: type[BaseModel]) -> dict[str, Any]:
-    """Build an output_format dict from a Pydantic model's JSON schema."""
-    return {
-        "type": "json_schema",
-        "schema": model_class.model_json_schema(),
-    }
-
-
 async def review_contract(
     config: AgentConfig,
-    proposal_json: str,
+    proposal: SprintContract,
     *,
     cli_path: str | None = None,
-) -> str:
-    """Critic reviews the proposed contract. Returns 'APPROVED' or revised JSON."""
-    prompt = load_prompt("contract_review", contract_json=proposal_json)
+) -> ContractReviewResult:
+    """Critic reviews the proposed contract.
+
+    Uses structured output to bypass the agentic tool-call loop — the model
+    is forced onto the JSON schema path and cannot generate criterion-named
+    tool calls.
+    """
+    prompt = load_prompt("contract_review", contract_json=proposal.model_dump_json(indent=2))
     system_prompt = load_prompt("contract_system")
     options = make_agent_options(
         config,
         system_prompt,
-        allowed_tools=[],  # No tools needed for contract review
+        allowed_tools=[],
         cli_path=cli_path,
+        output_format=json_schema_format(ContractReviewResult),
     )
-    result = await run_agent_text(options, prompt, label="Critic contract-review")
-    return result.strip()
+    raw = await run_agent_structured(options, prompt, label="Critic contract-review")
+    return ContractReviewResult.model_validate(raw)
 
 
 async def run_critic(
@@ -72,7 +67,7 @@ async def run_critic(
         allowed_tools=CRITIC_TOOLS,
         cwd=str(output_dir),
         cli_path=cli_path,
-        output_format=_json_schema_format(CriticResult),
+        output_format=json_schema_format(CriticResult),
     )
 
     label = f"Critic sprint={contract.sprint_number} round={round_num}"
@@ -100,7 +95,7 @@ async def check_ping_pong(
         system_prompt,
         allowed_tools=[],  # No tools needed for ping-pong check
         cli_path=cli_path,
-        output_format=_json_schema_format(PingPongResult),
+        output_format=json_schema_format(PingPongResult),
     )
 
     raw = await run_agent_structured(options, prompt, label="Critic ping-pong-check")

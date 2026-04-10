@@ -1,6 +1,6 @@
 import pytest
 
-from deep_researcher.models.contract import SprintContract, SprintCriterion
+from deep_researcher.models.contract import ContractReviewResult, SprintContract, SprintCriterion
 from deep_researcher.models.feedback import CriterionScore, CriticResult
 
 
@@ -48,6 +48,29 @@ def test_sprint_contract_validation() -> None:
             files_to_produce=["c1-context.md"],
             criteria=[SprintCriterion(name="c1", description="d")],
         )
+
+
+def test_contract_review_result_approved() -> None:
+    r = ContractReviewResult(approved=True, revised_contract=None)
+    assert r.approved is True
+    assert r.revised_contract is None
+
+
+def test_contract_review_result_revised() -> None:
+    contract = SprintContract(
+        sprint_number=1,
+        sprint_name="C1",
+        files_to_produce=["c1-context.md"],
+        criteria=[
+            SprintCriterion(name="c1", description="Criterion 1"),
+            SprintCriterion(name="c2", description="Criterion 2"),
+            SprintCriterion(name="c3", description="Criterion 3"),
+        ],
+    )
+    r = ContractReviewResult(approved=False, revised_contract=contract)
+    assert r.approved is False
+    assert r.revised_contract is not None
+    assert r.revised_contract.sprint_number == 1
 
 
 def test_sprint_contract_valid() -> None:

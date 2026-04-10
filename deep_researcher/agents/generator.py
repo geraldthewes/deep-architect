@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from deep_researcher.agents.client import (
+    json_schema_format,
     make_agent_options,
     run_agent,
-    run_agent_text,
+    run_agent_structured,
 )
 from deep_researcher.config import AgentConfig
 from deep_researcher.models.contract import SprintContract
@@ -76,8 +77,12 @@ async def propose_contract(
     prd_content: str,
     *,
     cli_path: str | None = None,
-) -> str:
-    """Generator proposes a sprint contract. Returns raw JSON string."""
+) -> SprintContract:
+    """Generator proposes a sprint contract.
+
+    Uses structured output so the model is forced onto the JSON schema path
+    and cannot generate spurious tool calls.
+    """
     prompt = load_prompt(
         "contract_proposal",
         prd=prd_content,
@@ -91,8 +96,11 @@ async def propose_contract(
     options = make_agent_options(
         config,
         system_prompt,
-        allowed_tools=[],  # No tools needed for contract proposal
+        allowed_tools=[],
         cli_path=cli_path,
+        output_format=json_schema_format(SprintContract),
     )
 
-    return await run_agent_text(options, prompt, label=f"Generator contract sprint={sprint.number}")
+    label = f"Generator contract sprint={sprint.number}"
+    raw = await run_agent_structured(options, prompt, label=label)
+    return SprintContract.model_validate(raw)
