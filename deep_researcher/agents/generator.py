@@ -87,7 +87,7 @@ async def propose_contract(
         primary_files=str(sprint.primary_files),
     )
 
-    system_prompt = load_prompt("generator_system")
+    system_prompt = load_prompt("contract_system")
     options = make_agent_options(
         config,
         system_prompt,

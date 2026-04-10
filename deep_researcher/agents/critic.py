@@ -35,7 +35,7 @@ async def review_contract(
 ) -> str:
     """Critic reviews the proposed contract. Returns 'APPROVED' or revised JSON."""
     prompt = load_prompt("contract_review", contract_json=proposal_json)
-    system_prompt = load_prompt("critic_system")
+    system_prompt = load_prompt("contract_system")
     options = make_agent_options(
         config,
         system_prompt,

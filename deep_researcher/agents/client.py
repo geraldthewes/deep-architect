@@ -145,9 +145,15 @@ def make_agent_options(
     def _stderr_cb(line: str) -> None:
         _log.warning("[claude stderr] %s", line)
 
+    # An empty allowed_tools list is falsy, so the SDK would NOT pass --allowedTools,
+    # leaving all default tools unrestricted.  Use tools=[] instead, which maps to
+    # --tools "" and actually disables all tools.
+    sdk_tools: list[str] | None = [] if not allowed_tools else None
+
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
         permission_mode="bypassPermissions",
+        tools=sdk_tools,
         allowed_tools=allowed_tools,
         model=config.model,
         max_turns=config.max_turns,
@@ -156,6 +162,11 @@ def make_agent_options(
         output_format=output_format,
         resume=resume,
         stderr=_stderr_cb,
+        # Disable extended thinking for SDK subprocesses — it makes every response
+        # very slow and expensive, which is counterproductive in an automation loop.
+        # The --settings flag merges with ~/.claude/settings.json, so this only
+        # overrides alwaysThinkingEnabled without touching other user settings.
+        settings='{"alwaysThinkingEnabled": false}',
     )
 
 

@@ -5,6 +5,7 @@ from deep_researcher.prompts import load_prompt
 EXPECTED_PROMPTS = [
     "generator_system",
     "critic_system",
+    "contract_system",
     "contract_proposal",
     "contract_review",
     "ping_pong_check",

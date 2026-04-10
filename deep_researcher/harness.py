@@ -33,38 +33,96 @@ logger = get_logger(__name__)
 console = Console()
 
 
-async def negotiate_contract(
-    generator_config: AgentConfig,
-    critic_config: AgentConfig,
-    sprint: SprintDefinition,
-    prd_content: str,
-    *,
-    cli_path: str | None = None,
-) -> SprintContract:
-    """Generator proposes, Critic tightens. Returns final locked contract."""
-    logger.info(f"[Sprint {sprint.number}] Negotiating contract...")
-    logger.info(f"[Sprint {sprint.number}] Generator proposing contract...")
-    proposal = await propose_contract(generator_config, sprint, prd_content, cli_path=cli_path)
-    logger.info(f"[Sprint {sprint.number}] Critic reviewing contract...")
-    review = await review_contract(critic_config, proposal, cli_path=cli_path)
-    approved = review.upper().startswith("APPROVED")
-    verdict = "approved as-is" if approved else "revised by critic"
-    logger.info(f"[Sprint {sprint.number}] Contract {verdict}")
-    final_json = proposal if approved else review
-
-    # Parse with fallback — try code blocks first, then raw text
-    candidates: list[str] = [final_json.strip()]
-    for block in re.findall(r"```(?:json)?\s*([\s\S]*?)```", final_json):
+def _parse_contract_json(raw: str, sprint_number: int) -> SprintContract:
+    """Parse a raw JSON string (possibly fenced) into a SprintContract."""
+    candidates: list[str] = [raw.strip()]
+    for block in re.findall(r"```(?:json)?\s*([\s\S]*?)```", raw):
         candidates.insert(0, block.strip())
-
     for candidate in candidates:
         try:
             data = json.loads(candidate)
             return SprintContract.model_validate(data)
         except Exception:
             continue
+    raise ValueError(f"Could not parse contract for sprint {sprint_number}: {raw[:200]}")
 
-    raise ValueError(f"Could not parse contract for sprint {sprint.number}")
+
+async def negotiate_contract(
+    generator_config: AgentConfig,
+    critic_config: AgentConfig,
+    sprint: SprintDefinition,
+    prd_content: str,
+    output_dir: Path,
+    *,
+    cli_path: str | None = None,
+) -> SprintContract:
+    """Generator proposes, Critic tightens. Returns final locked contract.
+
+    Saves the proposal to disk immediately after it arrives, then overwrites
+    with the critic-revised version if the critic doesn't approve as-is.
+    """
+    logger.info(f"[Sprint {sprint.number}] Negotiating contract...")
+    logger.info(f"[Sprint {sprint.number}] Generator proposing contract...")
+    proposal = await propose_contract(generator_config, sprint, prd_content, cli_path=cli_path)
+
+    # Parse and persist the proposal immediately so it's visible on disk
+    contract = _parse_contract_json(proposal, sprint.number)
+    save_contract(output_dir, contract)
+    logger.info(f"[Sprint {sprint.number}] Contract proposal saved.")
+
+    logger.info(f"[Sprint {sprint.number}] Critic reviewing contract...")
+    review = await review_contract(critic_config, proposal, cli_path=cli_path)
+    approved = review.upper().startswith("APPROVED")
+    verdict = "approved as-is" if approved else "revised by critic"
+    logger.info(f"[Sprint {sprint.number}] Contract {verdict}")
+
+    if approved:
+        return contract
+
+    # Critic revised it — parse and overwrite with the tightened version
+    contract = _parse_contract_json(review, sprint.number)
+    save_contract(output_dir, contract)
+    return contract
+
+
+async def run_preflight_check(
+    generator_config: AgentConfig,
+    critic_config: AgentConfig,
+    *,
+    cli_path: str | None = None,
+) -> None:
+    """Send a minimal prompt to each model to verify connectivity before the expensive run.
+
+    Raises RuntimeError if either agent fails to respond.
+    """
+    logger.info("Running preflight check...")
+    prompt = "Reply with exactly one word: OK"
+
+    failures: list[str] = []
+    for role, cfg in [("Generator", generator_config), ("Critic", critic_config)]:
+        options = make_agent_options(
+            cfg,
+            "",  # No system prompt needed for a smoke test
+            allowed_tools=[],
+            cli_path=cli_path,
+        )
+        try:
+            response = await run_agent_text(options, prompt, label=f"Preflight {role}")
+            if response.strip():
+                logger.info(f"  {role} ({cfg.model}): OK — responded: {response.strip()[:80]}")
+            else:
+                failures.append(f"{role} ({cfg.model}): empty response")
+                logger.error(f"  {role} ({cfg.model}): FAIL — empty response")
+        except Exception as exc:
+            failures.append(f"{role} ({cfg.model}): {exc}")
+            logger.error(f"  {role} ({cfg.model}): FAIL — {exc}")
+
+    if failures:
+        raise RuntimeError(
+            "Preflight check failed — fix the configuration before re-running:\n"
+            + "\n".join(f"  • {f}" for f in failures)
+        )
+    logger.info("Preflight check passed.")
 
 
 async def run_final_agreement(
@@ -148,6 +206,8 @@ async def run_harness(
 
     cli_path = config.cli_path
 
+    await run_preflight_check(config.generator, config.critic, cli_path=cli_path)
+
     # Resume or initialize progress
     if resume and (output_dir / "progress.json").exists():
         progress = load_progress(output_dir)
@@ -171,11 +231,10 @@ async def run_harness(
         logger.info(f"SPRINT {sprint.number}/{len(SPRINTS)}: {sprint.name}")
         logger.info("=" * 60)
 
-        # Contract negotiation
+        # Contract negotiation — saves proposal then final version to disk internally
         contract = await negotiate_contract(
-            config.generator, config.critic, sprint, prd_content, cli_path=cli_path
+            config.generator, config.critic, sprint, prd_content, output_dir, cli_path=cli_path
         )
-        save_contract(output_dir, contract)
 
         sprint_status = progress.sprint_statuses[sprint.number - 1]
         sprint_status.status = "building"
