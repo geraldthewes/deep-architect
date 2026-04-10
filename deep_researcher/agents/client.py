@@ -28,8 +28,10 @@ from deep_researcher.logger import get_logger
 _log = get_logger(__name__)
 
 
-# Tool names the SDK legitimately provides. Anything else is a hallucinated tool call.
+# Tool names the SDK legitimately provides.
 KNOWN_TOOLS: frozenset[str] = frozenset({"Read", "Write", "Edit", "Bash", "Glob", "Grep"})
+# Internal CLI tool used when --json-schema is active; not a user tool but not a hallucination.
+_STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
 
 
 def json_schema_format(model_class: type[BaseModel]) -> dict[str, Any]:
@@ -300,7 +302,12 @@ async def run_agent(
                     )
                 elif isinstance(block, ToolUseBlock):
                     tool_count += 1
-                    if block.name not in KNOWN_TOOLS:
+                    if block.name == _STRUCTURED_OUTPUT_TOOL:
+                        _log.info(
+                            "[%s] turn=%d StructuredOutput (keys: %s)",
+                            label, turn_count, list(block.input.keys()),
+                        )
+                    elif block.name not in KNOWN_TOOLS:
                         _log.warning(
                             "[%s] turn=%d unexpected tool call: %s (input keys: %s)",
                             label, turn_count, block.name, list(block.input.keys()),
