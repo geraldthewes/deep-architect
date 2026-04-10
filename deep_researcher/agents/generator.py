@@ -3,10 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from deep_researcher.agents.client import (
-    json_schema_format,
     make_agent_options,
     run_agent,
-    run_agent_structured,
+    run_simple_structured,
 )
 from deep_researcher.config import AgentConfig
 from deep_researcher.logger import get_logger
@@ -94,13 +93,9 @@ async def propose_contract(
     sprint: SprintDefinition,
     prd_content: str,
     *,
-    cli_path: str | None = None,
+    cli_path: str | None = None,  # unused; kept for API compatibility
 ) -> SprintContract:
-    """Generator proposes a sprint contract.
-
-    Uses structured output so the model is forced onto the JSON schema path
-    and cannot generate spurious tool calls.
-    """
+    """Generator proposes a sprint contract via pydantic-ai (no agentic loop)."""
     prompt = load_prompt(
         "contract_proposal",
         prd=prd_content,
@@ -109,16 +104,6 @@ async def propose_contract(
         sprint_description=sprint.description,
         primary_files=str(sprint.primary_files),
     )
-
     system_prompt = load_prompt("contract_system")
-    options = make_agent_options(
-        config,
-        system_prompt,
-        allowed_tools=[],
-        cli_path=cli_path,
-        output_format=json_schema_format(SprintContract),
-    )
-
     label = f"Generator contract sprint={sprint.number}"
-    raw = await run_agent_structured(options, prompt, label=label)
-    return SprintContract.model_validate(raw)
+    return await run_simple_structured(config, system_prompt, prompt, SprintContract, label=label)

@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "claude-agent-sdk>=0.1.58",
     "pydantic>=2.0",
+    "pydantic-ai-slim[anthropic]>=1.0",
     "typer>=0.12",
     "gitpython>=3.1",
     "rich>=13.0",

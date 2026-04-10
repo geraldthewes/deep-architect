@@ -1,15 +1,17 @@
-"""Tests for make_agent_options configuration logic.
+"""Tests for client.py configuration logic.
 
-Does NOT test actual LLM calls — only the ClaudeAgentOptions construction.
+Does NOT test actual LLM calls — only the ClaudeAgentOptions construction
+and helper functions.
 """
 from __future__ import annotations
 
+import pytest
 from pydantic import BaseModel
 
 from deep_researcher.agents.client import (
-    STRUCTURED_OUTPUT_MAX_TURNS,
     json_schema_format,
     make_agent_options,
+    resolve_model_id,
 )
 from deep_researcher.config import AgentConfig
 
@@ -36,13 +38,45 @@ def test_json_schema_format_wraps_pydantic_schema() -> None:
 
 
 # ---------------------------------------------------------------------------
-# make_agent_options — max_turns
+# resolve_model_id
 # ---------------------------------------------------------------------------
 
 
-def test_max_turns_no_tools_with_output_format_uses_structured_cap() -> None:
-    """allowed_tools=[] + output_format → capped at STRUCTURED_OUTPUT_MAX_TURNS."""
-    config = AgentConfig(model="test-model", max_turns=30)
+def test_resolve_model_id_sonnet_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-standard")
+    assert resolve_model_id("sonnet") == "claude-sonnet-standard"
+
+
+def test_resolve_model_id_opus_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-standard")
+    assert resolve_model_id("opus") == "claude-opus-standard"
+
+
+def test_resolve_model_id_haiku_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-standard")
+    assert resolve_model_id("haiku") == "claude-haiku-standard"
+
+
+def test_resolve_model_id_falls_back_to_alias_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_DEFAULT_SONNET_MODEL", raising=False)
+    assert resolve_model_id("sonnet") == "sonnet"
+
+
+def test_resolve_model_id_passthrough_for_full_model_id() -> None:
+    # A full model ID that isn't a known alias is returned unchanged.
+    assert resolve_model_id("claude-sonnet-4-6-20251001") == "claude-sonnet-4-6-20251001"
+
+
+# ---------------------------------------------------------------------------
+# make_agent_options — max_turns always uses config.max_turns
+# ---------------------------------------------------------------------------
+
+
+def test_max_turns_uses_config_regardless_of_output_format() -> None:
+    """make_agent_options always uses config.max_turns (no internal cap)."""
+    config = AgentConfig(model="test-model", max_turns=25)
     opts = make_agent_options(
         config,
         "system",
@@ -50,14 +84,10 @@ def test_max_turns_no_tools_with_output_format_uses_structured_cap() -> None:
         cli_path=_FAKE_CLI,
         output_format=json_schema_format(AgentConfig),
     )
-    assert opts.max_turns == STRUCTURED_OUTPUT_MAX_TURNS
-    # Cap must be < 30 (prevents runaway loops) and > 1 (protocol needs ≥2 turns).
-    assert STRUCTURED_OUTPUT_MAX_TURNS > 1
-    assert STRUCTURED_OUTPUT_MAX_TURNS < 30
+    assert opts.max_turns == 25
 
 
-def test_max_turns_with_tools_and_output_format_uses_config() -> None:
-    """allowed_tools non-empty + output_format → config.max_turns (critic needs tool turns)."""
+def test_max_turns_with_tools_uses_config() -> None:
     config = AgentConfig(model="test-model", max_turns=20)
     opts = make_agent_options(
         config,
@@ -70,7 +100,6 @@ def test_max_turns_with_tools_and_output_format_uses_config() -> None:
 
 
 def test_max_turns_no_output_format_uses_config() -> None:
-    """No output_format → config.max_turns regardless of allowed_tools."""
     config = AgentConfig(model="test-model", max_turns=15)
     opts = make_agent_options(
         config,
@@ -79,17 +108,6 @@ def test_max_turns_no_output_format_uses_config() -> None:
         cli_path=_FAKE_CLI,
     )
     assert opts.max_turns == 15
-
-
-def test_max_turns_with_tools_no_output_format_uses_config() -> None:
-    config = AgentConfig(model="test-model", max_turns=50)
-    opts = make_agent_options(
-        config,
-        "system",
-        allowed_tools=["Read", "Write", "Bash"],
-        cli_path=_FAKE_CLI,
-    )
-    assert opts.max_turns == 50
 
 
 # ---------------------------------------------------------------------------

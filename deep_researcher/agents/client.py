@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -16,6 +18,9 @@ from claude_agent_sdk import (
     query,
 )
 from pydantic import BaseModel
+from pydantic_ai import Agent
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from deep_researcher.config import AgentConfig
 from deep_researcher.logger import get_logger
@@ -30,6 +35,85 @@ KNOWN_TOOLS: frozenset[str] = frozenset({"Read", "Write", "Edit", "Bash", "Glob"
 def json_schema_format(model_class: type[BaseModel]) -> dict[str, Any]:
     """Build an output_format dict from a Pydantic model's JSON schema."""
     return {"type": "json_schema", "schema": model_class.model_json_schema()}
+
+
+# ---------------------------------------------------------------------------
+# Simple structured output — pydantic-ai (no agentic loop, no tool use)
+# ---------------------------------------------------------------------------
+
+_T = TypeVar("_T", bound=BaseModel)  # noqa: UP047
+
+# Env-var names that map model aliases to the actual model IDs at the litellm proxy.
+_MODEL_ALIAS_ENV: dict[str, str] = {
+    "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+}
+
+
+def resolve_model_id(alias: str) -> str:
+    """Resolve a model alias (sonnet/opus/haiku) to the real model ID via env vars.
+
+    Falls back to the alias itself if no env var is set, so a full model ID
+    can also be passed directly.
+    """
+    env_var = _MODEL_ALIAS_ENV.get(alias)
+    if env_var:
+        return os.environ.get(env_var, alias)
+    return alias
+
+
+def _build_pydantic_model(config: AgentConfig) -> AnthropicModel:
+    """Build a pydantic-ai AnthropicModel pointed at the configured proxy."""
+    api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY", "")
+    base_url = os.environ.get("ANTHROPIC_BASE_URL")
+    provider = AnthropicProvider(api_key=api_key, base_url=base_url)
+    model_id = resolve_model_id(config.model)
+    return AnthropicModel(model_id, provider=provider)
+
+
+async def run_simple_structured(  # noqa: UP047
+    config: AgentConfig,
+    system_prompt: str,
+    prompt: str,
+    output_type: type[_T],
+    label: str = "Agent",
+) -> _T:
+    """Single structured-output call via pydantic-ai (no tools, no agentic loop).
+
+    Use this for contract proposal/review and ping-pong check — queries that
+    only need JSON output.  pydantic-ai handles schema enforcement and retries
+    internally without spawning a CLI subprocess or an agentic turn loop.
+    """
+    model = _build_pydantic_model(config)
+    agent: Agent[None, _T] = Agent(model, output_type=output_type, instructions=system_prompt)
+
+    t0 = time.monotonic()
+    result = await agent.run(prompt)
+    elapsed = time.monotonic() - t0
+
+    usage = result.usage()
+    model_id = resolve_model_id(config.model)
+    _log.info(
+        "[%s] done: duration=%.1fs input=%d output=%d requests=%d model=%s",
+        label, elapsed,
+        usage.input_tokens or 0,
+        usage.output_tokens or 0,
+        usage.requests,
+        model_id,
+    )
+
+    # Accumulate into run totals if a stats context is active
+    stats = _run_stats.get()
+    if stats is not None:
+        stats.num_calls += 1
+        stats.num_turns += usage.requests
+        stats.duration_ms += int(elapsed * 1000)
+        ms = stats._model(model_id)
+        ms.input_tokens += usage.input_tokens or 0
+        ms.output_tokens += usage.output_tokens or 0
+
+    return result.output
 
 
 @dataclass
@@ -142,13 +226,6 @@ def _resolve_cli_path(override: str | None = None) -> str:
     return path
 
 
-# Max turns for tool-less structured output calls (--json-schema without --allowedTools).
-# The --json-schema protocol needs ≥2 turns (initial response + StructuredOutput call),
-# so this must be > 1.  It is deliberately lower than config.max_turns to prevent
-# criterion-named tool-call loops when the model ignores the no-tools constraint.
-STRUCTURED_OUTPUT_MAX_TURNS: int = 8
-
-
 def make_agent_options(
     config: AgentConfig,
     system_prompt: str,
@@ -159,7 +236,11 @@ def make_agent_options(
     output_format: dict[str, Any] | None = None,
     resume: str | None = None,
 ) -> ClaudeAgentOptions:
-    """Build ClaudeAgentOptions for a query."""
+    """Build ClaudeAgentOptions for an agentic query (generator or critic).
+
+    For simple structured output without tools, use run_simple_structured()
+    instead — it uses pydantic-ai directly and avoids the CLI turn-loop issues.
+    """
 
     def _stderr_cb(line: str) -> None:
         _log.warning("[claude stderr] %s", line)
@@ -169,22 +250,13 @@ def make_agent_options(
     # --tools "" and actually disables all tools.
     sdk_tools: list[str] | None = [] if not allowed_tools else None
 
-    # Structured output calls WITHOUT tools need a few turns for the --json-schema
-    # protocol (model response + StructuredOutput tool call), but must be capped to
-    # prevent hallucinated-tool retry storms.  When tools ARE provided (e.g. run_critic),
-    # keep the full config.max_turns so the agent can read files first.
-    if output_format is not None and not allowed_tools:
-        max_turns = STRUCTURED_OUTPUT_MAX_TURNS
-    else:
-        max_turns = config.max_turns
-
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
         permission_mode="bypassPermissions",
         tools=sdk_tools,
         allowed_tools=allowed_tools,
         model=config.model,
-        max_turns=max_turns,
+        max_turns=config.max_turns,
         cwd=cwd,
         cli_path=_resolve_cli_path(cli_path),
         output_format=output_format,

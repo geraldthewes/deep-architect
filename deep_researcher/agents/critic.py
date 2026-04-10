@@ -6,6 +6,7 @@ from deep_researcher.agents.client import (
     json_schema_format,
     make_agent_options,
     run_agent_structured,
+    run_simple_structured,
 )
 from deep_researcher.config import AgentConfig
 from deep_researcher.logger import get_logger
@@ -23,25 +24,14 @@ async def review_contract(
     config: AgentConfig,
     proposal: SprintContract,
     *,
-    cli_path: str | None = None,
+    cli_path: str | None = None,  # unused; kept for API compatibility
 ) -> ContractReviewResult:
-    """Critic reviews the proposed contract.
-
-    Uses structured output to bypass the agentic tool-call loop — the model
-    is forced onto the JSON schema path and cannot generate criterion-named
-    tool calls.
-    """
+    """Critic reviews the proposed contract via pydantic-ai (no agentic loop)."""
     prompt = load_prompt("contract_review", contract_json=proposal.model_dump_json(indent=2))
     system_prompt = load_prompt("contract_system")
-    options = make_agent_options(
-        config,
-        system_prompt,
-        allowed_tools=[],
-        cli_path=cli_path,
-        output_format=json_schema_format(ContractReviewResult),
+    result = await run_simple_structured(
+        config, system_prompt, prompt, ContractReviewResult, label="Critic contract-review"
     )
-    raw = await run_agent_structured(options, prompt, label="Critic contract-review")
-    result = ContractReviewResult.model_validate(raw)
     verdict = "approved" if result.approved else "revised"
     _log.info("Contract review verdict: %s", verdict)
     return result
@@ -92,23 +82,15 @@ async def check_ping_pong(
     current: CriticResult,
     previous: CriticResult,
     *,
-    cli_path: str | None = None,
+    cli_path: str | None = None,  # unused; kept for API compatibility
 ) -> PingPongResult:
-    """Use critic LLM to detect ping-pong / diminishing returns."""
+    """Detect ping-pong / diminishing returns via pydantic-ai (no agentic loop)."""
     prompt = load_prompt(
         "ping_pong_check",
         previous_summary=previous.overall_summary,
         current_summary=current.overall_summary,
     )
-
     system_prompt = load_prompt("critic_system")
-    options = make_agent_options(
-        config,
-        system_prompt,
-        allowed_tools=[],  # No tools needed for ping-pong check
-        cli_path=cli_path,
-        output_format=json_schema_format(PingPongResult),
+    return await run_simple_structured(
+        config, system_prompt, prompt, PingPongResult, label="Critic ping-pong-check"
     )
-
-    raw = await run_agent_structured(options, prompt, label="Critic ping-pong-check")
-    return PingPongResult.model_validate(raw)
