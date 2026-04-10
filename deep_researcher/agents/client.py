@@ -9,7 +9,9 @@ from typing import Any
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    RateLimitEvent,
     ResultMessage,
+    TextBlock,
     ToolUseBlock,
     query,
 )
@@ -19,6 +21,10 @@ from deep_researcher.config import AgentConfig
 from deep_researcher.logger import get_logger
 
 _log = get_logger(__name__)
+
+
+# Tool names the SDK legitimately provides. Anything else is a hallucinated tool call.
+KNOWN_TOOLS: frozenset[str] = frozenset({"Read", "Write", "Edit", "Bash", "Glob", "Grep"})
 
 
 def json_schema_format(model_class: type[BaseModel]) -> dict[str, Any]:
@@ -156,13 +162,18 @@ def make_agent_options(
     # --tools "" and actually disables all tools.
     sdk_tools: list[str] | None = [] if not allowed_tools else None
 
+    # Structured output calls must be single-shot: the model cannot use tools, so
+    # allowing multiple turns just causes it to retry failed tool calls until max_turns
+    # is exhausted.  Force max_turns=1 whenever output_format is specified.
+    max_turns = 1 if output_format is not None else config.max_turns
+
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
         permission_mode="bypassPermissions",
         tools=sdk_tools,
         allowed_tools=allowed_tools,
         model=config.model,
-        max_turns=config.max_turns,
+        max_turns=max_turns,
         cwd=cwd,
         cli_path=_resolve_cli_path(cli_path),
         output_format=output_format,
@@ -183,11 +194,51 @@ async def run_agent(
 ) -> ResultMessage:
     """Run a query and return the ResultMessage."""
     result: ResultMessage | None = None
+    turn_count = 0
+    tool_count = 0
+    text_block_count = 0
+
     async for message in query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
+            turn_count += 1
+
+            if message.error is not None:
+                _log.warning("[%s] turn=%d API error: %s", label, turn_count, message.error)
+
             for block in message.content:
-                if isinstance(block, ToolUseBlock):
-                    _log.info("[%s] %s", label, _tool_summary(block))
+                if isinstance(block, TextBlock):
+                    text_block_count += 1
+                    snippet = block.text[:200].replace("\n", " ")
+                    if len(block.text) > 200:
+                        snippet += "..."
+                    _log.debug(
+                        "[%s] turn=%d text (%d chars): %s",
+                        label, turn_count, len(block.text), snippet,
+                    )
+                elif isinstance(block, ToolUseBlock):
+                    tool_count += 1
+                    if block.name not in KNOWN_TOOLS:
+                        _log.warning(
+                            "[%s] turn=%d unexpected tool call: %s (input keys: %s)",
+                            label, turn_count, block.name, list(block.input.keys()),
+                        )
+                    else:
+                        _log.info("[%s] turn=%d %s", label, turn_count, _tool_summary(block))
+
+        elif isinstance(message, RateLimitEvent):
+            info = message.rate_limit_info
+            if info.status == "rejected":
+                _log.error(
+                    "[%s] Rate limit REJECTED (type=%s resets_at=%s)",
+                    label, info.rate_limit_type, info.resets_at,
+                )
+            elif info.status == "allowed_warning":
+                util_pct = f"{info.utilization * 100:.0f}%" if info.utilization is not None else "?"
+                _log.warning(
+                    "[%s] Rate limit warning (type=%s utilization=%s)",
+                    label, info.rate_limit_type, util_pct,
+                )
+
         elif isinstance(message, ResultMessage):
             result = message
 
@@ -196,12 +247,17 @@ async def run_agent(
     if result.is_error:
         raise RuntimeError(f"Agent query failed: {result.result}")
 
-    # Log per-call usage
+    # Turn-level summary
+    _log.info(
+        "[%s] summary: turns=%d (sdk=%d) tool_calls=%d text_blocks=%d",
+        label, turn_count, result.num_turns, tool_count, text_block_count,
+    )
+
+    # Per-call usage
     cost = f"${result.total_cost_usd:.4f}" if result.total_cost_usd is not None else "n/a"
     _log.info(
-        "[%s] done: turns=%d duration=%.1fs cost=%s",
+        "[%s] done: duration=%.1fs cost=%s",
         label,
-        result.num_turns,
         result.duration_ms / 1000,
         cost,
     )

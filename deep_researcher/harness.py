@@ -211,8 +211,13 @@ async def run_harness(
         logger.info("=" * 60)
 
         # Contract negotiation — saves proposal then final version to disk internally
+        t0 = time.monotonic()
         contract = await negotiate_contract(
             config.generator, config.critic, sprint, prd_content, output_dir, cli_path=cli_path
+        )
+        logger.info(
+            "[Sprint %d] Contract negotiation completed in %.1fs (%d criteria)",
+            sprint.number, time.monotonic() - t0, len(contract.criteria),
         )
 
         sprint_status = progress.sprint_statuses[sprint.number - 1]
@@ -226,24 +231,35 @@ async def run_harness(
 
         for round_num in range(1, t.max_rounds_per_sprint + 1):
             # Global safety checks
+            elapsed_total = time.time() - start_time
             if progress.total_rounds >= t.max_total_rounds:
-                logger.error("Max total rounds reached — stopping.")
+                logger.error(
+                    "Max total rounds reached (elapsed=%.1fm) — stopping.",
+                    elapsed_total / 60,
+                )
                 progress.status = "failed"
                 save_progress(output_dir, progress)
                 return
 
-            elapsed = time.time() - start_time
-            if elapsed > t.timeout_hours * 3600:
-                logger.error("3-hour timeout reached — stopping.")
+            if elapsed_total > t.timeout_hours * 3600:
+                logger.error(
+                    "Timeout reached (elapsed=%.1fm, limit=%.0fh) — stopping.",
+                    elapsed_total / 60, t.timeout_hours,
+                )
                 progress.status = "failed"
                 save_progress(output_dir, progress)
                 return
 
-            logger.info(f"[Sprint {sprint.number}] Round {round_num}")
+            logger.info(
+                "[Sprint %d] Round %d/%d (total_rounds=%d elapsed=%.1fm)",
+                sprint.number, round_num, t.max_rounds_per_sprint,
+                progress.total_rounds, elapsed_total / 60,
+            )
 
             # Generator builds — writes files directly via tool use
             sprint_status.status = "building"
             save_progress(output_dir, progress)
+            t0 = time.monotonic()
             generator_session_id = await run_generator(
                 config.generator,
                 sprint,
@@ -255,9 +271,20 @@ async def run_harness(
                 cli_path=cli_path,
                 session_id=generator_session_id,
             )
+            logger.info(
+                "[Sprint %d] Generator round %d completed in %.1fs",
+                sprint.number, round_num, time.monotonic() - t0,
+            )
 
             # Detect files written by the generator and auto-commit
             written = get_modified_files(repo)
+            if written:
+                logger.info(
+                    "[Sprint %d] Generator wrote %d files: %s",
+                    sprint.number, len(written), ", ".join(p.name for p in written),
+                )
+            else:
+                logger.warning("[Sprint %d] Generator produced no file changes", sprint.number)
             git_commit(
                 repo,
                 f"Generator pass {round_num} - sprint {sprint.number} ({sprint.name})",
@@ -267,8 +294,13 @@ async def run_harness(
             # Critic evaluates — reads files via tool use
             sprint_status.status = "evaluating"
             save_progress(output_dir, progress)
+            t0 = time.monotonic()
             result = await run_critic(
                 config.critic, contract, output_dir, round_num, cli_path=cli_path
+            )
+            logger.info(
+                "[Sprint %d] Critic round %d completed in %.1fs",
+                sprint.number, round_num, time.monotonic() - t0,
             )
             save_feedback(output_dir, sprint.number, round_num, result)
             save_round_log(
@@ -287,15 +319,35 @@ async def run_harness(
             progress.total_rounds += 1
             sprint_status.rounds_completed = round_num
             logger.info(
-                f"[Sprint {sprint.number}] Round {round_num}: "
-                f"avg={result.average_score:.1f} passed={result.passed}"
+                "[Sprint %d] Round %d result: avg=%.1f passed=%s",
+                sprint.number, round_num, result.average_score, result.passed,
             )
+            for f in result.feedback:
+                logger.info(
+                    "  %s: %.1f/10 [%s] %s",
+                    f.criterion, f.score, f.severity, f.details[:120],
+                )
+
+            # Score trajectory vs previous round
+            if last_result is not None:
+                delta = result.average_score - last_result.average_score
+                if delta > 0.05:
+                    direction = "improved"
+                elif delta < -0.05:
+                    direction = "regressed"
+                else:
+                    direction = "unchanged"
+                logger.info(
+                    "[Sprint %d] Score trajectory: %.1f -> %.1f (%+.1f, %s)",
+                    sprint.number, last_result.average_score, result.average_score,
+                    delta, direction,
+                )
 
             # Exit criteria
             if sprint_passes(result, t.min_score):
                 consecutive_passes += 1
                 logger.info(
-                    f"Consecutive passes: {consecutive_passes}/{t.consecutive_passing_rounds}"
+                    "Consecutive passes: %d/%d", consecutive_passes, t.consecutive_passing_rounds
                 )
                 if consecutive_passes >= t.consecutive_passing_rounds:
                     logger.info(f"Sprint {sprint.number} PASSED")
@@ -320,12 +372,19 @@ async def run_harness(
                     sprint_status.status = "passed"
                     sprint_status.final_score = result.average_score
                     break
+                else:
+                    logger.debug(
+                        "[Sprint %d] Ping-pong check clear (similarity=%.2f threshold=%.2f)",
+                        sprint.number, pp.similarity_score, t.ping_pong_similarity_threshold,
+                    )
 
             last_result = result
         else:
             # Max rounds exhausted without passing
+            elapsed_total = time.time() - start_time
             logger.error(
-                f"Sprint {sprint.number} FAILED after {t.max_rounds_per_sprint} rounds"
+                "[Sprint %d] FAILED after %d rounds (elapsed=%.1fm)",
+                sprint.number, t.max_rounds_per_sprint, elapsed_total / 60,
             )
             sprint_status.status = "failed"
             progress.status = "failed"
@@ -339,5 +398,9 @@ async def run_harness(
     await run_final_agreement(config.generator, config.critic, output_dir, cli_path=cli_path)
     progress.status = "complete"
     save_progress(output_dir, progress)
-    logger.info("Harness COMPLETE — architecture is production-ready")
+    total_elapsed = time.time() - start_time
+    logger.info(
+        "Harness COMPLETE in %.1f minutes — architecture is production-ready",
+        total_elapsed / 60,
+    )
     run_stats.log_summary()

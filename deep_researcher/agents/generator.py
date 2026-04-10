@@ -9,10 +9,13 @@ from deep_researcher.agents.client import (
     run_agent_structured,
 )
 from deep_researcher.config import AgentConfig
+from deep_researcher.logger import get_logger
 from deep_researcher.models.contract import SprintContract
 from deep_researcher.models.feedback import CriticResult
 from deep_researcher.prompts import load_prompt
 from deep_researcher.sprints import SprintDefinition
+
+_log = get_logger(__name__)
 
 # Tools the generator can use: full agentic access to write and inspect files
 GENERATOR_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
@@ -31,6 +34,21 @@ async def run_generator(
     session_id: str | None = None,
 ) -> str | None:
     """Run the Generator for one round. Returns session_id for continuation across rounds."""
+    if session_id:
+        _log.info(
+            "[Generator sprint=%d round=%d] Continuing session %s...",
+            sprint.number, round_num, session_id[:12],
+        )
+    else:
+        _log.info("[Generator sprint=%d round=%d] Starting new session", sprint.number, round_num)
+
+    if previous_feedback:
+        _log.info(
+            "[Generator sprint=%d round=%d] Feedback included: avg=%.1f, %d items",
+            sprint.number, round_num,
+            previous_feedback.average_score, len(previous_feedback.feedback),
+        )
+
     feedback_section = ""
     if previous_feedback:
         feedback_lines = "\n".join(

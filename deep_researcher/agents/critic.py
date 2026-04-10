@@ -8,9 +8,12 @@ from deep_researcher.agents.client import (
     run_agent_structured,
 )
 from deep_researcher.config import AgentConfig
+from deep_researcher.logger import get_logger
 from deep_researcher.models.contract import ContractReviewResult, SprintContract
 from deep_researcher.models.feedback import CriticResult, PingPongResult
 from deep_researcher.prompts import load_prompt
+
+_log = get_logger(__name__)
 
 # Tools the critic can use: read-only inspection (no Write/Edit)
 CRITIC_TOOLS = ["Read", "Bash", "Glob", "Grep"]
@@ -38,7 +41,10 @@ async def review_contract(
         output_format=json_schema_format(ContractReviewResult),
     )
     raw = await run_agent_structured(options, prompt, label="Critic contract-review")
-    return ContractReviewResult.model_validate(raw)
+    result = ContractReviewResult.model_validate(raw)
+    verdict = "approved" if result.approved else "revised"
+    _log.info("Contract review verdict: %s", verdict)
+    return result
 
 
 async def run_critic(
@@ -72,7 +78,13 @@ async def run_critic(
 
     label = f"Critic sprint={contract.sprint_number} round={round_num}"
     raw = await run_agent_structured(options, prompt, label=label)
-    return CriticResult.model_validate(raw)
+    result = CriticResult.model_validate(raw)
+    _log.info(
+        "[Critic sprint=%d round=%d] avg=%.1f passed=%s criteria=%d",
+        contract.sprint_number, round_num,
+        result.average_score, result.passed, len(result.feedback),
+    )
+    return result
 
 
 async def check_ping_pong(
