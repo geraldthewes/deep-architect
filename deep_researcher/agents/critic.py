@@ -68,7 +68,9 @@ async def run_critic(
 
     label = f"Critic sprint={contract.sprint_number} round={round_num}"
     raw = await run_agent_structured(
-        options, prompt, label=label, max_retries=config.max_agent_retries
+        options, prompt, label=label,
+        max_retries=config.max_agent_retries,
+        context_window=config.context_window,
     )
     result = CriticResult.model_validate(raw)
     _log.info(

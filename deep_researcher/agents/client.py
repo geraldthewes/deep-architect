@@ -298,12 +298,16 @@ async def run_agent(
     prompt: str,
     label: str = "Agent",
     max_retries: int = 0,
+    context_window: int | None = None,
 ) -> ResultMessage:
     """Run a query and return the ResultMessage.
 
     On a process-level failure (e.g. the CLI crashes because the model called a
     disallowed tool), the query is retried up to *max_retries* times with a
     fresh session (resume=None) so the corrupted subprocess state is discarded.
+
+    If *context_window* is provided, per-turn log lines include the context
+    utilisation as a percentage (input_tokens / context_window).
     """
     last_exc: Exception | None = None
 
@@ -323,6 +327,16 @@ async def run_agent(
                             "[%s] turn=%d API error: %s", label, turn_count, message.error
                         )
 
+                    # Build context-usage suffix for log lines
+                    ctx_suffix = ""
+                    msg_usage = message.usage or {}
+                    input_tokens = msg_usage.get("input_tokens")
+                    if input_tokens is not None and context_window is not None:
+                        pct = input_tokens / context_window * 100
+                        ctx_suffix = f" (ctx {input_tokens:,}/{context_window:,} {pct:.0f}%)"
+                    elif input_tokens is not None:
+                        ctx_suffix = f" (ctx {input_tokens:,})"
+
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             text_block_count += 1
@@ -337,18 +351,21 @@ async def run_agent(
                             tool_count += 1
                             if block.name == _STRUCTURED_OUTPUT_TOOL:
                                 _log.info(
-                                    "[%s] turn=%d StructuredOutput (keys: %s)",
+                                    "[%s] turn=%d StructuredOutput (keys: %s)%s",
                                     label, turn_count, list(block.input.keys()),
+                                    ctx_suffix,
                                 )
                             elif block.name not in KNOWN_TOOLS:
                                 _log.warning(
-                                    "[%s] turn=%d unexpected tool call: %s (input keys: %s)",
-                                    label, turn_count, block.name, list(block.input.keys()),
+                                    "[%s] turn=%d unexpected tool call: %s (input keys: %s)%s",
+                                    label, turn_count, block.name,
+                                    list(block.input.keys()), ctx_suffix,
                                 )
                             else:
                                 _log.info(
-                                    "[%s] turn=%d %s",
+                                    "[%s] turn=%d %s%s",
                                     label, turn_count, _tool_summary(block),
+                                    ctx_suffix,
                                 )
 
                 elif isinstance(message, RateLimitEvent):
@@ -443,9 +460,12 @@ async def run_agent_text(
     prompt: str,
     label: str = "Agent",
     max_retries: int = 0,
+    context_window: int | None = None,
 ) -> str:
     """Run a query and return the text result."""
-    result = await run_agent(options, prompt, label=label, max_retries=max_retries)
+    result = await run_agent(
+        options, prompt, label=label, max_retries=max_retries, context_window=context_window
+    )
     return result.result or ""
 
 
@@ -454,9 +474,12 @@ async def run_agent_structured(
     prompt: str,
     label: str = "Agent",
     max_retries: int = 0,
+    context_window: int | None = None,
 ) -> dict[str, Any]:
     """Run a query with output_format and return parsed structured output."""
-    result = await run_agent(options, prompt, label=label, max_retries=max_retries)
+    result = await run_agent(
+        options, prompt, label=label, max_retries=max_retries, context_window=context_window
+    )
     if result.structured_output is not None:
         output: dict[str, Any] = result.structured_output
         return output

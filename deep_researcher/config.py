@@ -10,6 +10,7 @@ class AgentConfig(BaseModel):
     model: str = "sonnet"  # alias: "sonnet", "opus", "haiku", or full model ID
     max_turns: int = 50
     max_agent_retries: int = 2
+    context_window: int | None = None  # model context window size; logged when set
 
 
 class ThresholdConfig(BaseModel):
