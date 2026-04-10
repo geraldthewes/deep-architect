@@ -73,12 +73,16 @@ The TOML config controls which model alias to use for each agent and the quality
 
 ```toml
 [generator]
-model     = "sonnet"    # resolves via ANTHROPIC_DEFAULT_SONNET_MODEL
-max_turns = 50          # max agentic tool-use steps per generator invocation
+model             = "sonnet"    # resolves via ANTHROPIC_DEFAULT_SONNET_MODEL
+max_turns         = 50          # max agentic tool-use steps per generator invocation
+max_agent_retries = 2           # retry agent on CLI crash (e.g. disallowed tool call)
+# context_window  = 200000      # optional: log context utilisation % per tool call
 
 [critic]
-model     = "sonnet"
-max_turns = 30
+model             = "sonnet"
+max_turns         = 30
+max_agent_retries = 2
+# context_window  = 200000
 
 [thresholds]
 min_score                      = 9.0   # critic score required to pass (out of 10)
@@ -87,6 +91,7 @@ max_rounds_per_sprint          = 6     # give up on a sprint after this many rou
 max_total_rounds               = 40    # hard limit across all sprints
 timeout_hours                  = 3.0   # wall-clock timeout
 ping_pong_similarity_threshold = 0.85  # auto-exit if feedback stops changing
+max_round_retries              = 2     # retry a full generator+critic round on failure
 ```
 
 You can use `"opus"` for a more capable (but slower/costlier) generator. For the critic, `"sonnet"` is usually sufficient.
@@ -283,6 +288,9 @@ The SDK may fall back to the bundled Claude binary, which can ignore custom env 
 
 **A sprint fails after max rounds**
 Check the feedback JSON for recurring issues. Common causes: the PRD lacks enough detail, or `max_turns` is too low for the model to complete a full architecture file in one agent loop. Try increasing `max_turns` in the config.
+
+**The agent crashes mid-run with "Command failed with exit code 1"**
+The model called a disallowed tool (e.g. `TodoWrite`). The harness will automatically retry the round up to `max_round_retries` times (default 2), and each agent call is retried up to `max_agent_retries` times (default 2). If crashes persist, check the logs for the "unexpected tool call" warning to identify which tool is being hallucinated. Setting `context_window` in the config helps spot high-context turns where hallucinations become more likely.
 
 **Run stops mid-way due to timeout**
 Use `--resume` to continue. If 3 hours is too tight, increase it:

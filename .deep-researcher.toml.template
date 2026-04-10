@@ -10,12 +10,16 @@
 #   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
 [generator]
-model     = "sonnet"    # Model alias: "sonnet", "opus", "haiku", or full model ID
-max_turns = 50
+model              = "sonnet"    # Model alias: "sonnet", "opus", "haiku", or full model ID
+max_turns          = 50
+max_agent_retries  = 2           # Retry the agent up to N times on CLI crash before failing
+# context_window   = 200000      # Set to log context utilisation % on each tool call
 
 [critic]
-model     = "sonnet"
-max_turns = 30
+model              = "sonnet"
+max_turns          = 30
+max_agent_retries  = 2
+# context_window   = 200000
 
 # Optional: override the claude CLI path (default: auto-detected from PATH).
 # Use this if the bundled SDK binary ignores ANTHROPIC_BASE_URL.
@@ -28,3 +32,4 @@ max_rounds_per_sprint          = 6
 max_total_rounds               = 40
 timeout_hours                  = 3.0
 ping_pong_similarity_threshold = 0.85
+max_round_retries              = 2   # Retry a generator+critic round up to N times on failure
