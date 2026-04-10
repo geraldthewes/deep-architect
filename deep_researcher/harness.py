@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
 
 from rich.console import Console
 
-from deep_researcher.agents.client import make_agent_options, run_agent_text
+from deep_researcher.agents.client import init_run_stats, make_agent_options, run_agent_text
 from deep_researcher.agents.critic import check_ping_pong, review_contract, run_critic
 from deep_researcher.agents.generator import propose_contract, run_generator
 from deep_researcher.config import AgentConfig, HarnessConfig
@@ -114,6 +115,24 @@ async def run_harness(
     log_dir = output_dir / "logs"
     log_file = setup_logging(log_dir)
     logger.info(f"Log file: {log_file}")
+
+    # Log Anthropic environment configuration (mask secrets)
+    anthropic_vars = [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    ]
+    secret_vars = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
+    for var in anthropic_vars:
+        val = os.environ.get(var)
+        logger.info(f"  {var}={val if val is not None else '(not set)'}")
+    for var in secret_vars:
+        val = os.environ.get(var)
+        logger.info(f"  {var}={'(set)' if val else '(not set)'}")
+
+    run_stats = init_run_stats()
 
     repo = validate_git_repo(output_dir)
     init_workspace(output_dir)
@@ -275,3 +294,4 @@ async def run_harness(
     progress.status = "complete"
     save_progress(output_dir, progress)
     logger.info("Harness COMPLETE — architecture is production-ready")
+    run_stats.log_summary()
