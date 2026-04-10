@@ -65,7 +65,8 @@ async def run_generator(
         resume=session_id,
     )
 
-    result = await run_agent(options, prompt)
+    label = f"Generator sprint={sprint.number} round={round_num}"
+    result = await run_agent(options, prompt, label=label)
     return result.session_id
 
 
@@ -94,4 +95,4 @@ async def propose_contract(
         cli_path=cli_path,
     )
 
-    return await run_agent_text(options, prompt)
+    return await run_agent_text(options, prompt, label=f"Generator contract sprint={sprint.number}")

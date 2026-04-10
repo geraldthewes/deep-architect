@@ -6,7 +6,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ResultMessage,
+    ToolUseBlock,
+    query,
+)
 
 from deep_researcher.config import AgentConfig
 from deep_researcher.logger import get_logger
@@ -15,42 +21,71 @@ _log = get_logger(__name__)
 
 
 @dataclass
-class RunStats:
-    """Accumulates token and cost totals across all agent calls in a harness run."""
+class ModelStats:
+    """Per-model token totals."""
 
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+
+
+@dataclass
+class RunStats:
+    """Accumulates token and cost totals across all agent calls in a harness run."""
+
     total_cost_usd: float = 0.0
     num_calls: int = 0
     num_turns: int = 0
     duration_ms: int = field(default=0)
+    by_model: dict[str, ModelStats] = field(default_factory=dict)
+
+    def _model(self, name: str) -> ModelStats:
+        if name not in self.by_model:
+            self.by_model[name] = ModelStats()
+        return self.by_model[name]
 
     def accumulate(self, result: ResultMessage) -> None:
-        usage = result.usage or {}
-        self.input_tokens += usage.get("input_tokens", 0)
-        self.output_tokens += usage.get("output_tokens", 0)
-        self.cache_read_tokens += usage.get("cache_read_input_tokens", 0)
-        self.cache_write_tokens += usage.get("cache_creation_input_tokens", 0)
         self.total_cost_usd += result.total_cost_usd or 0.0
         self.num_calls += 1
         self.num_turns += result.num_turns
         self.duration_ms += result.duration_ms
 
+        # model_usage is {model_name: {input_tokens, output_tokens, ...}}
+        model_usage: dict[str, Any] = result.model_usage or {}
+        if model_usage:
+            for model_name, usage in model_usage.items():
+                ms = self._model(model_name)
+                ms.input_tokens += usage.get("input_tokens", 0)
+                ms.output_tokens += usage.get("output_tokens", 0)
+                ms.cache_read_tokens += usage.get("cache_read_input_tokens", 0)
+                ms.cache_write_tokens += usage.get("cache_creation_input_tokens", 0)
+        else:
+            # Fallback: attribute to the top-level usage under "unknown"
+            usage = result.usage or {}
+            ms = self._model("unknown")
+            ms.input_tokens += usage.get("input_tokens", 0)
+            ms.output_tokens += usage.get("output_tokens", 0)
+            ms.cache_read_tokens += usage.get("cache_read_input_tokens", 0)
+            ms.cache_write_tokens += usage.get("cache_creation_input_tokens", 0)
+
     def log_summary(self) -> None:
         _log.info(
-            "Run totals: calls=%d turns=%d duration=%.1fs "
-            "input=%d output=%d cache_read=%d cache_write=%d cost=$%.4f",
+            "Run totals: calls=%d turns=%d duration=%.1fs cost=$%.4f",
             self.num_calls,
             self.num_turns,
             self.duration_ms / 1000,
-            self.input_tokens,
-            self.output_tokens,
-            self.cache_read_tokens,
-            self.cache_write_tokens,
             self.total_cost_usd,
         )
+        for model_name, ms in sorted(self.by_model.items()):
+            _log.info(
+                "  model=%s input=%d output=%d cache_read=%d cache_write=%d",
+                model_name,
+                ms.input_tokens,
+                ms.output_tokens,
+                ms.cache_read_tokens,
+                ms.cache_write_tokens,
+            )
 
 
 # Set by run_harness at the start of each run; accumulated in run_agent.
@@ -62,6 +97,21 @@ def init_run_stats() -> RunStats:
     stats = RunStats()
     _run_stats.set(stats)
     return stats
+
+
+def _tool_summary(tool: ToolUseBlock) -> str:
+    """Return a short human-readable description of a tool call."""
+    inp = tool.input
+    name = tool.name
+    if name in ("Read", "Write", "Edit"):
+        path = inp.get("file_path", "")
+        return f"{name} {path}"
+    if name == "Bash":
+        cmd = inp.get("command", "")
+        return f"Bash: {cmd[:60]}{'...' if len(cmd) > 60 else ''}"
+    if name in ("Grep", "Glob"):
+        return f"{name}: {inp.get('pattern', inp.get('glob', ''))}"
+    return name
 
 
 def _resolve_cli_path(override: str | None = None) -> str:
@@ -112,35 +162,55 @@ def make_agent_options(
 async def run_agent(
     options: ClaudeAgentOptions,
     prompt: str,
+    label: str = "Agent",
 ) -> ResultMessage:
     """Run a query and return the ResultMessage."""
     result: ResultMessage | None = None
     async for message in query(prompt=prompt, options=options):
-        if isinstance(message, ResultMessage):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, ToolUseBlock):
+                    _log.info("[%s] %s", label, _tool_summary(block))
+        elif isinstance(message, ResultMessage):
             result = message
+
     if result is None:
         raise RuntimeError("Agent query completed without a ResultMessage")
     if result.is_error:
         raise RuntimeError(f"Agent query failed: {result.result}")
 
     # Log per-call usage
-    usage = result.usage or {}
-    input_tokens = usage.get("input_tokens", "?")
-    output_tokens = usage.get("output_tokens", "?")
-    cache_read = usage.get("cache_read_input_tokens", 0)
-    cache_write = usage.get("cache_creation_input_tokens", 0)
     cost = f"${result.total_cost_usd:.4f}" if result.total_cost_usd is not None else "n/a"
     _log.info(
-        "Agent call complete: turns=%d duration=%.1fs "
-        "input=%s output=%s cache_read=%s cache_write=%s cost=%s",
+        "[%s] done: turns=%d duration=%.1fs cost=%s",
+        label,
         result.num_turns,
         result.duration_ms / 1000,
-        input_tokens,
-        output_tokens,
-        cache_read,
-        cache_write,
         cost,
     )
+    model_usage: dict[str, Any] = result.model_usage or {}
+    if model_usage:
+        for model_name, usage in sorted(model_usage.items()):
+            _log.info(
+                "[%s]   model=%s input=%s output=%s cache_read=%s cache_write=%s",
+                label,
+                model_name,
+                usage.get("input_tokens", "?"),
+                usage.get("output_tokens", "?"),
+                usage.get("cache_read_input_tokens", 0),
+                usage.get("cache_creation_input_tokens", 0),
+            )
+    else:
+        usage = result.usage or {}
+        _log.info(
+            "[%s]   model=%s input=%s output=%s cache_read=%s cache_write=%s",
+            label,
+            options.model,
+            usage.get("input_tokens", "?"),
+            usage.get("output_tokens", "?"),
+            usage.get("cache_read_input_tokens", 0),
+            usage.get("cache_creation_input_tokens", 0),
+        )
 
     # Accumulate into run totals if a stats context is active
     stats = _run_stats.get()
@@ -153,18 +223,20 @@ async def run_agent(
 async def run_agent_text(
     options: ClaudeAgentOptions,
     prompt: str,
+    label: str = "Agent",
 ) -> str:
     """Run a query and return the text result."""
-    result = await run_agent(options, prompt)
+    result = await run_agent(options, prompt, label=label)
     return result.result or ""
 
 
 async def run_agent_structured(
     options: ClaudeAgentOptions,
     prompt: str,
+    label: str = "Agent",
 ) -> dict[str, Any]:
     """Run a query with output_format and return parsed structured output."""
-    result = await run_agent(options, prompt)
+    result = await run_agent(options, prompt, label=label)
     if result.structured_output is not None:
         output: dict[str, Any] = result.structured_output
         return output

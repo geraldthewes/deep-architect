@@ -42,7 +42,7 @@ async def review_contract(
         allowed_tools=[],  # No tools needed for contract review
         cli_path=cli_path,
     )
-    result = await run_agent_text(options, prompt)
+    result = await run_agent_text(options, prompt, label="Critic contract-review")
     return result.strip()
 
 
@@ -75,7 +75,8 @@ async def run_critic(
         output_format=_json_schema_format(CriticResult),
     )
 
-    raw = await run_agent_structured(options, prompt)
+    label = f"Critic sprint={contract.sprint_number} round={round_num}"
+    raw = await run_agent_structured(options, prompt, label=label)
     return CriticResult.model_validate(raw)
 
 
@@ -102,5 +103,5 @@ async def check_ping_pong(
         output_format=_json_schema_format(PingPongResult),
     )
 
-    raw = await run_agent_structured(options, prompt)
+    raw = await run_agent_structured(options, prompt, label="Critic ping-pong-check")
     return PingPongResult.model_validate(raw)

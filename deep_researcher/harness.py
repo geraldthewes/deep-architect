@@ -43,10 +43,14 @@ async def negotiate_contract(
 ) -> SprintContract:
     """Generator proposes, Critic tightens. Returns final locked contract."""
     logger.info(f"[Sprint {sprint.number}] Negotiating contract...")
+    logger.info(f"[Sprint {sprint.number}] Generator proposing contract...")
     proposal = await propose_contract(generator_config, sprint, prd_content, cli_path=cli_path)
-
+    logger.info(f"[Sprint {sprint.number}] Critic reviewing contract...")
     review = await review_contract(critic_config, proposal, cli_path=cli_path)
-    final_json = proposal if review.upper().startswith("APPROVED") else review
+    approved = review.upper().startswith("APPROVED")
+    verdict = "approved as-is" if approved else "revised by critic"
+    logger.info(f"[Sprint {sprint.number}] Contract {verdict}")
+    final_json = proposal if approved else review
 
     # Parse with fallback — try code blocks first, then raw text
     candidates: list[str] = [final_json.strip()]
@@ -90,8 +94,12 @@ async def run_final_agreement(
         cli_path=cli_path,
     )
 
-    gen_result = await run_agent_text(gen_options, final_prompt)
-    critic_result = await run_agent_text(critic_options, final_prompt)
+    gen_result = await run_agent_text(
+        gen_options, final_prompt, label="Generator final-agreement"
+    )
+    critic_result = await run_agent_text(
+        critic_options, final_prompt, label="Critic final-agreement"
+    )
 
     gen_ready = "READY_TO_SHIP" in gen_result
     critic_ready = "READY_TO_SHIP" in critic_result
