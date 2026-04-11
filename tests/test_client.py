@@ -1,12 +1,12 @@
 """Tests for client.py configuration logic.
 
 Does NOT test actual LLM calls — only the ClaudeAgentOptions construction,
-helper functions, and retry logic (with mocked query()).
+helper functions, and retry logic (with mocked query() / AsyncAnthropic).
 """
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from claude_agent_sdk import ResultMessage
@@ -14,10 +14,12 @@ from pydantic import BaseModel
 
 from deep_researcher.agents.client import (
     DISALLOWED_TOOLS,
+    _extract_json,
     json_schema_format,
     make_agent_options,
     resolve_model_id,
     run_agent,
+    run_simple_structured,
 )
 from deep_researcher.config import AgentConfig
 
@@ -325,3 +327,103 @@ async def test_run_agent_clears_resume_on_retry() -> None:
 
     assert captured_resumes[0] == "session-abc"
     assert captured_resumes[1] is None
+
+
+# ---------------------------------------------------------------------------
+# _extract_json
+# ---------------------------------------------------------------------------
+
+
+def test_extract_json_returns_plain_text_unchanged() -> None:
+    raw = '{"value": 1, "label": "hi"}'
+    assert _extract_json(raw) == raw
+
+
+def test_extract_json_strips_json_code_fence() -> None:
+    fenced = '```json\n{"value": 1, "label": "hi"}\n```'
+    assert _extract_json(fenced) == '{"value": 1, "label": "hi"}'
+
+
+def test_extract_json_strips_bare_code_fence() -> None:
+    fenced = '```\n{"value": 1, "label": "hi"}\n```'
+    assert _extract_json(fenced) == '{"value": 1, "label": "hi"}'
+
+
+def test_extract_json_strips_surrounding_whitespace() -> None:
+    padded = '  \n{"value": 1}\n  '
+    assert _extract_json(padded) == '{"value": 1}'
+
+
+# ---------------------------------------------------------------------------
+# run_simple_structured — mocked anthropic client (no real LLM calls)
+# ---------------------------------------------------------------------------
+
+
+class _Dummy(BaseModel):
+    value: int
+    label: str
+
+
+def _make_response(text: str) -> MagicMock:
+    """Build a minimal mock anthropic Message with a single text block."""
+    block = MagicMock()
+    block.text = text
+    response = MagicMock()
+    response.content = [block]
+    response.usage.input_tokens = 100
+    response.usage.output_tokens = 50
+    return response
+
+
+@patch("deep_researcher.agents.client._anthropic.AsyncAnthropic")
+async def test_run_simple_structured_success(mock_cls: MagicMock) -> None:
+    """Valid JSON response is parsed and returned as the output type."""
+    mock_cls.return_value.messages.create = AsyncMock(
+        return_value=_make_response('{"value": 42, "label": "hello"}')
+    )
+    config = AgentConfig(model="test-model", max_turns=5)
+    result = await run_simple_structured(config, "sys", "prompt", _Dummy, label="test")
+    assert result.value == 42
+    assert result.label == "hello"
+
+
+@patch("deep_researcher.agents.client._anthropic.AsyncAnthropic")
+async def test_run_simple_structured_strips_code_fence(mock_cls: MagicMock) -> None:
+    """JSON wrapped in a code fence is extracted and parsed correctly."""
+    fenced = '```json\n{"value": 7, "label": "fenced"}\n```'
+    mock_cls.return_value.messages.create = AsyncMock(
+        return_value=_make_response(fenced)
+    )
+    config = AgentConfig(model="test-model", max_turns=5)
+    result = await run_simple_structured(config, "sys", "prompt", _Dummy, label="test")
+    assert result.value == 7
+    assert result.label == "fenced"
+
+
+@patch("deep_researcher.agents.client._anthropic.AsyncAnthropic")
+async def test_run_simple_structured_retries_on_bad_json(mock_cls: MagicMock) -> None:
+    """A non-JSON first response is retried; a valid second response succeeds."""
+    mock_cls.return_value.messages.create = AsyncMock(
+        side_effect=[
+            _make_response("Sorry, I cannot help with that."),
+            _make_response('{"value": 3, "label": "retry"}'),
+        ]
+    )
+    config = AgentConfig(model="test-model", max_turns=5)
+    result = await run_simple_structured(config, "sys", "prompt", _Dummy, label="test")
+    assert result.value == 3
+    assert mock_cls.return_value.messages.create.call_count == 2
+
+
+@patch("deep_researcher.agents.client._anthropic.AsyncAnthropic")
+async def test_run_simple_structured_raises_after_three_failures(
+    mock_cls: MagicMock,
+) -> None:
+    """RuntimeError is raised when all 3 attempts return unparseable JSON."""
+    mock_cls.return_value.messages.create = AsyncMock(
+        return_value=_make_response("not json at all")
+    )
+    config = AgentConfig(model="test-model", max_turns=5)
+    with pytest.raises(RuntimeError, match="structured output failed after 3 attempts"):
+        await run_simple_structured(config, "sys", "prompt", _Dummy, label="test")
+    assert mock_cls.return_value.messages.create.call_count == 3

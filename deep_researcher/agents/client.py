@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Any, TypeVar
 
+import anthropic as _anthropic
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -18,9 +20,6 @@ from claude_agent_sdk import (
     query,
 )
 from pydantic import BaseModel
-from pydantic_ai import Agent
-from pydantic_ai.models.anthropic import AnthropicModel
-from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from deep_researcher.config import AgentConfig
 from deep_researcher.logger import get_logger
@@ -85,13 +84,13 @@ def resolve_model_id(alias: str) -> str:
     return alias
 
 
-def _build_pydantic_model(config: AgentConfig) -> AnthropicModel:
-    """Build a pydantic-ai AnthropicModel pointed at the configured proxy."""
-    api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY", "")
-    base_url = os.environ.get("ANTHROPIC_BASE_URL")
-    provider = AnthropicProvider(api_key=api_key, base_url=base_url)
-    model_id = resolve_model_id(config.model)
-    return AnthropicModel(model_id, provider=provider)
+def _extract_json(text: str) -> str:
+    """Strip markdown code fences and return the JSON portion of text."""
+    stripped = text.strip()
+    m = re.match(r"^```(?:json)?\s*([\s\S]+?)\s*```\s*$", stripped)
+    if m:
+        return m.group(1).strip()
+    return stripped
 
 
 async def run_simple_structured(  # noqa: UP047
@@ -101,41 +100,73 @@ async def run_simple_structured(  # noqa: UP047
     output_type: type[_T],
     label: str = "Agent",
 ) -> _T:
-    """Single structured-output call via pydantic-ai (no tools, no agentic loop).
+    """Single structured-output call via direct Anthropic API (no tool use).
 
-    Use this for contract proposal/review and ping-pong check — queries that
-    only need JSON output.  pydantic-ai handles schema enforcement and retries
-    internally without spawning a CLI subprocess or an agentic turn loop.
+    Instructs the model to return JSON matching the output_type schema via the
+    system prompt, then extracts and validates with Pydantic.  Uses the anthropic
+    SDK directly rather than pydantic-ai's tool_choice mechanism, which can fail
+    on litellm proxies that don't properly honour tool_choice for all models.
     """
-    model = _build_pydantic_model(config)
-    agent: Agent[None, _T] = Agent(model, output_type=output_type, instructions=system_prompt)
-
-    t0 = time.monotonic()
-    result = await agent.run(prompt)
-    elapsed = time.monotonic() - t0
-
-    usage = result.usage()
+    api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY", "")
+    base_url = os.environ.get("ANTHROPIC_BASE_URL")
     model_id = resolve_model_id(config.model)
-    _log.info(
-        "[%s] done: duration=%.1fs input=%d output=%d requests=%d model=%s",
-        label, elapsed,
-        usage.input_tokens or 0,
-        usage.output_tokens or 0,
-        usage.requests,
-        model_id,
+
+    schema_str = json.dumps(output_type.model_json_schema(), indent=2)
+    json_system = (
+        f"{system_prompt}\n\n"
+        "## Output Format\n\n"
+        "Respond with ONLY a valid JSON object matching this schema — "
+        "no markdown, no explanation, no code fences:\n\n"
+        f"{schema_str}"
     )
 
-    # Accumulate into run totals if a stats context is active
-    stats = _run_stats.get()
-    if stats is not None:
-        stats.num_calls += 1
-        stats.num_turns += usage.requests
-        stats.duration_ms += int(elapsed * 1000)
-        ms = stats._model(model_id)
-        ms.input_tokens += usage.input_tokens or 0
-        ms.output_tokens += usage.output_tokens or 0
+    client = _anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url)
+    last_exc: Exception | None = None
 
-    return result.output
+    for attempt in range(1, 4):
+        t0 = time.monotonic()
+        response = await client.messages.create(
+            model=model_id,
+            max_tokens=4096,
+            system=json_system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        elapsed = time.monotonic() - t0
+
+        text = "".join(b.text for b in response.content if hasattr(b, "text"))
+
+        try:
+            result = output_type.model_validate_json(_extract_json(text))
+        except Exception as exc:
+            last_exc = exc
+            _log.warning(
+                "[%s] attempt %d/3 JSON parse failed (%s) — raw: %.200s",
+                label, attempt, exc, text,
+            )
+            continue
+
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+        model_id = resolve_model_id(config.model)
+        _log.info(
+            "[%s] done: duration=%.1fs input=%d output=%d requests=%d model=%s",
+            label, elapsed, input_tokens, output_tokens, attempt, model_id,
+        )
+
+        stats = _run_stats.get()
+        if stats is not None:
+            stats.num_calls += 1
+            stats.num_turns += 1
+            stats.duration_ms += int(elapsed * 1000)
+            ms = stats._model(model_id)
+            ms.input_tokens += input_tokens
+            ms.output_tokens += output_tokens
+
+        return result
+
+    raise RuntimeError(
+        f"[{label}] structured output failed after 3 attempts"
+    ) from last_exc
 
 
 @dataclass
@@ -261,7 +292,7 @@ def make_agent_options(
     """Build ClaudeAgentOptions for an agentic query (generator or critic).
 
     For simple structured output without tools, use run_simple_structured()
-    instead — it uses pydantic-ai directly and avoids the CLI turn-loop issues.
+    instead — it calls the Anthropic API directly and avoids the CLI turn-loop.
     """
 
     def _stderr_cb(line: str) -> None:
