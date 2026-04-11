@@ -61,13 +61,24 @@ async def run_generator(
             f"Overall: {previous_feedback.overall_summary}\n"
         )
 
+    learnings_section = ""
+    learnings_path = output_dir / "generator-learnings.md"
+    if learnings_path.exists():
+        learnings_content = learnings_path.read_text().strip()
+        if learnings_content:
+            learnings_section = f"\n## Prior Learnings\n{learnings_content}\n"
+            _log.info(
+                "[Generator sprint=%d round=%d] Loaded learnings (%d chars)",
+                sprint.number, round_num, len(learnings_content),
+            )
+
     prompt = (
         f"## PRD\n{prd_content}\n\n"
         f"## Sprint Contract\n{contract.model_dump_json(indent=2)}\n\n"
         f"## Working Directory\n{output_dir}\n\n"
         f"## Files to Produce\n"
         + "\n".join(f"- {f}" for f in contract.files_to_produce)
-        + f"\n\n{feedback_section}\n"
+        + f"\n\n{feedback_section}{learnings_section}\n"
         "Use the Write tool to create each file in the working directory using absolute paths. "
         "Use the Edit tool for targeted changes when addressing feedback on existing files. "
         "Each file must be a complete, standalone Markdown document."

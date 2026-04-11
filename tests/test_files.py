@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from deep_researcher.io.files import (
+    clean_run_artifacts,
     init_workspace,
     load_contract,
     load_feedback,
@@ -140,3 +141,51 @@ def test_round_log(tmp_path: Path) -> None:
     import json
     data = json.loads(log_path.read_text())
     assert data["sprint"] == 1
+
+
+def test_clean_run_artifacts_removes_checkpoint_contracts_feedback(tmp_path: Path) -> None:
+    """clean_run_artifacts deletes checkpoint, contracts, and feedback files."""
+    init_workspace(tmp_path)
+    checkpoint_dir = tmp_path / ".checkpoints"
+
+    # Populate checkpoint
+    progress = HarnessProgress(
+        total_sprints=2,
+        sprint_statuses=[
+            SprintStatus(sprint_number=i, sprint_name=f"Sprint {i}") for i in range(1, 3)
+        ],
+    )
+    save_progress(checkpoint_dir, progress)
+
+    # Populate contracts and feedback
+    save_contract(tmp_path, make_contract())
+    save_feedback(tmp_path, 1, 1, make_result())
+    save_round_log(tmp_path, 1, 1, {"sprint": 1})
+
+    # Add learnings file that should be deleted
+    learnings_file = tmp_path / "generator-learnings.md"
+    learnings_file.write_text("## Round 1\n- Decision: used C4Context")
+
+    # Add files that should be preserved
+    log_file = tmp_path / "logs" / "run.log"
+    log_file.write_text("log content")
+    decision_file = tmp_path / "decisions" / "adr-001.md"
+    decision_file.write_text("# ADR")
+
+    deleted = clean_run_artifacts(tmp_path, checkpoint_dir)
+
+    assert not (checkpoint_dir / "progress.json").exists()
+    assert not (tmp_path / "contracts" / "sprint-1.json").exists()
+    assert not (tmp_path / "feedback" / "sprint-1-round-1.json").exists()
+    assert not (tmp_path / "feedback" / "sprint-1-round-1-log.json").exists()
+    assert not learnings_file.exists(), "generator-learnings.md should be deleted"
+    assert log_file.exists(), "logs/ should be preserved"
+    assert decision_file.exists(), "decisions/ should be preserved"
+    assert len(deleted) == 5  # progress.json + sprint-1.json + feedback + log + learnings
+
+
+def test_clean_run_artifacts_no_error_on_missing_dirs(tmp_path: Path) -> None:
+    """clean_run_artifacts is a no-op when no prior artifacts exist."""
+    checkpoint_dir = tmp_path / ".checkpoints"
+    deleted = clean_run_artifacts(tmp_path, checkpoint_dir)
+    assert deleted == []

@@ -59,3 +59,26 @@ def save_round_log(
     """Write structured round log for reproducibility."""
     path = output_dir / "feedback" / f"sprint-{sprint_number}-round-{round_num}-log.json"
     path.write_text(json.dumps(data, indent=2, default=str))
+
+
+def clean_run_artifacts(output_dir: Path, checkpoint_dir: Path) -> list[Path]:
+    """Delete prior run artifacts to allow a clean restart.
+
+    Removes all files in the checkpoint directory and the contracts and feedback
+    subdirectories of output_dir.  Leaves logs/ and decisions/ intact so run
+    history and any manual ADR content are preserved.
+
+    Returns the list of deleted paths.
+    """
+    deleted: list[Path] = []
+    for directory in (checkpoint_dir, output_dir / "contracts", output_dir / "feedback"):
+        if directory.is_dir():
+            for f in directory.iterdir():
+                if f.is_file():
+                    f.unlink()
+                    deleted.append(f)
+    learnings = output_dir / "generator-learnings.md"
+    if learnings.exists():
+        learnings.unlink()
+        deleted.append(learnings)
+    return deleted

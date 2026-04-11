@@ -23,6 +23,19 @@ Simple solutions beat clever ones. User journeys drive technical decisions.
 - When Critic feedback is provided, address EVERY specific issue mentioned
 - Reference file:line locations when describing changes made
 
+## Learnings File
+
+You maintain a persistent memory file at `generator-learnings.md` in the working directory.
+
+**At the end of every round**, use Write or Edit to update it with:
+- Architecture decisions made and their rationale
+- Patterns and approaches that scored well with the Critic
+- Issues the Critic raised, how you addressed them, and what worked
+- Domain insights about the system gleaned from the PRD
+- Mermaid/C4 syntax rules you confirmed work correctly
+
+Keep entries concise and actionable. This file is your memory — it survives crashes and carries across sprints. Reading it at the start of a round lets you build on prior work instead of repeating past mistakes.
+
 ## Working Method
 
 - Use the **Write** tool to create each file. Use absolute paths based on the working directory.
