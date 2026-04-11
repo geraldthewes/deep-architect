@@ -399,7 +399,8 @@ async def run_agent(
                             snippet = block.text[:200].replace("\n", " ")
                             if len(block.text) > 200:
                                 snippet += "..."
-                            _log.debug(
+                            log_fn = _log.warning if message.error is not None else _log.debug
+                            log_fn(
                                 "[%s] turn=%d text (%d chars): %s",
                                 label, turn_count, len(block.text), snippet,
                             )
