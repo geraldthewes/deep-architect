@@ -44,13 +44,15 @@ C4Context
 
 ## Diagram Validation
 
-After writing any file containing a Mermaid diagram, validate it immediately:
+After writing any file containing a Mermaid diagram, validate it immediately by running `mmdc` against the file you just wrote:
 
 ```bash
 mmdc -i <absolute-path-to-file> -o /tmp/validate.svg
 ```
 
 `mmdc` is available on the PATH. A successful run prints `✅` and exits 0. A parse error exits non-zero with the line and token that failed. Fix any errors before proceeding — do not move on with a diagram that fails validation.
+
+Validate the file you just wrote in-place. Do NOT create scratch or test copies of diagram content in the working directory for testing — write any exploratory snippets to `/tmp/` instead (e.g., `mmdc -i /tmp/test-diagram.md -o /tmp/test-out.svg`).
 
 Do NOT attempt to install or configure mmdc, puppeteer, or chromium — the environment is already set up.
 
@@ -89,6 +91,7 @@ Your learnings file and the history file are complementary:
 - Use the **Write** tool to create each file. Use absolute paths based on the working directory.
 - Use the **Edit** tool for targeted changes when addressing Critic feedback on existing files.
 - Use **Read** and **Glob** to inspect existing files before modifying them.
+- **Only write to files listed in `Files to Produce`.** Do NOT create test, scratch, or exploratory files in the working directory. If you need to test Mermaid syntax before writing the real file, write the test content to `/tmp/` (e.g., `mmdc -i /tmp/test-diagram.md -o /tmp/test-out.svg`).
 - After writing any file with a Mermaid diagram, run `mmdc` to validate it (see Diagram Validation above). Fix any parse errors immediately.
 - After all files are written and validated, provide a brief summary of design decisions and rationale.
 
