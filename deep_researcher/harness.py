@@ -14,6 +14,7 @@ from deep_researcher.exit_criteria import should_ping_pong_exit, sprint_passes
 from deep_researcher.git_ops import get_modified_files, git_commit, validate_git_repo
 from deep_researcher.io.files import (
     init_workspace,
+    load_contract,
     load_feedback,
     load_progress,
     save_contract,
@@ -204,6 +205,7 @@ async def run_harness(
     # Resume or initialize progress
     if resume:
         progress = load_progress(checkpoint_dir)
+        progress.status = "running"  # reset — user explicitly chose to retry
         start_sprint_idx = progress.current_sprint - 1
         logger.info("Resuming from sprint %d", progress.current_sprint)
     else:
@@ -233,15 +235,35 @@ async def run_harness(
             )
             continue
 
-        # Contract negotiation — saves proposal then final version to disk internally
+        # Contract negotiation — or load from disk on mid-sprint resume
         t0 = time.monotonic()
-        contract = await negotiate_contract(
-            config.generator, config.critic, sprint, prd_content, output_dir, cli_path=cli_path
-        )
-        logger.info(
-            "[Sprint %d] Contract negotiation completed in %.1fs (%d criteria)",
-            sprint.number, time.monotonic() - t0, len(contract.criteria),
-        )
+        if resume and sprint_status.rounds_completed > 0:
+            try:
+                contract = load_contract(output_dir, sprint.number)
+                logger.info(
+                    "[Sprint %d] Loaded saved contract from disk (%d criteria)",
+                    sprint.number, len(contract.criteria),
+                )
+            except FileNotFoundError:
+                logger.warning(
+                    "[Sprint %d] No saved contract found — re-negotiating", sprint.number
+                )
+                contract = await negotiate_contract(
+                    config.generator, config.critic, sprint, prd_content, output_dir,
+                    cli_path=cli_path,
+                )
+                logger.info(
+                    "[Sprint %d] Contract negotiation completed in %.1fs (%d criteria)",
+                    sprint.number, time.monotonic() - t0, len(contract.criteria),
+                )
+        else:
+            contract = await negotiate_contract(
+                config.generator, config.critic, sprint, prd_content, output_dir, cli_path=cli_path
+            )
+            logger.info(
+                "[Sprint %d] Contract negotiation completed in %.1fs (%d criteria)",
+                sprint.number, time.monotonic() - t0, len(contract.criteria),
+            )
 
         sprint_status.status = "building"
         progress.current_sprint = sprint.number

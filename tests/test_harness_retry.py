@@ -402,8 +402,9 @@ async def test_resume_skips_completed_sprints(output_dir: Path) -> None:
 
 
 async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> None:
-    """--resume with rounds_completed=2 starts the generator at round 3."""
-    from deep_researcher.io.files import save_feedback, save_progress
+    """--resume with rounds_completed=2 starts the generator at round 3
+    and loads the contract from disk instead of re-negotiating."""
+    from deep_researcher.io.files import save_contract, save_feedback, save_progress
     from deep_researcher.models.progress import HarnessProgress, SprintStatus
     from deep_researcher.sprints import SPRINTS
 
@@ -413,6 +414,9 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
     # Create required workspace directories
     for subdir in ("feedback", "contracts", "decisions", "logs"):
         (output_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    # Write the contract to disk so load_contract finds it
+    save_contract(output_dir, _make_contract(sprint_number=1))
 
     # Write prior round-2 feedback so last_result can be restored
     save_feedback(output_dir, 1, 2, _passing_result())
@@ -435,6 +439,7 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
     save_progress(checkpoint_dir, progress)
 
     generator_calls: list[tuple[int, int]] = []  # (sprint_number, round_num)
+    negotiate_calls: list[int] = []  # sprint numbers that triggered negotiation
 
     async def _record_generator(*args: object, **kwargs: object) -> None:
         # Positional signature: config, sprint, contract, prd, last_result, output_dir, round_num
@@ -442,6 +447,81 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
         round_num = args[6]
         generator_calls.append((sprint_arg.number, round_num))
         return None
+
+    async def _record_negotiate(*args: object, **kwargs: object) -> SprintContract:
+        sprint_arg = args[2]
+        negotiate_calls.append(sprint_arg.number)
+        return _make_contract(sprint_number=sprint_arg.number)
+
+    with (
+        patch(
+            "deep_researcher.harness.validate_git_repo",
+            return_value=_make_mock_repo(output_dir),
+        ),
+        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_researcher.harness.get_modified_files", return_value=[]),
+        patch("deep_researcher.harness.git_commit"),
+        patch("deep_researcher.harness.negotiate_contract", side_effect=_record_negotiate),
+        patch("deep_researcher.harness.run_generator", side_effect=_record_generator),
+        patch(
+            "deep_researcher.harness.run_critic",
+            new_callable=AsyncMock,
+            return_value=_passing_result(),
+        ),
+        patch(
+            "deep_researcher.harness.check_ping_pong",
+            new_callable=AsyncMock,
+            return_value=MagicMock(similarity_score=0.0),
+        ),
+    ):
+        await run_harness(prd=prd, output_dir=output_dir, resume=True, config=_make_config())
+
+    # Sprint 1 should NOT have re-negotiated (loaded from disk instead)
+    assert 1 not in negotiate_calls, (
+        "Sprint 1 contract should have been loaded from disk, not re-negotiated"
+    )
+    # Subsequent sprints (fresh start) should still negotiate normally
+    assert 2 in negotiate_calls, "Sprint 2 should have negotiated normally"
+
+    sprint_1_rounds = [r for s, r in generator_calls if s == 1]
+    assert sprint_1_rounds, "Generator should have been called for sprint 1"
+    assert min(sprint_1_rounds) == 3, (
+        f"Sprint 1 resume should start at round 3 (rounds_completed=2), "
+        f"got rounds={sprint_1_rounds}"
+    )
+    assert 1 not in sprint_1_rounds and 2 not in sprint_1_rounds, (
+        "Rounds 1 and 2 should have been skipped on resume for sprint 1"
+    )
+
+
+async def test_resume_resets_failed_status(output_dir: Path) -> None:
+    """--resume with status='failed' resets progress to 'running' so the resumed
+    run does not carry stale failure state and ends as 'complete' on success."""
+    from deep_researcher.io.files import load_progress, save_progress
+    from deep_researcher.models.progress import HarnessProgress, SprintStatus
+    from deep_researcher.sprints import SPRINTS
+
+    prd = output_dir / "prd.md"
+    prd.write_text("# PRD")
+
+    checkpoint_dir = output_dir / ".checkpoints"
+    progress = HarnessProgress(
+        total_sprints=len(SPRINTS),
+        current_sprint=2,
+        completed_sprints=1,
+        status="failed",
+        sprint_statuses=[
+            SprintStatus(
+                sprint_number=s.number,
+                sprint_name=s.name,
+                status="passed" if s.number == 1 else "pending",
+            )
+            for s in SPRINTS
+        ],
+    )
+    save_progress(checkpoint_dir, progress)
 
     with (
         patch(
@@ -458,7 +538,7 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
             new_callable=AsyncMock,
             return_value=_make_contract(),
         ),
-        patch("deep_researcher.harness.run_generator", side_effect=_record_generator),
+        patch("deep_researcher.harness.run_generator", new_callable=AsyncMock, return_value=None),
         patch(
             "deep_researcher.harness.run_critic",
             new_callable=AsyncMock,
@@ -472,12 +552,79 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
     ):
         await run_harness(prd=prd, output_dir=output_dir, resume=True, config=_make_config())
 
-    sprint_1_rounds = [r for s, r in generator_calls if s == 1]
-    assert sprint_1_rounds, "Generator should have been called for sprint 1"
-    assert min(sprint_1_rounds) == 3, (
-        f"Sprint 1 resume should start at round 3 (rounds_completed=2), "
-        f"got rounds={sprint_1_rounds}"
+    reloaded = load_progress(checkpoint_dir)
+    assert reloaded.status == "complete", (
+        f"Expected status='complete' after successful resumed run, got '{reloaded.status}'"
     )
-    assert 1 not in sprint_1_rounds and 2 not in sprint_1_rounds, (
-        "Rounds 1 and 2 should have been skipped on resume for sprint 1"
+
+
+async def test_resume_mid_sprint_falls_back_to_negotiate_on_missing_contract(
+    output_dir: Path,
+) -> None:
+    """When --resume mid-sprint but the contract file is missing, fall back
+    to re-negotiation instead of crashing."""
+    from deep_researcher.io.files import save_feedback, save_progress
+    from deep_researcher.models.progress import HarnessProgress, SprintStatus
+    from deep_researcher.sprints import SPRINTS
+
+    prd = output_dir / "prd.md"
+    prd.write_text("# PRD")
+
+    # Create workspace dirs but do NOT write a contract file
+    for subdir in ("feedback", "contracts", "decisions", "logs"):
+        (output_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    save_feedback(output_dir, 1, 2, _passing_result())
+
+    checkpoint_dir = output_dir / ".checkpoints"
+    progress = HarnessProgress(
+        total_sprints=len(SPRINTS),
+        current_sprint=1,
+        sprint_statuses=[
+            SprintStatus(
+                sprint_number=s.number,
+                sprint_name=s.name,
+                status="building" if s.number == 1 else "pending",
+                rounds_completed=2 if s.number == 1 else 0,
+                consecutive_passes=1 if s.number == 1 else 0,
+            )
+            for s in SPRINTS
+        ],
+    )
+    save_progress(checkpoint_dir, progress)
+
+    negotiate_calls: list[int] = []
+
+    async def _record_negotiate(*args: object, **kwargs: object) -> SprintContract:
+        sprint_arg = args[2]
+        negotiate_calls.append(sprint_arg.number)
+        return _make_contract(sprint_number=sprint_arg.number)
+
+    with (
+        patch(
+            "deep_researcher.harness.validate_git_repo",
+            return_value=_make_mock_repo(output_dir),
+        ),
+        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_researcher.harness.get_modified_files", return_value=[]),
+        patch("deep_researcher.harness.git_commit"),
+        patch("deep_researcher.harness.negotiate_contract", side_effect=_record_negotiate),
+        patch("deep_researcher.harness.run_generator", new_callable=AsyncMock, return_value=None),
+        patch(
+            "deep_researcher.harness.run_critic",
+            new_callable=AsyncMock,
+            return_value=_passing_result(),
+        ),
+        patch(
+            "deep_researcher.harness.check_ping_pong",
+            new_callable=AsyncMock,
+            return_value=MagicMock(similarity_score=0.0),
+        ),
+    ):
+        await run_harness(prd=prd, output_dir=output_dir, resume=True, config=_make_config())
+
+    assert 1 in negotiate_calls, (
+        "Sprint 1 should have fallen back to negotiate_contract when contract file is missing"
     )
