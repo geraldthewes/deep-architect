@@ -539,11 +539,25 @@ async def run_harness(
 
         progress.completed_sprints += 1
         save_progress(checkpoint_dir, progress)
+        # Sprint-boundary commit: capture critic feedback, progress, and history
+        written = get_modified_files(repo)
+        git_commit(
+            repo,
+            f"Sprint {sprint.number} complete: {sprint.name}",
+            written,
+        )
 
     # Final mutual agreement round
     await run_final_agreement(config.generator, config.critic, output_dir, cli_path=cli_path)
     progress.status = "complete"
     save_progress(checkpoint_dir, progress)
+    # Final commit: capture terminal progress state
+    written = get_modified_files(repo)
+    git_commit(
+        repo,
+        f"Architecture complete — all {progress.total_sprints} sprints passed",
+        written,
+    )
     total_elapsed = time.time() - start_time
     logger.info(
         "Harness COMPLETE in %.1f minutes — architecture is production-ready",

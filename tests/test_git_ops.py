@@ -83,3 +83,47 @@ def test_get_modified_files_empty_on_clean(tmp_path: Path) -> None:
 
     files = get_modified_files(repo)
     assert files == []
+
+
+def test_git_commit_sprint_boundary_message(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    repo.index.commit("init")
+
+    feedback = tmp_path / "feedback.json"
+    feedback.write_text('{"status": "passed"}')
+    progress = tmp_path / "progress.json"
+    progress.write_text('{"completed_sprints": 1}')
+
+    message = "Sprint 1 complete: C4 Context View"
+    git_commit(repo, message, [feedback, progress])
+
+    assert repo.head.commit.message == message
+
+
+def test_git_commit_final_completion_message(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    repo.index.commit("init")
+
+    progress = tmp_path / "progress.json"
+    progress.write_text('{"status": "complete"}')
+
+    message = "Architecture complete — all 7 sprints passed"
+    git_commit(repo, message, [progress])
+
+    assert repo.head.commit.message == message
+
+
+def test_git_commit_sprint_boundary_noop(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    repo.index.commit("init")
+
+    # Simulate: generator already committed everything
+    f = tmp_path / "file.md"
+    f.write_text("content")
+    git_commit(repo, "Generator pass 3 - sprint 1 (Context)", [f])
+    sha_after_gen = repo.head.commit.hexsha
+
+    # Sprint-boundary commit should be a no-op
+    git_commit(repo, "Sprint 1 complete: C4 Context View", [])
+
+    assert repo.head.commit.hexsha == sha_after_gen

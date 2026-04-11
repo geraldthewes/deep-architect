@@ -571,6 +571,57 @@ async def test_resume_resets_failed_status(output_dir: Path) -> None:
     )
 
 
+async def test_harness_creates_sprint_boundary_commit(output_dir: Path) -> None:
+    """Sprint-boundary and final-completion commits appear in the git log
+    when get_modified_files and git_commit run against a real repo (not mocked)."""
+    prd = output_dir / "prd.md"
+    prd.write_text("# Test PRD")
+
+    repo = git.Repo(str(output_dir))
+    gen_call_count = 0
+
+    async def _writing_generator(*args: object, **kwargs: object) -> GeneratorRoundResult:
+        nonlocal gen_call_count
+        gen_call_count += 1
+        sprint_arg = args[1]  # SprintDefinition
+        round_num = args[6]   # int
+        # Write a file so get_modified_files detects a change for git_commit
+        f = output_dir / f"sprint-{sprint_arg.number}-round-{round_num}.md"
+        f.write_text(f"# Sprint {sprint_arg.number} Round {round_num}")
+        return GeneratorRoundResult(session_id=None, input_tokens=0)
+
+    with (
+        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
+        patch(
+            "deep_researcher.harness.negotiate_contract",
+            new_callable=AsyncMock,
+            return_value=_make_contract(),
+        ),
+        patch("deep_researcher.harness.run_generator", side_effect=_writing_generator),
+        patch(
+            "deep_researcher.harness.run_critic",
+            new_callable=AsyncMock,
+            return_value=_passing_result(),
+        ),
+    ):
+        await run_harness(
+            prd=prd,
+            output_dir=output_dir,
+            resume=False,
+            config=_make_config(),
+        )
+
+    commit_messages = [c.message for c in repo.iter_commits()]
+    assert any("Sprint 1 complete:" in m for m in commit_messages), (
+        f"Expected sprint-boundary commit in log, got: {commit_messages}"
+    )
+    assert commit_messages[0].startswith("Architecture complete — all"), (
+        f"Expected final completion commit as most recent, got: {commit_messages[0]!r}"
+    )
+
+
 async def test_resume_mid_sprint_falls_back_to_negotiate_on_missing_contract(
     output_dir: Path,
 ) -> None:
