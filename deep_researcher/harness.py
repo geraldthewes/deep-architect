@@ -282,7 +282,7 @@ async def run_harness(
                 save_progress(checkpoint_dir, progress)
                 return
 
-            if elapsed_total > t.timeout_hours * 3600:
+            if t.timeout_hours > 0 and elapsed_total > t.timeout_hours * 3600:
                 logger.error(
                     "Timeout reached (elapsed=%.1fm, limit=%.0fh) — stopping.",
                     elapsed_total / 60, t.timeout_hours,

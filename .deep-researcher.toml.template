@@ -30,6 +30,6 @@ min_score                      = 9.0
 consecutive_passing_rounds     = 2
 max_rounds_per_sprint          = 6
 max_total_rounds               = 40
-timeout_hours                  = 3.0
+timeout_hours                  = 0.0   # 0 = disabled; set to a positive value to enforce a wall-clock limit
 ping_pong_similarity_threshold = 0.85
 max_round_retries              = 2   # Retry a generator+critic round up to N times on failure
