@@ -31,6 +31,7 @@ async def run_generator(
     *,
     cli_path: str | None = None,
     session_id: str | None = None,
+    supplementary_context: str = "",
 ) -> str | None:
     """Run the Generator for one round. Returns session_id for continuation across rounds."""
     if session_id:
@@ -72,8 +73,13 @@ async def run_generator(
                 sprint.number, round_num, len(learnings_content),
             )
 
+    context_section = (
+        f"## Supplementary Context\n{supplementary_context}\n\n"
+        if supplementary_context else ""
+    )
     prompt = (
         f"## PRD\n{prd_content}\n\n"
+        f"{context_section}"
         f"## Sprint Contract\n{contract.model_dump_json(indent=2)}\n\n"
         f"## Working Directory\n{output_dir}\n\n"
         f"## Files to Produce\n"
@@ -109,6 +115,7 @@ async def propose_contract(
     prd_content: str,
     *,
     cli_path: str | None = None,  # unused; kept for API compatibility
+    supplementary_context: str = "",
 ) -> SprintContract:
     """Generator proposes a sprint contract via pydantic-ai (no agentic loop)."""
     prompt = load_prompt(
@@ -119,6 +126,8 @@ async def propose_contract(
         sprint_description=sprint.description,
         primary_files=str(sprint.primary_files),
     )
+    if supplementary_context:
+        prompt += f"\n\n## Supplementary Context\n{supplementary_context}\n"
     system_prompt = load_prompt("contract_system")
     label = f"Generator contract sprint={sprint.number}"
     return await run_simple_structured(config, system_prompt, prompt, SprintContract, label=label)

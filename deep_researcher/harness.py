@@ -33,6 +33,23 @@ logger = get_logger(__name__)
 console = Console()
 
 
+def _build_supplementary_context(context_files: list[Path] | None) -> str:
+    """Read and assemble supplementary context files into a single prompt section body."""
+    if not context_files:
+        return ""
+
+    parts: list[str] = [
+        "The following supplementary context was provided by the user as binding "
+        "constraints. Technology choices, architectural decisions, and other directives "
+        "here take precedence over default preferences and must be respected in the "
+        "architecture. Treat these as requirements of equal weight to the PRD."
+    ]
+    for path in context_files:
+        parts.append(f"\n### {path.name}\n{path.read_text()}")
+
+    return "\n".join(parts)
+
+
 async def negotiate_contract(
     generator_config: AgentConfig,
     critic_config: AgentConfig,
@@ -41,6 +58,7 @@ async def negotiate_contract(
     output_dir: Path,
     *,
     cli_path: str | None = None,
+    supplementary_context: str = "",
 ) -> SprintContract:
     """Generator proposes, Critic tightens. Returns final locked contract.
 
@@ -50,7 +68,10 @@ async def negotiate_contract(
     """
     logger.info(f"[Sprint {sprint.number}] Negotiating contract...")
     logger.info(f"[Sprint {sprint.number}] Generator proposing contract...")
-    contract = await propose_contract(generator_config, sprint, prd_content, cli_path=cli_path)
+    contract = await propose_contract(
+        generator_config, sprint, prd_content,
+        cli_path=cli_path, supplementary_context=supplementary_context,
+    )
     save_contract(output_dir, contract)
     logger.info(f"[Sprint {sprint.number}] Contract proposal saved.")
 
@@ -157,6 +178,7 @@ async def run_harness(
     output_dir: Path,
     resume: bool,
     config: HarnessConfig,
+    context_files: list[Path] | None = None,
 ) -> None:
     """Run the full adversarial C4 architecture harness."""
     log_dir = output_dir / "logs"
@@ -197,6 +219,12 @@ async def run_harness(
 
     init_workspace(output_dir)
     prd_content = prd.read_text()
+    supplementary_context = _build_supplementary_context(context_files)
+    if supplementary_context:
+        logger.info(
+            "Supplementary context: %d file(s), %d chars",
+            len(context_files) if context_files else 0, len(supplementary_context),
+        )
 
     cli_path = config.cli_path
 
@@ -250,7 +278,7 @@ async def run_harness(
                 )
                 contract = await negotiate_contract(
                     config.generator, config.critic, sprint, prd_content, output_dir,
-                    cli_path=cli_path,
+                    cli_path=cli_path, supplementary_context=supplementary_context,
                 )
                 logger.info(
                     "[Sprint %d] Contract negotiation completed in %.1fs (%d criteria)",
@@ -258,7 +286,8 @@ async def run_harness(
                 )
         else:
             contract = await negotiate_contract(
-                config.generator, config.critic, sprint, prd_content, output_dir, cli_path=cli_path
+                config.generator, config.critic, sprint, prd_content, output_dir,
+                cli_path=cli_path, supplementary_context=supplementary_context,
             )
             logger.info(
                 "[Sprint %d] Contract negotiation completed in %.1fs (%d criteria)",
@@ -338,6 +367,7 @@ async def run_harness(
                         round_num,
                         cli_path=cli_path,
                         session_id=generator_session_id,
+                        supplementary_context=supplementary_context,
                     )
                     logger.info(
                         "[Sprint %d] Generator round %d completed in %.1fs",

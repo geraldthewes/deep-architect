@@ -41,11 +41,19 @@ def main(
     model_critic: str | None = typer.Option(
         None, "--model-critic", help="Override critic model name"
     ),
+    context: list[Path] = typer.Option(
+        [], "--context", help="Supplementary context files (repeatable)"
+    ),
 ) -> None:
     """Run the adversarial C4 architecture harness."""
     if not prd.exists():
         console.print(f"[red]Error:[/red] PRD file not found: {prd}")
         raise typer.Exit(1)
+
+    for ctx_path in context:
+        if not ctx_path.exists():
+            console.print(f"[red]Error:[/red] Context file not found: {ctx_path}")
+            raise typer.Exit(1)
 
     cfg = load_config(config_file)
     if model_generator:
@@ -84,4 +92,6 @@ def main(
                 deleted = clean_run_artifacts(output, checkpoint_dir)
                 console.print(f"[green]Cleaned up {len(deleted)} file(s).[/green]\n")
 
-    asyncio.run(run_harness(prd=prd, output_dir=output, resume=resume, config=cfg))
+    asyncio.run(
+        run_harness(prd=prd, output_dir=output, resume=resume, config=cfg, context_files=context)
+    )
