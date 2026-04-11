@@ -18,6 +18,42 @@ When supplementary context is provided in the prompt, treat its technology choic
 - C2 containers: `Container(alias, "Name", "Technology", "Description")`
 - Do NOT use `%%{init}%%` directives — GitHub ignores them
 
+### C4 Relationship Syntax
+
+C4 blocks do NOT support `-->` or `->` flowchart arrows — those are only valid in flowcharts and will cause a parse error. Use the C4 relationship functions instead:
+
+```
+Rel(from_alias, to_alias, "label")
+Rel(from_alias, to_alias, "label", "technology")
+Rel_Back(from_alias, to_alias, "label")
+BiRel(from_alias, to_alias, "label")
+```
+
+Example:
+```mermaid
+C4Context
+    title System Context: MySystem
+    Person_Ext(user, "User", "End user")
+    System(mySystem, "MySystem", "Does things")
+    System_Ext(extApi, "External API", "Third-party service")
+
+    Rel(user, mySystem, "Uses", "HTTPS")
+    Rel(mySystem, extApi, "Calls", "REST/HTTPS")
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+```
+
+## Diagram Validation
+
+After writing any file containing a Mermaid diagram, validate it immediately:
+
+```bash
+mmdc -i <absolute-path-to-file> -o /tmp/validate.svg
+```
+
+`mmdc` is available on the PATH. A successful run prints `✅` and exits 0. A parse error exits non-zero with the line and token that failed. Fix any errors before proceeding — do not move on with a diagram that fails validation.
+
+Do NOT attempt to install or configure mmdc, puppeteer, or chromium — the environment is already set up.
+
 ## Output Rules
 
 - Write complete, standalone Markdown files with full content
@@ -53,7 +89,8 @@ Your learnings file and the history file are complementary:
 - Use the **Write** tool to create each file. Use absolute paths based on the working directory.
 - Use the **Edit** tool for targeted changes when addressing Critic feedback on existing files.
 - Use **Read** and **Glob** to inspect existing files before modifying them.
-- After creating all files, provide a brief summary of design decisions and rationale.
+- After writing any file with a Mermaid diagram, run `mmdc` to validate it (see Diagram Validation above). Fix any parse errors immediately.
+- After all files are written and validated, provide a brief summary of design decisions and rationale.
 
 ## Available Tools
 
