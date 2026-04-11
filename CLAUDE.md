@@ -57,6 +57,10 @@ All four must pass clean before committing. Run them together:
 uv run ruff check deep_researcher/ tests/ && uv run mypy deep_researcher/ && uv run python -m pytest tests/ -v && uv run bandit -r deep_researcher/ -ll
 ```
 
+## Architecture Decision Records
+
+All architectural decisions are documented in `knowledge/adr/`. **Review the ADR index (`knowledge/adr/README.md`) before designing any new feature or making structural changes.** Each ADR captures the context, decision, rationale, and consequences for a specific aspect of the system. Superseded ADRs (e.g. ADR-004) are retained for historical context but must not be treated as active guidance.
+
 ## Key Architectural Decisions
 
 **claude-agent-sdk** — agents run via the Claude Code CLI as a real agentic loop with tool use.
@@ -67,7 +71,7 @@ uv run ruff check deep_researcher/ tests/ && uv run mypy deep_researcher/ && uv 
 
 **System-installed CLI binary** — always use `cli_path=shutil.which("claude")` (done automatically in `client.py`). The bundled SDK binary may ignore `ANTHROPIC_BASE_URL`; the system-installed binary respects all env vars.
 
-**Generator writes files directly via tools** — `run_generator()` gives the agent `["Read", "Write", "Edit", "Bash", "Glob", "Grep"]`. The agent writes architecture files to disk using the Write tool. The harness detects written files via `get_modified_files()` (git status) after the agent finishes. The agent returns a `session_id` for persistence across rounds within the same sprint.
+**Generator writes files directly via tools** — `run_generator()` gives the agent `["Read", "Write", "Edit", "Bash", "Glob", "Grep"]`. The agent writes architecture files to disk using the Write tool. The harness detects written files via `get_modified_files()` (git status) after the agent finishes. Each generator round starts a **fresh session** — `session_id` is never reused across rounds (ADR-021). Prior-round context is carried forward via two files: `generator-history.md` (harness-written, structured per-round record of files changed and feedback addressed) and `generator-learnings.md` (agent-written free-form working memory, fully injected into the next prompt). Both files survive crashes; `--resume` loads them automatically with no special-case logic.
 
 **Critic reads files via tools** — `run_critic()` gives the agent `["Read", "Bash", "Glob", "Grep"]` (no Write/Edit). The agent inspects files directly rather than having content pasted into the prompt. Structured output is obtained via `output_format` with a JSON schema derived from `CriticResult.model_json_schema()`.
 

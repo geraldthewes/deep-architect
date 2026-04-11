@@ -9,7 +9,7 @@ This directory contains ADRs capturing the key architectural decisions made duri
 | [ADR-001](ADR-001-claude-agent-sdk-no-framework.md) | Use Claude Agent SDK with No Agent Framework | Accepted |
 | [ADR-002](ADR-002-system-cli-binary-env-vars.md) | Resolve Claude CLI from System PATH; Auth/Endpoint via Environment Variables | Accepted |
 | [ADR-003](ADR-003-asymmetric-tool-access.md) | Asymmetric Tool Access — Generator Writes, Critic Reads Only | Accepted |
-| [ADR-004](ADR-004-generator-session-persistence.md) | Generator Session Persistence Within Sprint, Reset on Failure | Accepted |
+| [ADR-004](ADR-004-generator-session-persistence.md) | Generator Session Persistence Within Sprint, Reset on Failure | Superseded by ADR-021 |
 | [ADR-005](ADR-005-dual-llm-call-patterns.md) | Two LLM Call Patterns — Pydantic-AI for Contracts, SDK for File Operations | Accepted |
 | [ADR-006](ADR-006-exit-criteria.md) | Multi-Layer Exit Criteria — Score + Severity + Consecutive Rounds + Ping-Pong Detection | Accepted |
 | [ADR-007](ADR-007-seven-fixed-sprints.md) | Seven Fixed Sprints with Pre-Defined C4 Progression | Accepted |
@@ -26,6 +26,7 @@ This directory contains ADRs capturing the key architectural decisions made duri
 | [ADR-018](ADR-018-run-stats-context-variable.md) | Token/Cost Tracking via RunStats and Context Variables | Accepted |
 | [ADR-019](ADR-019-severity-blocking.md) | Critical/High Severity Issues Block Sprint Completion Regardless of Score | Accepted |
 | [ADR-020](ADR-020-allow-extra-files-flag.md) | Permissive Extra Files via allow_extra_files Sprint Flag | Accepted |
+| [ADR-021](ADR-021-stateless-session-per-turn.md) | Stateless Session Per Turn — Generator Session Reset Every Round | Accepted |
 
 ## Key Themes
 
@@ -35,6 +36,6 @@ This directory contains ADRs capturing the key architectural decisions made duri
 
 **Adversarial quality gates** — ADR-003, ADR-006, ADR-019: Strict separation of generator/critic roles enforced by asymmetric tool access. Exit criteria combine numeric scoring, hard severity blocks, and ping-pong detection.
 
-**Resilience** — ADR-004, ADR-011, ADR-015, ADR-016: Two retry layers, session recovery, sprint-level resume, and preflight validation make the harness robust to transient failures.
+**Resilience** — ADR-021, ADR-011, ADR-015, ADR-016: Two retry layers, stateless-session per turn, sprint-level resume, and preflight validation make the harness robust to transient failures.
 
 **Cost optimization** — ADR-005, ADR-014, ADR-018: Cheaper pydantic-ai calls for no-tool operations; extended thinking disabled; full cost accounting via RunStats.
