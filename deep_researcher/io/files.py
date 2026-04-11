@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from deep_researcher.models.contract import SprintContract
@@ -38,14 +39,17 @@ def load_feedback(output_dir: Path, sprint_number: int, round_num: int) -> Criti
     return CriticResult.model_validate_json(path.read_text())
 
 
-def save_progress(output_dir: Path, progress: HarnessProgress) -> Path:
-    path = output_dir / "progress.json"
-    path.write_text(progress.model_dump_json(indent=2))
+def save_progress(checkpoint_dir: Path, progress: HarnessProgress) -> Path:
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    path = checkpoint_dir / "progress.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(progress.model_dump_json(indent=2))
+    os.replace(tmp, path)
     return path
 
 
-def load_progress(output_dir: Path) -> HarnessProgress:
-    path = output_dir / "progress.json"
+def load_progress(checkpoint_dir: Path) -> HarnessProgress:
+    path = checkpoint_dir / "progress.json"
     return HarnessProgress.model_validate_json(path.read_text())
 
 

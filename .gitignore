@@ -34,3 +34,6 @@ env/
 .vscode/
 *.swp
 *.swo
+
+# Checkpoints (transient — safe to delete between runs)
+.checkpoints/

@@ -71,19 +71,65 @@ def test_feedback_round_trip(tmp_path: Path) -> None:
 
 
 def test_progress_round_trip(tmp_path: Path) -> None:
-    init_workspace(tmp_path)
+    checkpoint_dir = tmp_path / ".checkpoints"
     progress = HarnessProgress(
         total_sprints=7,
         sprint_statuses=[
             SprintStatus(sprint_number=i, sprint_name=f"Sprint {i}") for i in range(1, 8)
         ],
     )
-    save_progress(tmp_path, progress)
-    loaded = load_progress(tmp_path)
+    save_progress(checkpoint_dir, progress)
+    loaded = load_progress(checkpoint_dir)
     assert loaded.total_sprints == 7
     assert loaded.current_sprint == 1
     assert len(loaded.sprint_statuses) == 7
     assert loaded.seed > 0
+
+
+def test_save_progress_creates_checkpoint_dir(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / ".checkpoints"
+    assert not checkpoint_dir.exists()
+    progress = HarnessProgress(
+        total_sprints=2,
+        sprint_statuses=[
+            SprintStatus(sprint_number=i, sprint_name=f"Sprint {i}") for i in range(1, 3)
+        ],
+    )
+    save_progress(checkpoint_dir, progress)
+    assert checkpoint_dir.exists()
+    assert (checkpoint_dir / "progress.json").exists()
+
+
+def test_save_progress_no_tmp_remnant(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / ".checkpoints"
+    progress = HarnessProgress(
+        total_sprints=2,
+        sprint_statuses=[
+            SprintStatus(sprint_number=i, sprint_name=f"Sprint {i}") for i in range(1, 3)
+        ],
+    )
+    save_progress(checkpoint_dir, progress)
+    assert not (checkpoint_dir / "progress.tmp").exists()
+    assert (checkpoint_dir / "progress.json").exists()
+
+
+def test_progress_round_trip_with_consecutive_passes(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / ".checkpoints"
+    progress = HarnessProgress(
+        total_sprints=2,
+        sprint_statuses=[
+            SprintStatus(
+                sprint_number=1, sprint_name="Sprint 1",
+                rounds_completed=3, consecutive_passes=1,
+            ),
+            SprintStatus(sprint_number=2, sprint_name="Sprint 2"),
+        ],
+    )
+    save_progress(checkpoint_dir, progress)
+    loaded = load_progress(checkpoint_dir)
+    assert loaded.sprint_statuses[0].rounds_completed == 3
+    assert loaded.sprint_statuses[0].consecutive_passes == 1
+    assert loaded.sprint_statuses[1].consecutive_passes == 0
 
 
 def test_round_log(tmp_path: Path) -> None:

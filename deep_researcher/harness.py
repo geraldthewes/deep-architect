@@ -14,6 +14,7 @@ from deep_researcher.exit_criteria import should_ping_pong_exit, sprint_passes
 from deep_researcher.git_ops import get_modified_files, git_commit, validate_git_repo
 from deep_researcher.io.files import (
     init_workspace,
+    load_feedback,
     load_progress,
     save_contract,
     save_feedback,
@@ -180,6 +181,19 @@ async def run_harness(
     run_stats = init_run_stats()
 
     repo = validate_git_repo(output_dir)
+    if repo.working_tree_dir is None:
+        raise RuntimeError("Git repository has no working tree directory")
+    checkpoint_dir = Path(repo.working_tree_dir) / ".checkpoints"
+
+    # Fail fast before any expensive operations if --resume has no checkpoint
+    if resume:
+        checkpoint = checkpoint_dir / "progress.json"
+        if not checkpoint.exists():
+            raise FileNotFoundError(
+                f"--resume passed but no checkpoint found at {checkpoint}. "
+                "Run without --resume to start a fresh run, or restore a prior checkpoint."
+            )
+
     init_workspace(output_dir)
     prd_content = prd.read_text()
 
@@ -188,10 +202,10 @@ async def run_harness(
     await run_preflight_check(config.generator, config.critic, cli_path=cli_path)
 
     # Resume or initialize progress
-    if resume and (output_dir / "progress.json").exists():
-        progress = load_progress(output_dir)
+    if resume:
+        progress = load_progress(checkpoint_dir)
         start_sprint_idx = progress.current_sprint - 1
-        logger.info(f"Resuming from sprint {progress.current_sprint}")
+        logger.info("Resuming from sprint %d", progress.current_sprint)
     else:
         progress = HarnessProgress(
             total_sprints=len(SPRINTS),
@@ -200,8 +214,7 @@ async def run_harness(
             ],
         )
         start_sprint_idx = 0
-
-    save_progress(output_dir, progress)
+    save_progress(checkpoint_dir, progress)
     start_time = time.time()
     t = config.thresholds
 
@@ -209,6 +222,16 @@ async def run_harness(
         logger.info("=" * 60)
         logger.info(f"SPRINT {sprint.number}/{len(SPRINTS)}: {sprint.name}")
         logger.info("=" * 60)
+
+        sprint_status = progress.sprint_statuses[sprint.number - 1]
+
+        # On resume, a sprint may already be passed/failed if the crash happened
+        # between completed_sprints++ and the next sprint's current_sprint update.
+        if resume and sprint_status.status in ("passed", "failed"):
+            logger.info(
+                "[Sprint %d] Already %s — skipping", sprint.number, sprint_status.status
+            )
+            continue
 
         # Contract negotiation — saves proposal then final version to disk internally
         t0 = time.monotonic()
@@ -220,16 +243,34 @@ async def run_harness(
             sprint.number, time.monotonic() - t0, len(contract.criteria),
         )
 
-        sprint_status = progress.sprint_statuses[sprint.number - 1]
         sprint_status.status = "building"
         progress.current_sprint = sprint.number
-        save_progress(output_dir, progress)
+        save_progress(checkpoint_dir, progress)
 
         last_result: CriticResult | None = None
         consecutive_passes = 0
         generator_session_id: str | None = None  # persist context across rounds per sprint
 
-        for round_num in range(1, t.max_rounds_per_sprint + 1):
+        # On mid-sprint resume: restore round state from checkpoint
+        start_round = sprint_status.rounds_completed + 1
+        if resume and sprint_status.rounds_completed > 0:
+            consecutive_passes = sprint_status.consecutive_passes
+            prior_feedback_path = (
+                output_dir / "feedback"
+                / f"sprint-{sprint.number}-round-{sprint_status.rounds_completed}.json"
+            )
+            if prior_feedback_path.exists():
+                last_result = load_feedback(
+                    output_dir, sprint.number, sprint_status.rounds_completed
+                )
+            logger.info(
+                "[Sprint %d] Resuming from round %d "
+                "(rounds_completed=%d, consecutive_passes=%d) — generator session context lost",
+                sprint.number, start_round,
+                sprint_status.rounds_completed, consecutive_passes,
+            )
+
+        for round_num in range(start_round, t.max_rounds_per_sprint + 1):
             # Global safety checks
             elapsed_total = time.time() - start_time
             if progress.total_rounds >= t.max_total_rounds:
@@ -238,7 +279,7 @@ async def run_harness(
                     elapsed_total / 60,
                 )
                 progress.status = "failed"
-                save_progress(output_dir, progress)
+                save_progress(checkpoint_dir, progress)
                 return
 
             if elapsed_total > t.timeout_hours * 3600:
@@ -247,7 +288,7 @@ async def run_harness(
                     elapsed_total / 60, t.timeout_hours,
                 )
                 progress.status = "failed"
-                save_progress(output_dir, progress)
+                save_progress(checkpoint_dir, progress)
                 return
 
             logger.info(
@@ -263,7 +304,7 @@ async def run_harness(
                 try:
                     # Generator builds — writes files directly via tool use
                     sprint_status.status = "building"
-                    save_progress(output_dir, progress)
+                    save_progress(checkpoint_dir, progress)
                     t0 = time.monotonic()
                     generator_session_id = await run_generator(
                         config.generator,
@@ -300,7 +341,7 @@ async def run_harness(
 
                     # Critic evaluates — reads files via tool use
                     sprint_status.status = "evaluating"
-                    save_progress(output_dir, progress)
+                    save_progress(checkpoint_dir, progress)
                     t0 = time.monotonic()
                     result = await run_critic(
                         config.critic, contract, output_dir, round_num, cli_path=cli_path
@@ -389,6 +430,10 @@ async def run_harness(
             else:
                 consecutive_passes = 0
 
+            # Persist consecutive_passes after each completed round for crash recovery
+            sprint_status.consecutive_passes = consecutive_passes
+            save_progress(checkpoint_dir, progress)
+
             # Ping-pong detection (after round 3)
             if round_num >= 3 and last_result is not None:
                 pp = await check_ping_pong(
@@ -420,7 +465,7 @@ async def run_harness(
             )
             sprint_status.status = "failed"
             progress.status = "failed"
-            save_progress(output_dir, progress)
+            save_progress(checkpoint_dir, progress)
             return
 
         if sprint_status.status == "failed":
@@ -430,16 +475,16 @@ async def run_harness(
                 sprint.number,
             )
             progress.status = "failed"
-            save_progress(output_dir, progress)
+            save_progress(checkpoint_dir, progress)
             return
 
         progress.completed_sprints += 1
-        save_progress(output_dir, progress)
+        save_progress(checkpoint_dir, progress)
 
     # Final mutual agreement round
     await run_final_agreement(config.generator, config.critic, output_dir, cli_path=cli_path)
     progress.status = "complete"
-    save_progress(output_dir, progress)
+    save_progress(checkpoint_dir, progress)
     total_elapsed = time.time() - start_time
     logger.info(
         "Harness COMPLETE in %.1f minutes — architecture is production-ready",

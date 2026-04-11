@@ -14,6 +14,7 @@ class SprintStatus(BaseModel):
         "pending", "negotiating", "building", "evaluating", "passed", "failed"
     ] = "pending"
     rounds_completed: int = 0
+    consecutive_passes: int = 0
     final_score: float | None = None
 
 
