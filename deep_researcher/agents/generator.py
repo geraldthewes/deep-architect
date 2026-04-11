@@ -21,7 +21,7 @@ _log = get_logger(__name__)
 
 @dataclass
 class GeneratorRoundResult:
-    """Result of one generator round, used to thread session state across rounds."""
+    """Result of one generator round."""
 
     session_id: str | None
     input_tokens: int
@@ -40,18 +40,10 @@ async def run_generator(
     round_num: int,
     *,
     cli_path: str | None = None,
-    session_id: str | None = None,
     supplementary_context: str = "",
-    last_known_input_tokens: int = 0,
 ) -> GeneratorRoundResult:
-    """Run the Generator for one round. Returns session and token state for continuation."""
-    if session_id:
-        _log.info(
-            "[Generator sprint=%d round=%d] Continuing session %s...",
-            sprint.number, round_num, session_id[:12],
-        )
-    else:
-        _log.info("[Generator sprint=%d round=%d] Starting new session", sprint.number, round_num)
+    """Run the Generator for one round."""
+    _log.info("[Generator sprint=%d round=%d] Starting new session", sprint.number, round_num)
 
     if previous_feedback:
         _log.info(
@@ -88,6 +80,17 @@ async def run_generator(
         f"## Supplementary Context\n{supplementary_context}\n\n"
         if supplementary_context else ""
     )
+
+    history_section = ""
+    history_path = output_dir / "generator-history.md"
+    if history_path.exists():
+        history_section = (
+            f"\n## Round History\n"
+            f"Your prior work is recorded at `{history_path}`. "
+            f"Use Read or Grep to search it by sprint number, round number, "
+            f"or filename. Do NOT write to this file.\n"
+        )
+
     prompt = (
         f"## PRD\n{prd_content}\n\n"
         f"{context_section}"
@@ -95,7 +98,7 @@ async def run_generator(
         f"## Working Directory\n{output_dir}\n\n"
         f"## Files to Produce\n"
         + "\n".join(f"- {f}" for f in contract.files_to_produce)
-        + f"\n\n{feedback_section}{learnings_section}\n"
+        + f"\n\n{feedback_section}{learnings_section}{history_section}\n"
         "Use the Write tool to create each file in the working directory using absolute paths. "
         "Use the Edit tool for targeted changes when addressing feedback on existing files. "
         "Each file must be a complete, standalone Markdown document."
@@ -108,7 +111,6 @@ async def run_generator(
         allowed_tools=GENERATOR_TOOLS,
         cwd=str(output_dir),
         cli_path=cli_path,
-        resume=session_id,
     )
 
     label = f"Generator sprint={sprint.number} round={round_num}"
@@ -116,7 +118,6 @@ async def run_generator(
         options, prompt, label=label,
         max_retries=config.max_agent_retries,
         context_window=config.context_window,
-        last_known_input_tokens=last_known_input_tokens,
     )
     return GeneratorRoundResult(
         session_id=result.session_id,

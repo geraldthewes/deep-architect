@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from deep_researcher.io.files import (
+    append_critic_history,
+    append_generator_history,
     clean_run_artifacts,
     init_workspace,
     load_contract,
@@ -189,3 +191,84 @@ def test_clean_run_artifacts_no_error_on_missing_dirs(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / ".checkpoints"
     deleted = clean_run_artifacts(tmp_path, checkpoint_dir)
     assert deleted == []
+
+
+def test_append_generator_history_creates_file(tmp_path: Path) -> None:
+    """append_generator_history creates the file and writes a structured entry."""
+    result = make_result()
+    append_generator_history(
+        tmp_path,
+        sprint_num=1,
+        round_num=1,
+        previous_feedback=result,
+        modified_files=[tmp_path / "c4-context.md"],
+        input_tokens=12345,
+    )
+    history = (tmp_path / "generator-history.md").read_text()
+    assert "## Sprint 1 · Round 1" in history
+    assert "**Files modified**: c4-context.md" in history
+    assert "**Token usage**: 12,345" in history
+    assert "concern(s) from prior critic round" in history
+
+
+def test_append_generator_history_first_round(tmp_path: Path) -> None:
+    """First round with no prior feedback uses the correct label."""
+    append_generator_history(
+        tmp_path,
+        sprint_num=2,
+        round_num=1,
+        previous_feedback=None,
+        modified_files=[],
+        input_tokens=0,
+    )
+    history = (tmp_path / "generator-history.md").read_text()
+    assert "First round — no prior feedback" in history
+    assert "**Files modified**: None" in history
+
+
+def test_append_generator_history_accumulates(tmp_path: Path) -> None:
+    """Multiple calls append; file grows with both entries searchable."""
+    for rnd in (1, 2):
+        append_generator_history(
+            tmp_path, sprint_num=1, round_num=rnd,
+            previous_feedback=None, modified_files=[], input_tokens=0,
+        )
+    history = (tmp_path / "generator-history.md").read_text()
+    assert "## Sprint 1 · Round 1" in history
+    assert "## Sprint 1 · Round 2" in history
+
+
+def test_append_critic_history_creates_file(tmp_path: Path) -> None:
+    """append_critic_history creates the file and writes a structured entry."""
+    result = make_result()
+    append_critic_history(tmp_path, sprint_num=1, round_num=1, result=result)
+    history = (tmp_path / "critic-history.md").read_text()
+    assert "## Sprint 1 · Round 1" in history
+    assert "**Score**:" in history
+    assert "**Concerns**:" in history
+    assert "**Summary**:" in history
+
+
+def test_append_critic_history_severity_labels(tmp_path: Path) -> None:
+    """Severity labels appear in entries for grep-ability."""
+    result = make_result()
+    append_critic_history(tmp_path, sprint_num=1, round_num=1, result=result)
+    history = (tmp_path / "critic-history.md").read_text()
+    assert any(s in history for s in ("[Critical]", "[High]", "[Medium]", "[Low]"))
+
+
+def test_clean_run_artifacts_removes_history_files(tmp_path: Path) -> None:
+    """clean_run_artifacts deletes generator-history.md and critic-history.md."""
+    init_workspace(tmp_path)
+    checkpoint_dir = tmp_path / ".checkpoints"
+    checkpoint_dir.mkdir()
+    (tmp_path / "generator-history.md").write_text("## Sprint 1 · Round 1\n---\n")
+    (tmp_path / "critic-history.md").write_text("## Sprint 1 · Round 1\n---\n")
+
+    deleted = clean_run_artifacts(tmp_path, checkpoint_dir)
+
+    assert not (tmp_path / "generator-history.md").exists()
+    assert not (tmp_path / "critic-history.md").exists()
+    deleted_names = [p.name for p in deleted]
+    assert "generator-history.md" in deleted_names
+    assert "critic-history.md" in deleted_names

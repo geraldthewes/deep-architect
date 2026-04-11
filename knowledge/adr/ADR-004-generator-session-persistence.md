@@ -1,6 +1,6 @@
 # ADR-004: Generator Session Persistence Within Sprint, Reset on Failure
 
-**Status:** Accepted  
+**Status:** Superseded by ADR-021 (2026-04-11)  
 **Date:** 2026-04-10  
 **Deciders:** Project design
 

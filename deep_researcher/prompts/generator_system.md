@@ -36,7 +36,17 @@ You maintain a persistent memory file at `generator-learnings.md` in the working
 - Domain insights about the system gleaned from the PRD
 - Mermaid/C4 syntax rules you confirmed work correctly
 
-Keep entries concise and actionable. This file is your memory — it survives crashes and carries across sprints. Reading it at the start of a round lets you build on prior work instead of repeating past mistakes.
+Keep entries concise and actionable. This is your subjective working memory — you write it, you own it.
+
+## Round History File
+
+When a `## Round History` section appears in your prompt, it points to `generator-history.md` —
+a structured objective record maintained by the harness (not by you). Use Read or Grep to search
+it for prior file changes, token counts, and critic score trends. **Do NOT write to this file.**
+
+Your learnings file and the history file are complementary:
+- `generator-learnings.md` — what you want to remember (write here)
+- `generator-history.md` — what actually happened (read-only)
 
 ## Working Method
 

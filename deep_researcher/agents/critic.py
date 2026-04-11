@@ -47,13 +47,22 @@ async def run_critic(
 ) -> CriticResult:
     """Run the Critic against the current architecture files."""
     files_list = "\n".join(f"- {f}" for f in contract.files_to_produce)
+    history_section = ""
+    history_path = output_dir / "critic-history.md"
+    if history_path.exists():
+        history_section = (
+            f"\n## Critic History\n"
+            f"Prior evaluations are recorded at `{history_path}`. "
+            f"Use Read or Grep to check for recurring concerns or score trends. "
+            f"Do NOT write to this file.\n"
+        )
     prompt = (
         f"Evaluate the architecture files in {output_dir} against the sprint contract.\n\n"
         f"## Sprint Contract\n{contract.model_dump_json(indent=2)}\n\n"
         f"## Files to Evaluate\n{files_list}\n\n"
         f"This is Round {round_num}. Use Read, Glob, and Grep to inspect each file. "
         "Score every criterion in the contract. "
-        "Return a CriticResult JSON object."
+        f"Return a CriticResult JSON object.{history_section}"
     )
 
     system_prompt = load_prompt("critic_system")

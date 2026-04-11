@@ -5,7 +5,7 @@ deterministic.  We focus on verifying that:
   - a failing generator is retried and the round succeeds on the second attempt
   - a failing critic is retried and the round succeeds on the second attempt
   - exhausting all retries marks the sprint (and run) as failed
-  - the generator session_id is reset to None between retry attempts
+  - run_generator() has no session_id parameter (sessions are per-turn only)
   - --resume fails fast when no checkpoint exists
   - --resume skips already-passed sprints
   - --resume mid-sprint starts from the correct round
@@ -264,21 +264,31 @@ async def test_harness_marks_sprint_failed_after_max_retries(
     assert '"failed"' in progress_json
 
 
-async def test_harness_resets_generator_session_on_retry(
+async def test_harness_generator_receives_no_session_id(
     output_dir: Path,
 ) -> None:
-    """After a generator failure, the next attempt must receive session_id=None
-    so the corrupted session is discarded."""
+    """Each generator call starts a new session — session_id is not a parameter."""
+    import inspect
+
+    from deep_researcher.agents.generator import run_generator
+    sig = inspect.signature(run_generator)
+    assert "session_id" not in sig.parameters, (
+        "run_generator() must not have a session_id parameter — sessions are per-turn only"
+    )
+
+
+async def test_harness_runs_multiple_rounds_stateless(
+    output_dir: Path,
+) -> None:
+    """Harness completes two rounds without session threading."""
     prd = output_dir / "prd.md"
     prd.write_text("# Test PRD")
+    round_count = 0
 
-    captured_session_ids: list[str | None] = []
-
-    async def _record_and_fail_then_succeed(*args, **kwargs):  # type: ignore[no-untyped-def]
-        captured_session_ids.append(kwargs.get("session_id"))
-        if len(captured_session_ids) == 1:
-            raise Exception("Generator CLI crashed")
-        return GeneratorRoundResult(session_id="new-session-id", input_tokens=0)
+    async def _fake_generator(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal round_count
+        round_count += 1
+        return GeneratorRoundResult(session_id="sdk-session", input_tokens=0)
 
     with (
         patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
@@ -295,10 +305,7 @@ async def test_harness_resets_generator_session_on_retry(
             new_callable=AsyncMock,
             return_value=_make_contract(),
         ),
-        patch(
-            "deep_researcher.harness.run_generator",
-            side_effect=_record_and_fail_then_succeed,
-        ),
+        patch("deep_researcher.harness.run_generator", side_effect=_fake_generator),
         patch(
             "deep_researcher.harness.run_critic",
             new_callable=AsyncMock,
@@ -309,13 +316,10 @@ async def test_harness_resets_generator_session_on_retry(
             prd=prd,
             output_dir=output_dir,
             resume=False,
-            config=_make_config(max_round_retries=1),
+            config=_make_config(max_round_retries=0),
         )
 
-    # First call: session_id is None (first round, no prior session)
-    assert captured_session_ids[0] is None
-    # Retry call: session_id must be None (reset after crash)
-    assert captured_session_ids[1] is None
+    assert round_count >= 1
 
 
 async def test_resume_fails_fast_without_checkpoint(output_dir: Path) -> None:
