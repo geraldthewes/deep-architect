@@ -169,6 +169,19 @@ async def run_simple_structured(  # noqa: UP047
     ) from last_exc
 
 
+def extract_input_tokens(result: ResultMessage) -> int:
+    """Return total input_tokens from a ResultMessage.
+
+    Sums across model_usage entries when present; falls back to the
+    top-level usage dict.  Returns 0 if neither is populated.
+    """
+    model_usage: dict[str, Any] = result.model_usage or {}
+    if model_usage:
+        return sum(int(u.get("input_tokens", 0)) for u in model_usage.values())
+    usage: dict[str, Any] = result.usage or {}
+    return int(usage.get("input_tokens", 0))
+
+
 @dataclass
 class ModelStats:
     """Per-model token totals."""
@@ -330,6 +343,7 @@ async def run_agent(
     label: str = "Agent",
     max_retries: int = 0,
     context_window: int | None = None,
+    last_known_input_tokens: int = 0,
 ) -> ResultMessage:
     """Run a query and return the ResultMessage.
 
@@ -338,7 +352,10 @@ async def run_agent(
     fresh session (resume=None) so the corrupted subprocess state is discarded.
 
     If *context_window* is provided, per-turn log lines include the context
-    utilisation as a percentage (input_tokens / context_window).
+    utilisation as a percentage.  The CLI's stream-json reports input_tokens=0
+    on intermediate AssistantMessage turns; pass *last_known_input_tokens* from
+    the previous round's ResultMessage to show a meaningful baseline until real
+    per-turn counts become available.
     """
     last_exc: Exception | None = None
 
@@ -358,15 +375,23 @@ async def run_agent(
                             "[%s] turn=%d API error: %s", label, turn_count, message.error
                         )
 
-                    # Build context-usage suffix for log lines
+                    # Build context-usage suffix for log lines.
+                    # The CLI's stream-json sets input_tokens=0 on intermediate
+                    # turns; real counts only arrive in the final ResultMessage.
+                    # Fall back to last_known_input_tokens (from the previous
+                    # round) so the suffix is meaningful from round 2 onward.
                     ctx_suffix = ""
                     msg_usage = message.usage or {}
-                    input_tokens = msg_usage.get("input_tokens")
-                    if input_tokens is not None and context_window is not None:
-                        pct = input_tokens / context_window * 100
-                        ctx_suffix = f" (ctx {input_tokens:,}/{context_window:,} {pct:.0f}%)"
-                    elif input_tokens is not None:
-                        ctx_suffix = f" (ctx {input_tokens:,})"
+                    turn_tokens = msg_usage.get("input_tokens") or 0
+                    display_tokens = turn_tokens or last_known_input_tokens
+                    approx = "" if turn_tokens else ">="
+                    if display_tokens and context_window is not None:
+                        pct = display_tokens / context_window * 100
+                        ctx_suffix = (
+                            f" (ctx {approx}{display_tokens:,}/{context_window:,} {pct:.0f}%)"
+                        )
+                    elif display_tokens:
+                        ctx_suffix = f" (ctx {approx}{display_tokens:,})"
 
                     for block in message.content:
                         if isinstance(block, TextBlock):
@@ -492,10 +517,12 @@ async def run_agent_text(
     label: str = "Agent",
     max_retries: int = 0,
     context_window: int | None = None,
+    last_known_input_tokens: int = 0,
 ) -> str:
     """Run a query and return the text result."""
     result = await run_agent(
-        options, prompt, label=label, max_retries=max_retries, context_window=context_window
+        options, prompt, label=label, max_retries=max_retries,
+        context_window=context_window, last_known_input_tokens=last_known_input_tokens,
     )
     return result.result or ""
 
@@ -506,10 +533,12 @@ async def run_agent_structured(
     label: str = "Agent",
     max_retries: int = 0,
     context_window: int | None = None,
+    last_known_input_tokens: int = 0,
 ) -> dict[str, Any]:
     """Run a query with output_format and return parsed structured output."""
     result = await run_agent(
-        options, prompt, label=label, max_retries=max_retries, context_window=context_window
+        options, prompt, label=label, max_retries=max_retries,
+        context_window=context_window, last_known_input_tokens=last_known_input_tokens,
     )
     if result.structured_output is not None:
         output: dict[str, Any] = result.structured_output

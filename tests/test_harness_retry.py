@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import git
 import pytest
 
+from deep_researcher.agents.generator import GeneratorRoundResult
 from deep_researcher.config import AgentConfig, HarnessConfig, ThresholdConfig
 from deep_researcher.harness import run_harness
 from deep_researcher.models.contract import SprintContract, SprintCriterion
@@ -118,7 +119,7 @@ async def test_harness_retries_round_on_generator_failure(
         gen_call_count += 1
         if gen_call_count == 1:
             raise Exception("Generator CLI crashed")
-        return None  # session_id
+        return GeneratorRoundResult(session_id=None, input_tokens=0)
 
     with (
         patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
@@ -190,7 +191,7 @@ async def test_harness_retries_round_on_critic_failure(
         patch(
             "deep_researcher.harness.run_generator",
             new_callable=AsyncMock,
-            return_value=None,
+            return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
         ),
         patch(
             "deep_researcher.harness.run_critic",
@@ -277,7 +278,7 @@ async def test_harness_resets_generator_session_on_retry(
         captured_session_ids.append(kwargs.get("session_id"))
         if len(captured_session_ids) == 1:
             raise Exception("Generator CLI crashed")
-        return "new-session-id"
+        return GeneratorRoundResult(session_id="new-session-id", input_tokens=0)
 
     with (
         patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
@@ -383,7 +384,11 @@ async def test_resume_skips_completed_sprints(output_dir: Path) -> None:
         patch("deep_researcher.harness.get_modified_files", return_value=[]),
         patch("deep_researcher.harness.git_commit"),
         patch("deep_researcher.harness.negotiate_contract", side_effect=_record_negotiate),
-        patch("deep_researcher.harness.run_generator", new_callable=AsyncMock, return_value=None),
+        patch(
+            "deep_researcher.harness.run_generator",
+            new_callable=AsyncMock,
+            return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
+        ),
         patch(
             "deep_researcher.harness.run_critic",
             new_callable=AsyncMock,
@@ -441,12 +446,12 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
     generator_calls: list[tuple[int, int]] = []  # (sprint_number, round_num)
     negotiate_calls: list[int] = []  # sprint numbers that triggered negotiation
 
-    async def _record_generator(*args: object, **kwargs: object) -> None:
+    async def _record_generator(*args: object, **kwargs: object) -> GeneratorRoundResult:
         # Positional signature: config, sprint, contract, prd, last_result, output_dir, round_num
         sprint_arg = args[1]
         round_num = args[6]
         generator_calls.append((sprint_arg.number, round_num))
-        return None
+        return GeneratorRoundResult(session_id=None, input_tokens=0)
 
     async def _record_negotiate(*args: object, **kwargs: object) -> SprintContract:
         sprint_arg = args[2]
@@ -538,7 +543,11 @@ async def test_resume_resets_failed_status(output_dir: Path) -> None:
             new_callable=AsyncMock,
             return_value=_make_contract(),
         ),
-        patch("deep_researcher.harness.run_generator", new_callable=AsyncMock, return_value=None),
+        patch(
+            "deep_researcher.harness.run_generator",
+            new_callable=AsyncMock,
+            return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
+        ),
         patch(
             "deep_researcher.harness.run_critic",
             new_callable=AsyncMock,
@@ -611,7 +620,11 @@ async def test_resume_mid_sprint_falls_back_to_negotiate_on_missing_contract(
         patch("deep_researcher.harness.get_modified_files", return_value=[]),
         patch("deep_researcher.harness.git_commit"),
         patch("deep_researcher.harness.negotiate_contract", side_effect=_record_negotiate),
-        patch("deep_researcher.harness.run_generator", new_callable=AsyncMock, return_value=None),
+        patch(
+            "deep_researcher.harness.run_generator",
+            new_callable=AsyncMock,
+            return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
+        ),
         patch(
             "deep_researcher.harness.run_critic",
             new_callable=AsyncMock,

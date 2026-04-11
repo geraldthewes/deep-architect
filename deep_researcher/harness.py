@@ -8,7 +8,7 @@ from rich.console import Console
 
 from deep_researcher.agents.client import init_run_stats, make_agent_options, run_agent_text
 from deep_researcher.agents.critic import check_ping_pong, review_contract, run_critic
-from deep_researcher.agents.generator import propose_contract, run_generator
+from deep_researcher.agents.generator import GeneratorRoundResult, propose_contract, run_generator
 from deep_researcher.config import AgentConfig, HarnessConfig
 from deep_researcher.exit_criteria import should_ping_pong_exit, sprint_passes
 from deep_researcher.git_ops import get_modified_files, git_commit, validate_git_repo
@@ -301,6 +301,7 @@ async def run_harness(
         last_result: CriticResult | None = None
         consecutive_passes = 0
         generator_session_id: str | None = None  # persist context across rounds per sprint
+        last_generator_input_tokens: int = 0     # last round's token count for ctx logging
 
         # On mid-sprint resume: restore round state from checkpoint
         start_round = sprint_status.rounds_completed + 1
@@ -357,7 +358,7 @@ async def run_harness(
                     sprint_status.status = "building"
                     save_progress(checkpoint_dir, progress)
                     t0 = time.monotonic()
-                    generator_session_id = await run_generator(
+                    gen_round: GeneratorRoundResult = await run_generator(
                         config.generator,
                         sprint,
                         contract,
@@ -368,7 +369,10 @@ async def run_harness(
                         cli_path=cli_path,
                         session_id=generator_session_id,
                         supplementary_context=supplementary_context,
+                        last_known_input_tokens=last_generator_input_tokens,
                     )
+                    generator_session_id = gen_round.session_id
+                    last_generator_input_tokens = gen_round.input_tokens
                     logger.info(
                         "[Sprint %d] Generator round %d completed in %.1fs",
                         sprint.number, round_num, time.monotonic() - t0,
@@ -423,7 +427,8 @@ async def run_harness(
                         "[Sprint %d] Round %d attempt %d/%d FAILED: %s",
                         sprint.number, round_num, round_attempt, t.max_round_retries + 1, exc,
                     )
-                    generator_session_id = None  # reset corrupted session
+                    generator_session_id = None       # reset corrupted session
+                    last_generator_input_tokens = 0  # context lost with session
                     if round_attempt <= t.max_round_retries:
                         logger.info(
                             "[Sprint %d] Retrying round %d with fresh generator session...",

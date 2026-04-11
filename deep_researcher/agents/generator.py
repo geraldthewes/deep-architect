@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from deep_researcher.agents.client import (
+    extract_input_tokens,
     make_agent_options,
     run_agent,
     run_simple_structured,
@@ -15,6 +17,14 @@ from deep_researcher.prompts import load_prompt
 from deep_researcher.sprints import SprintDefinition
 
 _log = get_logger(__name__)
+
+
+@dataclass
+class GeneratorRoundResult:
+    """Result of one generator round, used to thread session state across rounds."""
+
+    session_id: str | None
+    input_tokens: int
 
 # Tools the generator can use: full agentic access to write and inspect files
 GENERATOR_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
@@ -32,8 +42,9 @@ async def run_generator(
     cli_path: str | None = None,
     session_id: str | None = None,
     supplementary_context: str = "",
-) -> str | None:
-    """Run the Generator for one round. Returns session_id for continuation across rounds."""
+    last_known_input_tokens: int = 0,
+) -> GeneratorRoundResult:
+    """Run the Generator for one round. Returns session and token state for continuation."""
     if session_id:
         _log.info(
             "[Generator sprint=%d round=%d] Continuing session %s...",
@@ -105,8 +116,12 @@ async def run_generator(
         options, prompt, label=label,
         max_retries=config.max_agent_retries,
         context_window=config.context_window,
+        last_known_input_tokens=last_known_input_tokens,
     )
-    return result.session_id
+    return GeneratorRoundResult(
+        session_id=result.session_id,
+        input_tokens=extract_input_tokens(result),
+    )
 
 
 async def propose_contract(
