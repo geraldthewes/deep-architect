@@ -9,7 +9,7 @@ from rich.console import Console
 from deep_researcher.config import load_config
 from deep_researcher.git_ops import validate_git_repo
 from deep_researcher.harness import run_harness
-from deep_researcher.io.files import clean_run_artifacts, load_progress
+from deep_researcher.io.files import clean_run_artifacts, load_progress, reset_sprint_artifacts
 
 app = typer.Typer(help="Adversarial C4 architecture harness for BMAD projects.")
 console = Console()
@@ -44,6 +44,16 @@ def main(
     context: list[Path] = typer.Option(
         [], "--context", help="Supplementary context files (repeatable)"
     ),
+    reset_sprint: int | None = typer.Option(
+        None,
+        "--reset-sprint",
+        help=(
+            "Reset sprint N to initial state and resume from it. "
+            "Deletes sprint N's contract, feedback files, and history entries. "
+            "Sprints above N keep their current status."
+        ),
+        min=1,
+    ),
 ) -> None:
     """Run the adversarial C4 architecture harness."""
     if not prd.exists():
@@ -60,6 +70,24 @@ def main(
         cfg.generator.model = model_generator
     if model_critic:
         cfg.critic.model = model_critic
+
+    if reset_sprint is not None:
+        checkpoint = _find_checkpoint(output)
+        if checkpoint is None:
+            console.print("[red]Error:[/red] No checkpoint found — start a fresh run first.")
+            raise typer.Exit(1)
+        repo = validate_git_repo(output)
+        checkpoint_dir = Path(repo.working_tree_dir) / ".checkpoints"  # type: ignore[arg-type]
+        try:
+            _, affected = reset_sprint_artifacts(output, checkpoint_dir, reset_sprint)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1)
+        console.print(
+            f"[green]Sprint {reset_sprint} reset.[/green] "
+            f"{len(affected)} artifact(s) removed/updated."
+        )
+        resume = True  # implicitly resume from the reset sprint
 
     # If no --resume flag and a prior checkpoint exists, ask the user what to do.
     if not resume:

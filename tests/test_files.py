@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from deep_researcher.io.files import (
     append_critic_history,
     append_generator_history,
@@ -8,6 +10,7 @@ from deep_researcher.io.files import (
     load_contract,
     load_feedback,
     load_progress,
+    reset_sprint_artifacts,
     save_contract,
     save_feedback,
     save_progress,
@@ -255,6 +258,147 @@ def test_append_critic_history_severity_labels(tmp_path: Path) -> None:
     append_critic_history(tmp_path, sprint_num=1, round_num=1, result=result)
     history = (tmp_path / "critic-history.md").read_text()
     assert any(s in history for s in ("[Critical]", "[High]", "[Medium]", "[Low]"))
+
+
+def make_progress(total: int = 3) -> HarnessProgress:
+    return HarnessProgress(
+        total_sprints=total,
+        sprint_statuses=[
+            SprintStatus(sprint_number=i, sprint_name=f"Sprint {i}") for i in range(1, total + 1)
+        ],
+    )
+
+
+def test_reset_sprint_resets_status(tmp_path: Path) -> None:
+    """reset_sprint_artifacts sets status=pending and clears counters."""
+    init_workspace(tmp_path)
+    checkpoint_dir = tmp_path / ".checkpoints"
+    progress = make_progress()
+    progress.sprint_statuses[1].status = "building"
+    progress.sprint_statuses[1].rounds_completed = 4
+    progress.sprint_statuses[1].consecutive_passes = 2
+    progress.current_sprint = 2
+    save_progress(checkpoint_dir, progress)
+
+    updated, _ = reset_sprint_artifacts(tmp_path, checkpoint_dir, sprint_number=2)
+
+    assert updated.sprint_statuses[1].status == "pending"
+    assert updated.sprint_statuses[1].rounds_completed == 0
+    assert updated.sprint_statuses[1].consecutive_passes == 0
+    assert updated.sprint_statuses[1].final_score is None
+    assert updated.current_sprint == 2
+
+
+def test_reset_sprint_passed_decrements_completed(tmp_path: Path) -> None:
+    """Resetting a passed sprint decrements completed_sprints."""
+    init_workspace(tmp_path)
+    checkpoint_dir = tmp_path / ".checkpoints"
+    progress = make_progress()
+    progress.sprint_statuses[1].status = "passed"
+    progress.sprint_statuses[1].final_score = 9.5
+    progress.completed_sprints = 2
+    progress.current_sprint = 3
+    save_progress(checkpoint_dir, progress)
+
+    updated, _ = reset_sprint_artifacts(tmp_path, checkpoint_dir, sprint_number=2)
+
+    assert updated.completed_sprints == 1
+    assert updated.current_sprint == 2
+    assert updated.sprint_statuses[1].status == "pending"
+
+
+def test_reset_sprint_unterminate_harness(tmp_path: Path) -> None:
+    """Resetting a sprint un-terminates a complete/failed harness."""
+    init_workspace(tmp_path)
+    checkpoint_dir = tmp_path / ".checkpoints"
+    progress = make_progress()
+    progress.status = "complete"
+    progress.completed_sprints = 3
+    progress.sprint_statuses[2].status = "passed"
+    save_progress(checkpoint_dir, progress)
+
+    updated, _ = reset_sprint_artifacts(tmp_path, checkpoint_dir, sprint_number=3)
+
+    assert updated.status == "running"
+
+
+def test_reset_sprint_deletes_artifacts(tmp_path: Path) -> None:
+    """Contract and feedback files for the sprint are deleted; other sprints untouched."""
+    init_workspace(tmp_path)
+    checkpoint_dir = tmp_path / ".checkpoints"
+    save_progress(checkpoint_dir, make_progress())
+
+    criteria3 = [
+        SprintCriterion(name="a", description="desc a"),
+        SprintCriterion(name="b", description="desc b"),
+        SprintCriterion(name="c", description="desc c"),
+    ]
+    contract2 = SprintContract(
+        sprint_number=2, sprint_name="S2",
+        files_to_produce=["c2.md"],
+        criteria=criteria3,
+    )
+    save_contract(tmp_path, contract2)
+    result = make_result()
+    save_feedback(tmp_path, 2, 1, result)
+    save_feedback(tmp_path, 2, 2, result)
+    save_round_log(tmp_path, 2, 1, {"sprint": 2})
+
+    # Sprint 1 artifact should survive
+    contract1 = SprintContract(
+        sprint_number=1, sprint_name="S1",
+        files_to_produce=["c1.md"],
+        criteria=criteria3,
+    )
+    save_contract(tmp_path, contract1)
+
+    reset_sprint_artifacts(tmp_path, checkpoint_dir, sprint_number=2)
+
+    assert not (tmp_path / "contracts" / "sprint-2.json").exists()
+    assert not (tmp_path / "feedback" / "sprint-2-round-1.json").exists()
+    assert not (tmp_path / "feedback" / "sprint-2-round-2.json").exists()
+    assert not (tmp_path / "feedback" / "sprint-2-round-1-log.json").exists()
+    assert (tmp_path / "contracts" / "sprint-1.json").exists()
+
+
+def test_reset_sprint_strips_history(tmp_path: Path) -> None:
+    """Sprint N entries are removed from history files; other sprints kept."""
+    init_workspace(tmp_path)
+    checkpoint_dir = tmp_path / ".checkpoints"
+    save_progress(checkpoint_dir, make_progress())
+
+    result = make_result()
+    append_generator_history(
+        tmp_path, sprint_num=1, round_num=1,
+        previous_feedback=None, modified_files=[], input_tokens=0,
+    )
+    append_generator_history(
+        tmp_path, sprint_num=2, round_num=1,
+        previous_feedback=result, modified_files=[], input_tokens=100,
+    )
+    append_generator_history(
+        tmp_path, sprint_num=2, round_num=2,
+        previous_feedback=result, modified_files=[], input_tokens=200,
+    )
+    append_critic_history(tmp_path, sprint_num=2, round_num=1, result=result)
+
+    reset_sprint_artifacts(tmp_path, checkpoint_dir, sprint_number=2)
+
+    gen_hist = (tmp_path / "generator-history.md").read_text()
+    critic_hist = (tmp_path / "critic-history.md").read_text()
+    assert "## Sprint 1 · Round 1" in gen_hist
+    assert "## Sprint 2" not in gen_hist
+    assert "## Sprint 2" not in critic_hist
+
+
+def test_reset_sprint_invalid_number(tmp_path: Path) -> None:
+    """Out-of-range sprint number raises ValueError."""
+    init_workspace(tmp_path)
+    checkpoint_dir = tmp_path / ".checkpoints"
+    save_progress(checkpoint_dir, make_progress(total=3))
+
+    with pytest.raises(ValueError, match="out of range"):
+        reset_sprint_artifacts(tmp_path, checkpoint_dir, sprint_number=5)
 
 
 def test_clean_run_artifacts_removes_history_files(tmp_path: Path) -> None:

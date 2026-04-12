@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -145,6 +146,74 @@ def save_round_log(
     """Write structured round log for reproducibility."""
     path = output_dir / "feedback" / f"sprint-{sprint_number}-round-{round_num}-log.json"
     path.write_text(json.dumps(data, indent=2, default=str))
+
+
+def reset_sprint_artifacts(
+    output_dir: Path,
+    checkpoint_dir: Path,
+    sprint_number: int,
+) -> tuple[HarnessProgress, list[Path]]:
+    """Reset a single sprint to pending, wiping its contract, feedback, and history entries.
+
+    Leaves sprints above and below sprint_number untouched.
+    Returns (updated_progress, list_of_affected_paths).
+    """
+    progress = load_progress(checkpoint_dir)
+
+    total = progress.total_sprints
+    if not 1 <= sprint_number <= total:
+        raise ValueError(f"Sprint {sprint_number} is out of range [1, {total}]")
+
+    sprint_status = progress.sprint_statuses[sprint_number - 1]
+    was_passed = sprint_status.status == "passed"
+
+    # Reset sprint status fields
+    sprint_status.status = "pending"
+    sprint_status.rounds_completed = 0
+    sprint_status.consecutive_passes = 0
+    sprint_status.final_score = None
+
+    # Walk current_sprint back if needed
+    if progress.current_sprint >= sprint_number:
+        progress.current_sprint = sprint_number
+
+    # Undo completed_sprints credit if the sprint was previously passed
+    if was_passed and progress.completed_sprints > 0:
+        progress.completed_sprints -= 1
+
+    # Un-terminate the harness so --resume can continue
+    if progress.status in ("complete", "failed"):
+        progress.status = "running"
+
+    save_progress(checkpoint_dir, progress)
+
+    affected: list[Path] = []
+
+    # Delete contract
+    contract_path = output_dir / "contracts" / f"sprint-{sprint_number}.json"
+    if contract_path.exists():
+        contract_path.unlink()
+        affected.append(contract_path)
+
+    # Delete all feedback files for this sprint
+    feedback_dir = output_dir / "feedback"
+    if feedback_dir.is_dir():
+        for f in feedback_dir.glob(f"sprint-{sprint_number}-round-*"):
+            f.unlink()
+            affected.append(f)
+
+    # Strip sprint N entries from history files (each entry ends with ---\n)
+    pattern = re.compile(rf"\n## Sprint {sprint_number} ·[^#]*?---\n", re.DOTALL)
+    for hist_name in ("generator-history.md", "critic-history.md"):
+        hist_path = output_dir / hist_name
+        if hist_path.exists():
+            original = hist_path.read_text()
+            stripped = pattern.sub("", original)
+            if stripped != original:
+                hist_path.write_text(stripped)
+                affected.append(hist_path)
+
+    return progress, affected
 
 
 def clean_run_artifacts(output_dir: Path, checkpoint_dir: Path) -> list[Path]:
