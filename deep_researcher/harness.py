@@ -522,6 +522,15 @@ async def run_harness(
                 "[Sprint %d] FAILED after %d rounds (elapsed=%.1fm)",
                 sprint.number, t.max_rounds_per_sprint, elapsed_total / 60,
             )
+            logger.error(
+                "Hint: sprint exhausted max_rounds_per_sprint=%d without achieving "
+                "%d consecutive passing round(s). Last consecutive passes: %d/%d. "
+                "To fix: increase max_rounds_per_sprint (currently %d) or lower "
+                "consecutive_passing_rounds (currently %d) in ~/.deep-researcher.toml.",
+                t.max_rounds_per_sprint, t.consecutive_passing_rounds,
+                consecutive_passes, t.consecutive_passing_rounds,
+                t.max_rounds_per_sprint, t.consecutive_passing_rounds,
+            )
             sprint_status.status = "failed"
             progress.status = "failed"
             save_progress(checkpoint_dir, progress)
