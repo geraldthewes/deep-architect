@@ -101,6 +101,30 @@ def append_critic_history(
         fh.write(entry)
 
 
+def append_rollback_event(
+    output_dir: Path,
+    sprint_num: int,
+    round_num: int,
+    regressed_score: float,
+    best_score: float,
+    best_commit_sha: str,
+) -> None:
+    """Append a [ROLLBACK]-prefixed entry to generator-history.md."""
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    entry = (
+        f"\n## [ROLLBACK] Sprint {sprint_num} · Round {round_num} — {timestamp}\n"
+        f"**Action**: Architecture files reverted to best-scoring commit\n"
+        f"**Reason**: Score regressed {regressed_score:.1f}/10 vs best {best_score:.1f}/10\n"
+        f"**Reverted to commit**: `{best_commit_sha[:12]}`\n"
+        f"**What this means**: The files you see now reflect the best architecture so far.\n"
+        f"Your next round should build on this baseline — do NOT reintroduce the changes\n"
+        f"that caused the regression. Check critic-history.md for what the critic flagged.\n"
+        f"---\n"
+    )
+    with (output_dir / "generator-history.md").open("a") as fh:
+        fh.write(entry)
+
+
 def save_progress(checkpoint_dir: Path, progress: HarnessProgress) -> Path:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     path = checkpoint_dir / "progress.json"

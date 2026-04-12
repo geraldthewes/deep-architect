@@ -11,10 +11,17 @@ from deep_researcher.agents.critic import check_ping_pong, review_contract, run_
 from deep_researcher.agents.generator import GeneratorRoundResult, propose_contract, run_generator
 from deep_researcher.config import AgentConfig, HarnessConfig
 from deep_researcher.exit_criteria import should_ping_pong_exit, sprint_passes
-from deep_researcher.git_ops import get_modified_files, git_commit, validate_git_repo
+from deep_researcher.git_ops import (
+    get_modified_files,
+    git_commit,
+    git_commit_staged,
+    restore_arch_files_from_commit,
+    validate_git_repo,
+)
 from deep_researcher.io.files import (
     append_critic_history,
     append_generator_history,
+    append_rollback_event,
     init_workspace,
     load_contract,
     load_feedback,
@@ -314,6 +321,8 @@ async def run_harness(
 
         last_result: CriticResult | None = None
         consecutive_passes = 0
+        best_result: CriticResult | None = None
+        best_commit_sha: str | None = None
 
         # On mid-sprint resume: restore round state from checkpoint
         start_round = sprint_status.rounds_completed + 1
@@ -327,6 +336,15 @@ async def run_harness(
                 last_result = load_feedback(
                     output_dir, sprint.number, sprint_status.rounds_completed
                 )
+            # Seed best_result from prior rounds (best_commit_sha stays None —
+            # rollback is only safe once a new commit exists in this session)
+            for r in range(1, sprint_status.rounds_completed + 1):
+                try:
+                    prior = load_feedback(output_dir, sprint.number, r)
+                    if best_result is None or prior.average_score > best_result.average_score:
+                        best_result = prior
+                except FileNotFoundError:
+                    pass
             logger.info(
                 "[Sprint %d] Resuming from round %d (rounds_completed=%d, consecutive_passes=%d)",
                 sprint.number, start_round,
@@ -487,6 +505,15 @@ async def run_harness(
                     delta, direction,
                 )
 
+            # Track best for keep-best hill climbing
+            if best_result is None or result.average_score > best_result.average_score:
+                best_result = result
+                best_commit_sha = repo.head.commit.hexsha
+                logger.info(
+                    "[Sprint %d] New best score: %.1f (commit %s)",
+                    sprint.number, best_result.average_score, best_commit_sha[:8],
+                )
+
             # Exit criteria
             if sprint_passes(result, t.min_score):
                 consecutive_passes += 1
@@ -526,7 +553,39 @@ async def run_harness(
                         sprint.number, pp.similarity_score, t.ping_pong_similarity_threshold,
                     )
 
-            last_result = result
+            # Keep-best rollback
+            rolled_back = False
+            if (
+                best_result is not None
+                and best_commit_sha is not None
+                and result.average_score
+                < best_result.average_score - t.rollback_regression_threshold
+            ):
+                logger.warning(
+                    "[Sprint %d] Round %d score %.1f < best %.1f — rolling back to %s",
+                    sprint.number, round_num,
+                    result.average_score, best_result.average_score, best_commit_sha[:8],
+                )
+                restored = restore_arch_files_from_commit(repo, best_commit_sha)
+                if restored:
+                    git_commit_staged(
+                        repo,
+                        f"Rollback sprint {sprint.number} round {round_num}: "
+                        f"restore best (score {best_result.average_score:.1f}, "
+                        f"was {result.average_score:.1f})",
+                    )
+                    logger.info(
+                        "[Sprint %d] Rollback committed: %d file(s)", sprint.number, len(restored)
+                    )
+                append_rollback_event(
+                    output_dir, sprint.number, round_num,
+                    result.average_score, best_result.average_score, best_commit_sha,
+                )
+                last_result = best_result  # next generator sees best-version feedback
+                rolled_back = True
+
+            if not rolled_back:
+                last_result = result
         else:
             # Max rounds exhausted without passing
             elapsed_total = time.time() - start_time

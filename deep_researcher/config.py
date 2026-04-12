@@ -21,6 +21,7 @@ class ThresholdConfig(BaseModel):
     timeout_hours: float = 0.0  # 0 = disabled; positive value enforces a wall-clock limit
     ping_pong_similarity_threshold: float = 0.85
     max_round_retries: int = 2
+    rollback_regression_threshold: float = 0.05
 
 
 def _default_generator() -> AgentConfig:

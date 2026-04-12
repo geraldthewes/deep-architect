@@ -3,7 +3,13 @@ from pathlib import Path
 import git
 import pytest
 
-from deep_researcher.git_ops import get_modified_files, git_commit, validate_git_repo
+from deep_researcher.git_ops import (
+    get_modified_files,
+    git_commit,
+    git_commit_staged,
+    restore_arch_files_from_commit,
+    validate_git_repo,
+)
 
 
 def test_validate_git_repo_success(tmp_path: Path) -> None:
@@ -127,3 +133,96 @@ def test_git_commit_sprint_boundary_noop(tmp_path: Path) -> None:
     git_commit(repo, "Sprint 1 complete: C4 Context View", [])
 
     assert repo.head.commit.hexsha == sha_after_gen
+
+
+def test_restore_arch_files_restores_modified(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    arch_file = tmp_path / "architecture.md"
+    arch_file.write_text("# Best content")
+    repo.index.add([str(arch_file)])
+    best_commit = repo.index.commit("best")
+    best_sha = best_commit.hexsha
+
+    arch_file.write_text("# Regressed content")
+    repo.index.add([str(arch_file)])
+    repo.index.commit("regressed")
+
+    restored = restore_arch_files_from_commit(repo, best_sha)
+
+    assert "architecture.md" in restored
+    assert arch_file.read_text() == "# Best content"
+
+
+def test_restore_arch_files_skips_excluded(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    excluded_file = tmp_path / "generator-learnings.md"
+    excluded_file.write_text("# Original learnings")
+    repo.index.add([str(excluded_file)])
+    best_commit = repo.index.commit("best")
+    best_sha = best_commit.hexsha
+
+    excluded_file.write_text("# Updated learnings")
+    repo.index.add([str(excluded_file)])
+    repo.index.commit("updated learnings")
+
+    restored = restore_arch_files_from_commit(repo, best_sha)
+
+    assert restored == []
+    assert excluded_file.read_text() == "# Updated learnings"
+
+
+def test_restore_arch_files_deletes_added_files(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    base_file = tmp_path / "base.md"
+    base_file.write_text("# base")
+    repo.index.add([str(base_file)])
+    best_commit = repo.index.commit("best")
+    best_sha = best_commit.hexsha
+
+    added_file = tmp_path / "added-after-best.md"
+    added_file.write_text("# Added later")
+    repo.index.add([str(added_file)])
+    repo.index.commit("added file")
+
+    restored = restore_arch_files_from_commit(repo, best_sha)
+
+    assert "added-after-best.md" in restored
+    assert not added_file.exists()
+
+
+def test_restore_arch_files_noop_when_at_best(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    f = tmp_path / "arch.md"
+    f.write_text("# content")
+    repo.index.add([str(f)])
+    best_commit = repo.index.commit("best")
+    best_sha = best_commit.hexsha
+
+    restored = restore_arch_files_from_commit(repo, best_sha)
+
+    assert restored == []
+
+
+def test_git_commit_staged_commits_staged(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    repo.index.commit("init")
+
+    f = tmp_path / "staged.md"
+    f.write_text("# content")
+    repo.index.add([str(f)])
+
+    result = git_commit_staged(repo, "staged commit")
+
+    assert result is True
+    assert repo.head.commit.message == "staged commit"
+
+
+def test_git_commit_staged_noop_when_nothing_staged(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    repo.index.commit("init")
+    initial_sha = repo.head.commit.hexsha
+
+    result = git_commit_staged(repo, "nothing to commit")
+
+    assert result is False
+    assert repo.head.commit.hexsha == initial_sha
