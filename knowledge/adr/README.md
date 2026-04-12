@@ -27,6 +27,7 @@ This directory contains ADRs capturing the key architectural decisions made duri
 | [ADR-019](ADR-019-severity-blocking.md) | Critical/High Severity Issues Block Sprint Completion Regardless of Score | Accepted |
 | [ADR-020](ADR-020-allow-extra-files-flag.md) | Permissive Extra Files via allow_extra_files Sprint Flag | Accepted |
 | [ADR-021](ADR-021-stateless-session-per-turn.md) | Stateless Session Per Turn — Generator Session Reset Every Round | Accepted |
+| [ADR-022](ADR-022-per-agent-timeout-sigterm.md) | Per-Agent Timeout and Graceful SIGTERM Handling | Accepted |
 
 ## Key Themes
 
@@ -36,6 +37,6 @@ This directory contains ADRs capturing the key architectural decisions made duri
 
 **Adversarial quality gates** — ADR-003, ADR-006, ADR-019: Strict separation of generator/critic roles enforced by asymmetric tool access. Exit criteria combine numeric scoring, hard severity blocks, and ping-pong detection.
 
-**Resilience** — ADR-021, ADR-011, ADR-015, ADR-016: Two retry layers, stateless-session per turn, sprint-level resume, and preflight validation make the harness robust to transient failures.
+**Resilience** — ADR-022, ADR-021, ADR-011, ADR-015, ADR-016: Per-agent timeout with automatic retry, SIGTERM graceful shutdown, two retry layers, stateless-session per turn, sprint-level resume, and preflight validation make the harness robust to transient failures including laptop hibernation.
 
 **Cost optimization** — ADR-005, ADR-014, ADR-018: Cheaper pydantic-ai calls for no-tool operations; extended thinking disabled; full cost accounting via RunStats.

@@ -41,7 +41,7 @@ Verification:
 - `git log --oneline` shows `Rollback sprint N round R: restore best (...)` commits on regressing runs.
 - `generator-history.md` contains `[ROLLBACK]` entries.
 - `generator-learnings.md`, `generator-history.md`, `critic-history.md` are preserved across rollback.
-- Full test suite: 46 + 5 = 51 tests pass.
+- Full test suite: 46 + 5 = 51 tests pass (note: suite has since grown to 144 with later additions).
 
 ---
 
@@ -291,7 +291,7 @@ Update import to include `git_commit_staged` and `restore_arch_files_from_commit
 - [x] `uv run python -m pytest tests/test_git_ops.py -v` — all 17 tests pass (11 existing + 6 new)
 - [x] `uv run ruff check deep_architect/ tests/`
 - [x] `uv run mypy deep_architect/`
-- [x] `uv run python -m pytest tests/ -v` — full suite: 129 tests pass
+- [x] `uv run python -m pytest tests/ -v` — full suite: 129 tests pass at time of writing (144 as of 2026-04-12 after resilience additions)
 - [x] `uv run bandit -r deep_architect/ -ll`
 
 Run all together:
