@@ -326,3 +326,16 @@ uv run bandit -r deep_architect/ -ll
 - ADR index: `knowledge/adr/README.md`
 - Existing patterns reused: `git_ops.git_commit()` (`git.BadName` guard), `io.files.append_generator_history()` (append pattern)
 - Reference inspiration: Karpathy AutoResearch hill-climbing-with-rollback
+
+---
+
+## Status: CLOSED
+
+**Closed:** 2026-04-12  
+**Outcome:** Fully implemented and merged to `main` (commit `c39bb56` and prior). All 144 tests pass. ADR-023 written.
+
+All success criteria met:
+- `git log --oneline` shows `Rollback sprint N round R: restore best (...)` commits ✅ (manual)
+- `generator-history.md` contains `[ROLLBACK]` entries ✅ (manual)
+- `generator-learnings.md` preserved across rollback ✅ (manual)
+- Full automated suite (ruff + mypy + pytest + bandit) passes ✅

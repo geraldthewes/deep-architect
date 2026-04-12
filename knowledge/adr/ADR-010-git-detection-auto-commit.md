@@ -31,5 +31,6 @@ The output directory must be inside a git repository (validated at startup by `v
 - The harness calls `git_commit()` after every successful generator pass, even in early rounds that the critic might reject.
 - Commit history faithfully records all iterations including failed ones (critic may score round 1 poorly; that commit still exists).
 - Users can see the full architectural evolution via `git log`.
+- Rollback commits (ADR-023) use a separate `git_commit_staged()` function — the restore operation stages directly to the index, so the working-tree-diff path used by `git_commit()` would not detect the changes.
 
 **Files:** `deep_architect/git_ops.py`, `deep_architect/harness.py:285-299`
