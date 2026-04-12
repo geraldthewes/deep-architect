@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -264,7 +265,7 @@ def init_run_stats() -> RunStats:
 def _tool_summary(tool: ToolUseBlock) -> str:
     """Return a short human-readable description of a tool call."""
     inp = tool.input
-    name = tool.name
+    name: str = tool.name
     if name in ("Read", "Write", "Edit"):
         path = inp.get("file_path", "")
         return f"{name} {path}"
@@ -272,7 +273,8 @@ def _tool_summary(tool: ToolUseBlock) -> str:
         cmd = inp.get("command", "")
         return f"Bash: {cmd[:60]}{'...' if len(cmd) > 60 else ''}"
     if name in ("Grep", "Glob"):
-        return f"{name}: {inp.get('pattern', inp.get('glob', ''))}"
+        pattern: str = inp.get("pattern", inp.get("glob", "")) or ""
+        return f"{name}: {pattern}"
     return name
 
 
@@ -337,6 +339,111 @@ def make_agent_options(
     )
 
 
+async def _consume_query(
+    prompt: str,
+    options: ClaudeAgentOptions,
+    label: str,
+    context_window: int | None,
+    last_known_input_tokens: int,
+) -> tuple[ResultMessage, int, int, int]:
+    """Consume one query generator and return (result, turn_count, tool_count, text_block_count).
+
+    Extracted so it can be wrapped with asyncio.wait_for() for timeout enforcement.
+    Raises RuntimeError if the query completes without a ResultMessage or reports an error.
+    """
+    result: ResultMessage | None = None
+    turn_count = 0
+    tool_count = 0
+    text_block_count = 0
+
+    async for message in query(prompt=prompt, options=options):
+        if isinstance(message, AssistantMessage):
+            turn_count += 1
+
+            if message.error is not None:
+                _log.warning(
+                    "[%s] turn=%d API error: %s", label, turn_count, message.error
+                )
+
+            # Build context-usage suffix for log lines.
+            # The CLI's stream-json sets input_tokens=0 on intermediate
+            # turns; real counts only arrive in the final ResultMessage.
+            # Fall back to last_known_input_tokens (from the previous
+            # round) so the suffix is meaningful from round 2 onward.
+            ctx_suffix = ""
+            msg_usage = message.usage or {}
+            turn_tokens = msg_usage.get("input_tokens") or 0
+            display_tokens = turn_tokens or last_known_input_tokens
+            approx = "" if turn_tokens else ">="
+            if display_tokens and context_window is not None:
+                pct = display_tokens / context_window * 100
+                ctx_suffix = (
+                    f" (ctx {approx}{display_tokens:,}/{context_window:,} {pct:.0f}%)"
+                )
+            elif display_tokens:
+                ctx_suffix = f" (ctx {approx}{display_tokens:,})"
+
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    text_block_count += 1
+                    snippet = block.text[:200].replace("\n", " ")
+                    if len(block.text) > 200:
+                        snippet += "..."
+                    log_fn = _log.warning if message.error is not None else _log.debug
+                    log_fn(
+                        "[%s] turn=%d text (%d chars): %s",
+                        label, turn_count, len(block.text), snippet,
+                    )
+                elif isinstance(block, ToolUseBlock):
+                    tool_count += 1
+                    if block.name == _STRUCTURED_OUTPUT_TOOL:
+                        _log.info(
+                            "[%s] turn=%d StructuredOutput (keys: %s)%s",
+                            label, turn_count, list(block.input.keys()),
+                            ctx_suffix,
+                        )
+                    elif block.name not in KNOWN_TOOLS:
+                        _log.warning(
+                            "[%s] turn=%d unexpected tool call: %s (input keys: %s)%s",
+                            label, turn_count, block.name,
+                            list(block.input.keys()), ctx_suffix,
+                        )
+                    else:
+                        _log.info(
+                            "[%s] turn=%d %s%s",
+                            label, turn_count, _tool_summary(block),
+                            ctx_suffix,
+                        )
+
+        elif isinstance(message, RateLimitEvent):
+            info = message.rate_limit_info
+            if info.status == "rejected":
+                _log.error(
+                    "[%s] Rate limit REJECTED (type=%s resets_at=%s)",
+                    label, info.rate_limit_type, info.resets_at,
+                )
+            elif info.status == "allowed_warning":
+                util_pct = (
+                    f"{info.utilization * 100:.0f}%"
+                    if info.utilization is not None
+                    else "?"
+                )
+                _log.warning(
+                    "[%s] Rate limit warning (type=%s utilization=%s)",
+                    label, info.rate_limit_type, util_pct,
+                )
+
+        elif isinstance(message, ResultMessage):
+            result = message
+
+    if result is None:
+        raise RuntimeError("Agent query completed without a ResultMessage")
+    if result.is_error:
+        raise RuntimeError(f"Agent query failed: {result.result}")
+
+    return result, turn_count, tool_count, text_block_count
+
+
 async def run_agent(
     options: ClaudeAgentOptions,
     prompt: str,
@@ -344,6 +451,7 @@ async def run_agent(
     max_retries: int = 0,
     context_window: int | None = None,
     last_known_input_tokens: int = 0,
+    timeout_seconds: float | None = None,
 ) -> ResultMessage:
     """Run a query and return the ResultMessage.
 
@@ -356,100 +464,36 @@ async def run_agent(
     on intermediate AssistantMessage turns; pass *last_known_input_tokens* from
     the previous round's ResultMessage to show a meaningful baseline until real
     per-turn counts become available.
+
+    If *timeout_seconds* is set, each attempt is bounded by that wall-clock limit.
+    A timed-out attempt is retried like any other failure (with a fresh session).
+    Use this to recover from stale network connections (e.g. after laptop hibernation).
     """
     last_exc: Exception | None = None
 
     for attempt in range(1, max_retries + 2):
-        result: ResultMessage | None = None
-        turn_count = 0
-        tool_count = 0
-        text_block_count = 0
-
         try:
-            async for message in query(prompt=prompt, options=options):
-                if isinstance(message, AssistantMessage):
-                    turn_count += 1
+            if timeout_seconds is not None:
+                result, turn_count, tool_count, text_block_count = await asyncio.wait_for(
+                    _consume_query(
+                        prompt, options, label, context_window, last_known_input_tokens
+                    ),
+                    timeout=timeout_seconds,
+                )
+            else:
+                result, turn_count, tool_count, text_block_count = await _consume_query(
+                    prompt, options, label, context_window, last_known_input_tokens
+                )
 
-                    if message.error is not None:
-                        _log.warning(
-                            "[%s] turn=%d API error: %s", label, turn_count, message.error
-                        )
-
-                    # Build context-usage suffix for log lines.
-                    # The CLI's stream-json sets input_tokens=0 on intermediate
-                    # turns; real counts only arrive in the final ResultMessage.
-                    # Fall back to last_known_input_tokens (from the previous
-                    # round) so the suffix is meaningful from round 2 onward.
-                    ctx_suffix = ""
-                    msg_usage = message.usage or {}
-                    turn_tokens = msg_usage.get("input_tokens") or 0
-                    display_tokens = turn_tokens or last_known_input_tokens
-                    approx = "" if turn_tokens else ">="
-                    if display_tokens and context_window is not None:
-                        pct = display_tokens / context_window * 100
-                        ctx_suffix = (
-                            f" (ctx {approx}{display_tokens:,}/{context_window:,} {pct:.0f}%)"
-                        )
-                    elif display_tokens:
-                        ctx_suffix = f" (ctx {approx}{display_tokens:,})"
-
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            text_block_count += 1
-                            snippet = block.text[:200].replace("\n", " ")
-                            if len(block.text) > 200:
-                                snippet += "..."
-                            log_fn = _log.warning if message.error is not None else _log.debug
-                            log_fn(
-                                "[%s] turn=%d text (%d chars): %s",
-                                label, turn_count, len(block.text), snippet,
-                            )
-                        elif isinstance(block, ToolUseBlock):
-                            tool_count += 1
-                            if block.name == _STRUCTURED_OUTPUT_TOOL:
-                                _log.info(
-                                    "[%s] turn=%d StructuredOutput (keys: %s)%s",
-                                    label, turn_count, list(block.input.keys()),
-                                    ctx_suffix,
-                                )
-                            elif block.name not in KNOWN_TOOLS:
-                                _log.warning(
-                                    "[%s] turn=%d unexpected tool call: %s (input keys: %s)%s",
-                                    label, turn_count, block.name,
-                                    list(block.input.keys()), ctx_suffix,
-                                )
-                            else:
-                                _log.info(
-                                    "[%s] turn=%d %s%s",
-                                    label, turn_count, _tool_summary(block),
-                                    ctx_suffix,
-                                )
-
-                elif isinstance(message, RateLimitEvent):
-                    info = message.rate_limit_info
-                    if info.status == "rejected":
-                        _log.error(
-                            "[%s] Rate limit REJECTED (type=%s resets_at=%s)",
-                            label, info.rate_limit_type, info.resets_at,
-                        )
-                    elif info.status == "allowed_warning":
-                        util_pct = (
-                            f"{info.utilization * 100:.0f}%"
-                            if info.utilization is not None
-                            else "?"
-                        )
-                        _log.warning(
-                            "[%s] Rate limit warning (type=%s utilization=%s)",
-                            label, info.rate_limit_type, util_pct,
-                        )
-
-                elif isinstance(message, ResultMessage):
-                    result = message
-
-            if result is None:
-                raise RuntimeError("Agent query completed without a ResultMessage")
-            if result.is_error:
-                raise RuntimeError(f"Agent query failed: {result.result}")
+        except TimeoutError:
+            _log.warning(
+                "[%s] attempt %d/%d TIMED OUT after %.0fs"
+                " — network may have disconnected (e.g. after hibernation)",
+                label, attempt, max_retries + 1, timeout_seconds,
+            )
+            last_exc = TimeoutError(f"Agent timed out after {timeout_seconds}s")
+            options = replace(options, resume=None)
+            continue
 
         except Exception as exc:
             last_exc = exc
@@ -519,11 +563,13 @@ async def run_agent_text(
     max_retries: int = 0,
     context_window: int | None = None,
     last_known_input_tokens: int = 0,
+    timeout_seconds: float | None = None,
 ) -> str:
     """Run a query and return the text result."""
     result = await run_agent(
         options, prompt, label=label, max_retries=max_retries,
         context_window=context_window, last_known_input_tokens=last_known_input_tokens,
+        timeout_seconds=timeout_seconds,
     )
     return result.result or ""
 
@@ -535,11 +581,13 @@ async def run_agent_structured(
     max_retries: int = 0,
     context_window: int | None = None,
     last_known_input_tokens: int = 0,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Run a query with output_format and return parsed structured output."""
     result = await run_agent(
         options, prompt, label=label, max_retries=max_retries,
         context_window=context_window, last_known_input_tokens=last_known_input_tokens,
+        timeout_seconds=timeout_seconds,
     )
     if result.structured_output is not None:
         output: dict[str, Any] = result.structured_output

@@ -80,6 +80,7 @@ async def run_critic(
         options, prompt, label=label,
         max_retries=config.max_agent_retries,
         context_window=config.context_window,
+        timeout_seconds=config.agent_timeout_seconds,
     )
     result = CriticResult.model_validate(raw)
     _log.info(

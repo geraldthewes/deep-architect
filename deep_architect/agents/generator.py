@@ -118,6 +118,7 @@ async def run_generator(
         options, prompt, label=label,
         max_retries=config.max_agent_retries,
         context_window=config.context_window,
+        timeout_seconds=config.agent_timeout_seconds,
     )
     return GeneratorRoundResult(
         session_id=result.session_id,

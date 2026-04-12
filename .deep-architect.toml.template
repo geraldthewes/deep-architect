@@ -10,16 +10,18 @@
 #   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
 [generator]
-model              = "sonnet"    # Model alias: "sonnet", "opus", "haiku", or full model ID
-max_turns          = 50
-max_agent_retries  = 2           # Retry the agent up to N times on CLI crash before failing
-# context_window   = 200000      # Set to log context utilisation % on each tool call
+model                  = "sonnet"    # Model alias: "sonnet", "opus", "haiku", or full model ID
+max_turns              = 50
+max_agent_retries      = 2           # Retry the agent up to N times on CLI crash before failing
+# context_window       = 200000      # Set to log context utilisation % on each tool call
+# agent_timeout_seconds = 3600       # Per-attempt wall-clock limit in seconds (default 60 min); set to 0 or omit to disable
 
 [critic]
-model              = "sonnet"
-max_turns          = 30
-max_agent_retries  = 2
-# context_window   = 200000
+model                  = "sonnet"
+max_turns              = 30
+max_agent_retries      = 2
+# context_window       = 200000
+# agent_timeout_seconds = 1800       # Critic is read-only and typically faster (default 30 min)
 
 # Optional: override the claude CLI path (default: auto-detected from PATH).
 # Use this if the bundled SDK binary ignores ANTHROPIC_BASE_URL.

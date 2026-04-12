@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 from pathlib import Path
 
 import typer
@@ -120,6 +122,18 @@ def main(
                 deleted = clean_run_artifacts(output, checkpoint_dir)
                 console.print(f"[green]Cleaned up {len(deleted)} file(s).[/green]\n")
 
-    asyncio.run(
-        run_harness(prd=prd, output_dir=output, resume=resume, config=cfg, context_files=context)
-    )
+    def _sigterm_to_sigint(signum: int, frame: object) -> None:
+        """Redirect SIGTERM to SIGINT so asyncio.run() handles it cleanly."""
+        os.kill(os.getpid(), signal.SIGINT)
+
+    signal.signal(signal.SIGTERM, _sigterm_to_sigint)
+
+    try:
+        asyncio.run(
+            run_harness(
+                prd=prd, output_dir=output, resume=resume, config=cfg, context_files=context
+            )
+        )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted — run with --resume to continue.[/yellow]")
+        raise typer.Exit(0)

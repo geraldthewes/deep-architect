@@ -11,6 +11,7 @@ class AgentConfig(BaseModel):
     max_turns: int = 50
     max_agent_retries: int = 2
     context_window: int | None = None  # model context window size; logged when set
+    agent_timeout_seconds: float | None = 1800.0  # per-attempt wall-clock limit; None to disable
 
 
 class ThresholdConfig(BaseModel):
@@ -25,11 +26,11 @@ class ThresholdConfig(BaseModel):
 
 
 def _default_generator() -> AgentConfig:
-    return AgentConfig(model="sonnet", max_turns=50)
+    return AgentConfig(model="sonnet", max_turns=50, agent_timeout_seconds=3600.0)
 
 
 def _default_critic() -> AgentConfig:
-    return AgentConfig(model="sonnet", max_turns=30)
+    return AgentConfig(model="sonnet", max_turns=30, agent_timeout_seconds=1800.0)
 
 
 class HarnessConfig(BaseModel):
