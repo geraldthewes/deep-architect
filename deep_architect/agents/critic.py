@@ -2,17 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from deep_researcher.agents.client import (
+from deep_architect.agents.client import (
     json_schema_format,
     make_agent_options,
     run_agent_structured,
     run_simple_structured,
 )
-from deep_researcher.config import AgentConfig
-from deep_researcher.logger import get_logger
-from deep_researcher.models.contract import ContractReviewResult, SprintContract
-from deep_researcher.models.feedback import CriticResult, PingPongResult
-from deep_researcher.prompts import load_prompt
+from deep_architect.config import AgentConfig
+from deep_architect.logger import get_logger
+from deep_architect.models.contract import ContractReviewResult, SprintContract
+from deep_architect.models.feedback import CriticResult, PingPongResult
+from deep_architect.prompts import load_prompt
 
 _log = get_logger(__name__)
 

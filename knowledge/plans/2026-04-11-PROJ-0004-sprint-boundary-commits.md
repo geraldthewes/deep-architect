@@ -28,7 +28,7 @@ After implementation:
 
 ### Verification:
 ```bash
-uv run ruff check deep_researcher/ tests/ && uv run mypy deep_researcher/ && uv run python -m pytest tests/ -v && uv run bandit -r deep_researcher/ -ll
+uv run ruff check deep_architect/ tests/ && uv run mypy deep_architect/ && uv run python -m pytest tests/ -v && uv run bandit -r deep_architect/ -ll
 ```
 
 ## What We're NOT Doing
@@ -52,7 +52,7 @@ Add two commit call sites to `harness.py`. No changes to `git_ops.py`.
 ### Changes Required:
 
 #### 1. Sprint-boundary commit after sprint passes
-**File**: `deep_researcher/harness.py`
+**File**: `deep_architect/harness.py`
 **Location**: After line 541 (`save_progress(checkpoint_dir, progress)` inside the sprint loop)
 
 Insert immediately after line 541:
@@ -68,7 +68,7 @@ Insert immediately after line 541:
 ```
 
 #### 2. Final-completion commit after all sprints pass
-**File**: `deep_researcher/harness.py`
+**File**: `deep_architect/harness.py`
 **Location**: After line 546 (`save_progress(checkpoint_dir, progress)` in the final agreement block)
 
 Insert immediately after line 546:
@@ -171,9 +171,9 @@ The mock generator writes a file to disk on each call. After `run_harness()` com
 #### Automated Verification:
 - [x] All existing tests pass: `uv run python -m pytest tests/ -v`
 - [x] New tests pass: `uv run python -m pytest tests/test_git_ops.py tests/test_harness_retry.py -v`
-- [x] Linting clean: `uv run ruff check deep_researcher/ tests/`
-- [x] Type checking clean: `uv run mypy deep_researcher/`
-- [x] Security scan clean: `uv run bandit -r deep_researcher/ -ll`
+- [x] Linting clean: `uv run ruff check deep_architect/ tests/`
+- [x] Type checking clean: `uv run mypy deep_architect/`
+- [x] Security scan clean: `uv run bandit -r deep_architect/ -ll`
 
 #### Manual Verification:
 - [ ] Run a multi-sprint harness; confirm `git log --oneline` shows sprint-boundary commits interleaved with per-round commits
@@ -204,5 +204,5 @@ The mock generator writes a file to disk on each call. After `run_harness()` com
 - Original ticket: `knowledge/tickets/PROJ-0004.md`
 - ADR-010: `knowledge/adr/ADR-010-git-detection-auto-commit.md` — per-round commit pattern this extends
 - ADR-011: `knowledge/adr/ADR-011-resume-via-progress-json.md` — resume via progress.json, benefits from progress being committed
-- Production code: `deep_researcher/harness.py` (lines 540-546), `deep_researcher/git_ops.py`
+- Production code: `deep_architect/harness.py` (lines 540-546), `deep_architect/git_ops.py`
 - Test patterns: `tests/test_git_ops.py`, `tests/test_harness_retry.py`

@@ -57,7 +57,7 @@ Verification:
 
 ## Phase 1: `git_ops.py` — Two New Functions
 
-**File**: `deep_researcher/git_ops.py`
+**File**: `deep_architect/git_ops.py`
 
 ### Changes Required
 
@@ -102,14 +102,14 @@ def git_commit_staged(repo: git.Repo, message: str) -> bool:
 
 #### Automated Verification
 - [x] `uv run python -m pytest tests/test_git_ops.py -v` — existing 9 tests still pass
-- [x] `uv run ruff check deep_researcher/ tests/`
-- [x] `uv run mypy deep_researcher/`
+- [x] `uv run ruff check deep_architect/ tests/`
+- [x] `uv run mypy deep_architect/`
 
 ---
 
 ## Phase 2: `io/files.py` — `append_rollback_event()`
 
-**File**: `deep_researcher/io/files.py`
+**File**: `deep_architect/io/files.py`
 
 ### Changes Required
 
@@ -144,14 +144,14 @@ def append_rollback_event(
 
 #### Automated Verification
 - [x] `uv run python -m pytest tests/ -v` — all tests pass
-- [x] `uv run ruff check deep_researcher/ tests/`
-- [x] `uv run mypy deep_researcher/`
+- [x] `uv run ruff check deep_architect/ tests/`
+- [x] `uv run mypy deep_architect/`
 
 ---
 
 ## Phase 3: `harness.py` — Best-Tracking + Rollback Block
 
-**File**: `deep_researcher/harness.py`
+**File**: `deep_architect/harness.py`
 
 ### Changes Required
 
@@ -159,7 +159,7 @@ def append_rollback_event(
 
 Line 14 — add `git_commit_staged` and `restore_arch_files_from_commit`:
 ```python
-from deep_researcher.git_ops import (
+from deep_architect.git_ops import (
     get_modified_files,
     git_commit,
     git_commit_staged,
@@ -170,7 +170,7 @@ from deep_researcher.git_ops import (
 
 Lines 15–26 — add `append_rollback_event` to the `io.files` import:
 ```python
-from deep_researcher.io.files import (
+from deep_architect.io.files import (
     append_critic_history,
     append_generator_history,
     append_rollback_event,
@@ -263,8 +263,8 @@ if not rolled_back:
 ### Success Criteria
 
 #### Automated Verification
-- [x] `uv run ruff check deep_researcher/ tests/`
-- [x] `uv run mypy deep_researcher/`
+- [x] `uv run ruff check deep_architect/ tests/`
+- [x] `uv run mypy deep_architect/`
 - [x] `uv run python -m pytest tests/ -v` — full suite passes
 
 ---
@@ -289,17 +289,17 @@ Update import to include `git_commit_staged` and `restore_arch_files_from_commit
 
 #### Automated Verification
 - [x] `uv run python -m pytest tests/test_git_ops.py -v` — all 17 tests pass (11 existing + 6 new)
-- [x] `uv run ruff check deep_researcher/ tests/`
-- [x] `uv run mypy deep_researcher/`
+- [x] `uv run ruff check deep_architect/ tests/`
+- [x] `uv run mypy deep_architect/`
 - [x] `uv run python -m pytest tests/ -v` — full suite: 129 tests pass
-- [x] `uv run bandit -r deep_researcher/ -ll`
+- [x] `uv run bandit -r deep_architect/ -ll`
 
 Run all together:
 ```bash
-uv run ruff check deep_researcher/ tests/ && \
-uv run mypy deep_researcher/ && \
+uv run ruff check deep_architect/ tests/ && \
+uv run mypy deep_architect/ && \
 uv run python -m pytest tests/ -v && \
-uv run bandit -r deep_researcher/ -ll
+uv run bandit -r deep_architect/ -ll
 ```
 
 #### Manual Verification
@@ -313,12 +313,12 @@ uv run bandit -r deep_researcher/ -ll
 
 | File | Change |
 | ---- | ------ |
-| `deep_researcher/git_ops.py` | + `_EXCLUDED_FROM_ROLLBACK`, `restore_arch_files_from_commit()`, `git_commit_staged()` |
-| `deep_researcher/io/files.py` | + `append_rollback_event()` after line 101 |
-| `deep_researcher/harness.py` | imports (L14–26), init (L315–316), resume seeding (after L329), best-tracking (after L488), rollback block (replaces L529) |
+| `deep_architect/git_ops.py` | + `_EXCLUDED_FROM_ROLLBACK`, `restore_arch_files_from_commit()`, `git_commit_staged()` |
+| `deep_architect/io/files.py` | + `append_rollback_event()` after line 101 |
+| `deep_architect/harness.py` | imports (L14–26), init (L315–316), resume seeding (after L329), best-tracking (after L488), rollback block (replaces L529) |
 | `tests/test_git_ops.py` | + 5 tests (9 → 14 in file, 46 → 51 total suite) |
-| `deep_researcher/config.py` | + `rollback_regression_threshold: float = 0.05` in `ThresholdConfig` ✅ done |
-| `.deep-researcher.toml.template` | + `rollback_regression_threshold = 0.05` in `[thresholds]` ✅ done |
+| `deep_architect/config.py` | + `rollback_regression_threshold: float = 0.05` in `ThresholdConfig` ✅ done |
+| `.deep-architect.toml.template` | + `rollback_regression_threshold = 0.05` in `[thresholds]` ✅ done |
 
 ## References
 

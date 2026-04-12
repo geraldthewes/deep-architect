@@ -13,12 +13,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from typer.testing import CliRunner
 
-from deep_researcher.agents.generator import propose_contract, run_generator
-from deep_researcher.cli import app
-from deep_researcher.config import AgentConfig
-from deep_researcher.harness import _build_supplementary_context
-from deep_researcher.models.contract import SprintContract, SprintCriterion
-from deep_researcher.sprints import SPRINTS
+from deep_architect.agents.generator import propose_contract, run_generator
+from deep_architect.cli import app
+from deep_architect.config import AgentConfig, HarnessConfig
+from deep_architect.harness import _build_supplementary_context
+from deep_architect.models.contract import SprintContract, SprintCriterion
+from deep_architect.sprints import SPRINTS
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -94,7 +94,7 @@ async def test_run_generator_includes_supplementary_context(tmp_path: Path) -> N
         result.session_id = None
         return result
 
-    with patch("deep_researcher.agents.generator.run_agent", side_effect=_mock_run_agent):
+    with patch("deep_architect.agents.generator.run_agent", side_effect=_mock_run_agent):
         await run_generator(
             _make_agent_config(),
             SPRINTS[0],
@@ -121,7 +121,7 @@ async def test_run_generator_omits_context_section_when_empty(tmp_path: Path) ->
         result.session_id = None
         return result
 
-    with patch("deep_researcher.agents.generator.run_agent", side_effect=_mock_run_agent):
+    with patch("deep_architect.agents.generator.run_agent", side_effect=_mock_run_agent):
         await run_generator(
             _make_agent_config(),
             SPRINTS[0],
@@ -156,7 +156,7 @@ async def test_propose_contract_includes_supplementary_context() -> None:
         return _make_contract()
 
     with patch(
-        "deep_researcher.agents.generator.run_simple_structured",
+        "deep_architect.agents.generator.run_simple_structured",
         side_effect=_mock_structured,
     ):
         await propose_contract(
@@ -185,7 +185,7 @@ async def test_propose_contract_omits_context_section_when_empty() -> None:
         return _make_contract()
 
     with patch(
-        "deep_researcher.agents.generator.run_simple_structured",
+        "deep_architect.agents.generator.run_simple_structured",
         side_effect=_mock_structured,
     ):
         await propose_contract(
@@ -234,7 +234,8 @@ def test_cli_context_validation_passes_with_valid_file(tmp_path: Path) -> None:
 
     mock_run = AsyncMock()
 
-    with patch("deep_researcher.cli.run_harness", mock_run):
+    with patch("deep_architect.cli.run_harness", mock_run), \
+         patch("deep_architect.cli.load_config", return_value=HarnessConfig()):
         result = runner.invoke(
             app,
             [

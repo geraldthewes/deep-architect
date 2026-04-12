@@ -3,7 +3,7 @@ from pathlib import Path
 import git
 import pytest
 
-from deep_researcher.git_ops import (
+from deep_architect.git_ops import (
     get_modified_files,
     git_commit,
     git_commit_staged,

@@ -6,10 +6,10 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from deep_researcher.config import load_config
-from deep_researcher.git_ops import validate_git_repo
-from deep_researcher.harness import run_harness
-from deep_researcher.io.files import clean_run_artifacts, load_progress, reset_sprint_artifacts
+from deep_architect.config import load_config
+from deep_architect.git_ops import validate_git_repo
+from deep_architect.harness import run_harness
+from deep_architect.io.files import clean_run_artifacts, load_progress, reset_sprint_artifacts
 
 app = typer.Typer(help="Adversarial C4 architecture harness for BMAD projects.")
 console = Console()

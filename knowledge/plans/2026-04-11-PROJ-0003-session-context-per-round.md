@@ -38,10 +38,10 @@ previously provided, giving agents a searchable record of prior decisions and co
 ### Verification
 
 ```bash
-uv run ruff check deep_researcher/ tests/ && \
-uv run mypy deep_researcher/ && \
+uv run ruff check deep_architect/ tests/ && \
+uv run mypy deep_architect/ && \
 uv run python -m pytest tests/ -v && \
-uv run bandit -r deep_researcher/ -ll
+uv run bandit -r deep_architect/ -ll
 ```
 
 ## What We're NOT Doing
@@ -69,7 +69,7 @@ uv run bandit -r deep_researcher/ -ll
 - `io/files.py` has no `datetime` import; `progress.py` already uses `from datetime import UTC, datetime`
   confirming Python 3.11+ is in use.
 - The `datetime` import needed in `files.py` is `from datetime import UTC, datetime`.
-- `harness.py:15-24` imports from `deep_researcher.io.files` as an explicit list; the two new
+- `harness.py:15-24` imports from `deep_architect.io.files` as an explicit list; the two new
   functions must be added to this import.
 - `test_harness_retry.py:267-318` — `test_harness_resets_generator_session_on_retry` tests
   behavior that no longer exists after Phase 1. Replace it with a test that verifies the generator
@@ -87,7 +87,7 @@ carrying `session_id` forward between rounds.
 
 ### Changes Required
 
-#### 1. `deep_researcher/agents/generator.py`
+#### 1. `deep_architect/agents/generator.py`
 
 **Remove `session_id` and `last_known_input_tokens` parameters from `run_generator()`.**
 
@@ -193,7 +193,7 @@ result = await run_agent(
 """Result of one generator round."""
 ```
 
-#### 2. `deep_researcher/harness.py`
+#### 2. `deep_architect/harness.py`
 
 **Remove sprint-local session tracking** (lines 303-304):
 ```python
@@ -281,7 +281,7 @@ async def test_harness_generator_receives_no_session_id(
     prd.write_text("# Test PRD")
 
     import inspect
-    from deep_researcher.agents.generator import run_generator
+    from deep_architect.agents.generator import run_generator
     sig = inspect.signature(run_generator)
     assert "session_id" not in sig.parameters, (
         "run_generator() must not have a session_id parameter — sessions are per-turn only"
@@ -306,23 +306,23 @@ async def test_harness_runs_multiple_rounds_stateless(
         return GeneratorRoundResult(session_id="sdk-session", input_tokens=0)
 
     with (
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
         patch(
-            "deep_researcher.harness.validate_git_repo",
+            "deep_architect.harness.validate_git_repo",
             return_value=_make_mock_repo(output_dir),
         ),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
         patch(
-            "deep_researcher.harness.negotiate_contract",
+            "deep_architect.harness.negotiate_contract",
             new_callable=AsyncMock,
             return_value=_make_contract(),
         ),
-        patch("deep_researcher.harness.run_generator", side_effect=_fake_generator),
+        patch("deep_architect.harness.run_generator", side_effect=_fake_generator),
         patch(
-            "deep_researcher.harness.run_critic",
+            "deep_architect.harness.run_critic",
             new_callable=AsyncMock,
             return_value=_passing_result(),
         ),
@@ -340,11 +340,11 @@ async def test_harness_runs_multiple_rounds_stateless(
 ### Success Criteria
 
 #### Automated Verification
-- [x] `mypy` reports no type errors (`uv run mypy deep_researcher/`)
-- [x] `ruff` passes (`uv run ruff check deep_researcher/ tests/`)
+- [x] `mypy` reports no type errors (`uv run mypy deep_architect/`)
+- [x] `ruff` passes (`uv run ruff check deep_architect/ tests/`)
 - [x] All existing tests pass (`uv run python -m pytest tests/ -v`)
-- [x] `grep -n "generator_session_id" deep_researcher/harness.py` returns no results
-- [x] `grep -n "session_id=" deep_researcher/agents/generator.py` returns no results (in function signature/call)
+- [x] `grep -n "generator_session_id" deep_architect/harness.py` returns no results
+- [x] `grep -n "session_id=" deep_architect/agents/generator.py` returns no results (in function signature/call)
 - [x] New tests pass: `test_harness_generator_receives_no_session_id`, `test_harness_runs_multiple_rounds_stateless`
 
 ---
@@ -359,7 +359,7 @@ files on fresh start.
 
 ### Changes Required
 
-#### 1. `deep_researcher/io/files.py`
+#### 1. `deep_architect/io/files.py`
 
 **Add `datetime` import** at the top of the file:
 ```python
@@ -539,8 +539,8 @@ as a separate focused test.
 #### Automated Verification
 - [x] `mypy` passes (new functions have correct type annotations)
 - [x] All tests pass including new `test_files.py` tests
-- [x] `grep -n "append_generator_history\|append_critic_history" deep_researcher/io/files.py` returns both functions
-- [x] `grep -n "generator-history\|critic-history" deep_researcher/io/files.py` appears in `clean_run_artifacts`
+- [x] `grep -n "append_generator_history\|append_critic_history" deep_architect/io/files.py` returns both functions
+- [x] `grep -n "generator-history\|critic-history" deep_architect/io/files.py` appears in `clean_run_artifacts`
 
 ---
 
@@ -555,12 +555,12 @@ should not be silently swallowed.
 
 ### Changes Required
 
-#### 1. `deep_researcher/harness.py`
+#### 1. `deep_architect/harness.py`
 
 **Add new functions to the import** (lines 15-24):
 
 ```python
-from deep_researcher.io.files import (
+from deep_architect.io.files import (
     append_critic_history,
     append_generator_history,
     init_workspace,
@@ -641,7 +641,7 @@ break
 
 #### Automated Verification
 - [x] All tests pass
-- [x] `grep -n "append_generator_history\|append_critic_history" deep_researcher/harness.py` returns two lines inside the sprint loop
+- [x] `grep -n "append_generator_history\|append_critic_history" deep_architect/harness.py` returns two lines inside the sprint loop
 - [ ] Manual inspection: run harness against a test PRD and confirm both `generator-history.md`
   and `critic-history.md` exist in the output directory after a round completes
 
@@ -664,7 +664,7 @@ prompt.
 
 ### Changes Required
 
-#### 1. `deep_researcher/agents/generator.py`
+#### 1. `deep_architect/agents/generator.py`
 
 Add a history section to the prompt, placed after the learnings section and before the final
 instruction paragraph. The section is only injected when `generator-history.md` exists.
@@ -699,7 +699,7 @@ prompt = (
 )
 ```
 
-#### 2. `deep_researcher/agents/critic.py`
+#### 2. `deep_architect/agents/critic.py`
 
 Add a history section to the critic prompt, injected when `critic-history.md` exists.
 
@@ -729,7 +729,7 @@ prompt = (
 )
 ```
 
-#### 3. `deep_researcher/prompts/generator_system.md`
+#### 3. `deep_architect/prompts/generator_system.md`
 
 Extend the `## Learnings File` section to clarify the distinction between learnings (subjective,
 agent-written) and history (objective, harness-written). Add a new subsection:
@@ -759,7 +759,7 @@ Your learnings file and the history file are complementary:
 - `generator-history.md` — what actually happened (read-only)
 ```
 
-#### 4. `deep_researcher/prompts/critic_system.md`
+#### 4. `deep_architect/prompts/critic_system.md`
 
 Add a note about the critic history file in the `## Inspection Method` section:
 
@@ -779,8 +779,8 @@ Add a note about the critic history file in the `## Inspection Method` section:
 #### Automated Verification
 - [x] All tests pass
 - [x] `mypy` passes (no type errors from `Path` comparisons or string formatting)
-- [x] `grep -n "history_section" deep_researcher/agents/generator.py` returns the injection block
-- [x] `grep -n "history_section" deep_researcher/agents/critic.py` returns the injection block
+- [x] `grep -n "history_section" deep_architect/agents/generator.py` returns the injection block
+- [x] `grep -n "history_section" deep_architect/agents/critic.py` returns the injection block
 
 #### Manual Verification
 - [ ] On round 1 (history file does not yet exist), the `## Round History` section is absent
@@ -856,8 +856,8 @@ disk — no special-case logic required.
   subsequent rounds.
 - `test_harness_resets_generator_session_on_retry` replaced — the behavior it tested no longer exists.
 
-**Files:** `deep_researcher/agents/generator.py`, `deep_researcher/harness.py`,
-`deep_researcher/io/files.py`, `deep_researcher/agents/critic.py`
+**Files:** `deep_architect/agents/generator.py`, `deep_architect/harness.py`,
+`deep_architect/io/files.py`, `deep_architect/agents/critic.py`
 ```
 
 #### 2. Update `knowledge/adr/ADR-004-generator-session-persistence.md`
@@ -922,7 +922,7 @@ Execute phases in sequence. Each phase leaves the codebase in a passing state:
 4. **Phase 4** — Updates prompts and system prompt docs. No model changes.
 5. **Phase 5** — ADR documentation only.
 
-After each phase: `uv run ruff check deep_researcher/ tests/ && uv run mypy deep_researcher/ && uv run python -m pytest tests/ -v && uv run bandit -r deep_researcher/ -ll`
+After each phase: `uv run ruff check deep_architect/ tests/ && uv run mypy deep_architect/ && uv run python -m pytest tests/ -v && uv run bandit -r deep_architect/ -ll`
 
 ## References
 
@@ -931,7 +931,7 @@ After each phase: `uv run ruff check deep_researcher/ tests/ && uv run mypy deep
 - Superseded ADR: `knowledge/adr/ADR-004-generator-session-persistence.md`
 - Resume ADR: `knowledge/adr/ADR-011-resume-via-progress-json.md`
 - Key source files:
-  - `deep_researcher/harness.py:303-431` — session tracking (to be removed)
-  - `deep_researcher/agents/generator.py:33-124` — full `run_generator()` implementation
-  - `deep_researcher/agents/critic.py:40-81` — full `run_critic()` implementation
-  - `deep_researcher/io/files.py` — save/load layer (history functions added here)
+  - `deep_architect/harness.py:303-431` — session tracking (to be removed)
+  - `deep_architect/agents/generator.py:33-124` — full `run_generator()` implementation
+  - `deep_architect/agents/critic.py:40-81` — full `run_critic()` implementation
+  - `deep_architect/io/files.py` — save/load layer (history functions added here)

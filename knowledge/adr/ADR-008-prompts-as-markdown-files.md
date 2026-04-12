@@ -12,7 +12,7 @@ The harness uses 13+ prompt templates for system prompts, sprint-specific instru
 
 ## Decision
 
-All prompt templates are stored as `.md` files in `deep_researcher/prompts/`. They are loaded at runtime via `load_prompt(name, **kwargs)` which performs `str.format_map(**kwargs)` for variable substitution.
+All prompt templates are stored as `.md` files in `deep_architect/prompts/`. They are loaded at runtime via `load_prompt(name, **kwargs)` which performs `str.format_map(**kwargs)` for variable substitution.
 
 The full list must match `EXPECTED_PROMPTS` in `tests/test_prompts.py` — if any file is missing, tests fail.
 
@@ -30,4 +30,4 @@ The full list must match `EXPECTED_PROMPTS` in `tests/test_prompts.py` — if an
 - Users can fork the repo and customize prompts for their domain (e.g., different C4 conventions for embedded systems) without modifying Python.
 - The test `test_prompts.py` acts as a guard against accidentally deleting or renaming a prompt file.
 
-**Files:** `deep_researcher/prompts/__init__.py`, `deep_researcher/prompts/*.md`, `tests/test_prompts.py`
+**Files:** `deep_architect/prompts/__init__.py`, `deep_architect/prompts/*.md`, `tests/test_prompts.py`

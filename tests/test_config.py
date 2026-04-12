@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from deep_researcher.config import HarnessConfig, load_config
+from deep_architect.config import HarnessConfig, load_config
 
 
 def test_load_config_missing_file(tmp_path: Path) -> None:
@@ -80,14 +80,14 @@ model = "opus"
 
 
 def test_agent_config_max_agent_retries_default() -> None:
-    from deep_researcher.config import AgentConfig
+    from deep_architect.config import AgentConfig
 
     cfg = AgentConfig()
     assert cfg.max_agent_retries == 2
 
 
 def test_threshold_config_max_round_retries_default() -> None:
-    from deep_researcher.config import ThresholdConfig
+    from deep_architect.config import ThresholdConfig
 
     cfg = ThresholdConfig()
     assert cfg.max_round_retries == 2

@@ -37,4 +37,4 @@ The harness is fixed at **7 sprints**, each producing a specific C4 artifact:
 - **Constraint (CLAUDE.md):** "Do not add more than 7 sprints without a strong reason — they are fixed by design."
 - Users cannot add sprints via config; changes require code modification (by design — sprints are not a plugin point).
 
-**Files:** `deep_researcher/sprints.py`, `deep_researcher/prompts/sprint_*.md`, `deep_researcher/harness.py`
+**Files:** `deep_architect/sprints.py`, `deep_architect/prompts/sprint_*.md`, `deep_architect/harness.py`

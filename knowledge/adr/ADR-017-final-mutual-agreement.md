@@ -28,4 +28,4 @@ If either agent does not output `"READY_TO_SHIP"`, the harness logs a warning bu
 - The `final_agreement.md` prompt instructs both agents to review the full architecture directory.
 - A warning in the output log flags when `"READY_TO_SHIP"` is not returned, giving users a clear signal to review.
 
-**Files:** `deep_researcher/harness.py:107-151`, `deep_researcher/prompts/final_agreement.md`
+**Files:** `deep_architect/harness.py:107-151`, `deep_architect/prompts/final_agreement.md`

@@ -26,4 +26,4 @@ Before the main sprint loop, `run_preflight_check()` sends a minimal "Reply with
 - The preflight adds a few seconds to startup time — an acceptable trade-off.
 - The preflight does not validate that models are capable of architecture generation — only that they are reachable and responding.
 
-**Files:** `deep_researcher/harness.py:67-104`
+**Files:** `deep_architect/harness.py:67-104`

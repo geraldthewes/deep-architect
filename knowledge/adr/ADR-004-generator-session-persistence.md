@@ -31,4 +31,4 @@ The session is always reset between sprints.
 - Faster iteration within a sprint: the generator "remembers" what it already wrote.
 - Fresh start on retry ensures recovery from corrupted session state.
 
-**Files:** `deep_researcher/agents/generator.py:33-92`, `deep_researcher/harness.py:230,268-278,333`
+**Files:** `deep_architect/agents/generator.py:33-92`, `deep_architect/harness.py:230,268-278,333`

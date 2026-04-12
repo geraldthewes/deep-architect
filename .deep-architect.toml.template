@@ -1,5 +1,5 @@
-# ~/.deep-researcher.toml — deep-researcher configuration
-# Copy to ~/.deep-researcher.toml and fill in your model preferences.
+# ~/.deep-architect.toml — deep-architect configuration
+# Copy to ~/.deep-architect.toml and fill in your model preferences.
 #
 # Endpoint and authentication are configured via environment variables:
 #   ANTHROPIC_BASE_URL=http://litellm.cluster:9999

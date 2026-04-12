@@ -34,8 +34,8 @@ All thresholds come from `HarnessConfig.thresholds` — never hardcoded.
 ## Consequences
 
 - All logic is in `exit_criteria.py` — isolated, testable.
-- Thresholds are fully configurable via `~/.deep-researcher.toml`; unit tests cover all combinations.
+- Thresholds are fully configurable via `~/.deep-architect.toml`; unit tests cover all combinations.
 - Clear priority order: Critical/High severity **always** blocks, regardless of score.
 - Ping-pong exit produces a warning log but does not fail the run — it advances to the next sprint.
 
-**Files:** `deep_researcher/exit_criteria.py`, `deep_researcher/models/feedback.py:22-28`, `deep_researcher/harness.py:379-411`, `tests/test_exit_criteria.py`
+**Files:** `deep_architect/exit_criteria.py`, `deep_architect/models/feedback.py:22-28`, `deep_architect/harness.py:379-411`, `tests/test_exit_criteria.py`

@@ -1,5 +1,5 @@
-from deep_researcher.exit_criteria import should_ping_pong_exit, sprint_passes
-from deep_researcher.models.feedback import CriterionScore, CriticResult
+from deep_architect.exit_criteria import should_ping_pong_exit, sprint_passes
+from deep_architect.models.feedback import CriterionScore, CriticResult
 
 
 def make_result(avg: float, severities: list[str]) -> CriticResult:

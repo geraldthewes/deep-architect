@@ -1,6 +1,6 @@
-# deep-researcher
+# deep-architect
 
-`deep-researcher` turns a BMAD Product Requirements Document (PRD) into a complete, peer-reviewed C4 architecture document — automatically, without human intervention.
+`deep-architect` turns a BMAD Product Requirements Document (PRD) into a complete, peer-reviewed C4 architecture document — automatically, without human intervention.
 
 It runs two Claude Code agents against each other: a **Generator** (Winston, the architect) who writes the architecture using real file tools, and a **Critic** (Boris, a hostile senior architect) who reads and tears it apart. They negotiate acceptance criteria, argue through rounds of feedback, and only stop when the architecture passes a rigorous quality bar. The result lands in `knowledge/architecture/` as a folder of Markdown + Mermaid files, ready for your development agents.
 
@@ -27,8 +27,8 @@ The agents are powered by the [Claude Agent SDK](https://code.claude.com/docs/en
 ## Installation
 
 ```bash
-git clone https://github.com/geraldthewes/deep-researcher
-cd deep-researcher
+git clone https://github.com/geraldthewes/deep-architect
+cd deep-architect
 uv sync
 ```
 
@@ -63,10 +63,10 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 The model aliases (`ANTHROPIC_DEFAULT_SONNET_MODEL`, etc.) tell the `claude` CLI what actual model ID to use when the config says `"sonnet"`, `"opus"`, or `"haiku"`. If you're using Anthropic's API without a proxy, these can be left unset and the defaults apply.
 
-### Step 2: Create `~/.deep-researcher.toml`
+### Step 2: Create `~/.deep-architect.toml`
 
 ```bash
-cp .deep-researcher.toml.template ~/.deep-researcher.toml
+cp .deep-architect.toml.template ~/.deep-architect.toml
 ```
 
 The TOML config controls which model alias to use for each agent and the quality thresholds:
@@ -123,7 +123,7 @@ That's it. The tool runs unattended. When it finishes, `knowledge/architecture/`
 | `--prd PATH` | Path to the PRD Markdown file **(required)** |
 | `--output PATH` | Output directory for architecture files **(required)** |
 | `--resume` | Resume an interrupted run from the last completed sprint |
-| `--config PATH` | Config file path (default: `~/.deep-researcher.toml`) |
+| `--config PATH` | Config file path (default: `~/.deep-architect.toml`) |
 | `--model-generator TEXT` | Override the generator model alias for this run |
 | `--model-critic TEXT` | Override the critic model alias for this run |
 
@@ -275,7 +275,7 @@ cat knowledge/architecture/contracts/sprint-1.json
 Install Claude Code: follow the instructions at [claude.ai/code](https://claude.ai/code). Then verify with `claude --version`.
 
 **`Config file not found`**
-Create `~/.deep-researcher.toml` from the template: `cp .deep-researcher.toml.template ~/.deep-researcher.toml`.
+Create `~/.deep-architect.toml` from the template: `cp .deep-architect.toml.template ~/.deep-architect.toml`.
 
 **`Error: PRD file not found`**
 The `--prd` path must point to an existing file. Check the path is correct relative to your current directory.
@@ -284,7 +284,7 @@ The `--prd` path must point to an existing file. Check the path is correct relat
 The output directory must be inside a git repo. Initialize one first: `git init`.
 
 **ANTHROPIC_BASE_URL not respected**
-The SDK may fall back to the bundled Claude binary, which can ignore custom env vars. Set `cli_path` in `~/.deep-researcher.toml` to the output of `which claude`.
+The SDK may fall back to the bundled Claude binary, which can ignore custom env vars. Set `cli_path` in `~/.deep-architect.toml` to the output of `which claude`.
 
 **A sprint fails after max rounds**
 Check the feedback JSON for recurring issues. Common causes: the PRD lacks enough detail, or `max_turns` is too low for the model to complete a full architecture file in one agent loop. Try increasing `max_turns` in the config.
@@ -314,14 +314,14 @@ timeout_hours = 6.0
 ## Development
 
 ```bash
-git clone https://github.com/geraldthewes/deep-researcher
-cd deep-researcher
+git clone https://github.com/geraldthewes/deep-architect
+cd deep-architect
 uv sync
 
 uv run python -m pytest tests/ -v        # run tests
-uv run ruff check deep_researcher/        # lint
-uv run mypy deep_researcher/              # type check
-uv run bandit -r deep_researcher/ -ll     # security scan
+uv run ruff check deep_architect/        # lint
+uv run mypy deep_architect/              # type check
+uv run bandit -r deep_architect/ -ll     # security scan
 ```
 
 All four must pass before committing.

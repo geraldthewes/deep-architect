@@ -29,4 +29,4 @@ In addition to `allowed_tools`, the harness passes a `disallowed_tools` list to 
 - Tests verify that `disallowed_tools` is present in generated agent options.
 - The list should be updated if new Claude CLI tools are added that could be harmful in this context.
 
-**Files:** `deep_researcher/agents/client.py:38-54,280`, `tests/test_client.py:216-237`
+**Files:** `deep_architect/agents/client.py:38-54,280`, `tests/test_client.py:216-237`

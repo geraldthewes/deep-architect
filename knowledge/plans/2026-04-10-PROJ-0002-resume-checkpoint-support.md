@@ -25,9 +25,9 @@ Running `adversarial-architect --prd knowledge/prd.md --output knowledge/archite
 ```bash
 # Automated
 uv run python -m pytest tests/ -v
-uv run ruff check deep_researcher/ tests/
-uv run mypy deep_researcher/
-uv run bandit -r deep_researcher/ -ll
+uv run ruff check deep_architect/ tests/
+uv run mypy deep_architect/
+uv run bandit -r deep_architect/ -ll
 
 # Manual
 # 1. Start a run; kill it after sprint 2 passes
@@ -69,7 +69,7 @@ Change `save_progress`/`load_progress` to write to an explicit `checkpoint_dir` 
 
 ### Changes Required
 
-#### 1. `deep_researcher/io/files.py`
+#### 1. `deep_architect/io/files.py`
 
 **Add `import os` at the top of the file** (after existing stdlib imports).
 
@@ -107,8 +107,8 @@ Add at the end of the file:
 ### Success Criteria
 
 #### Automated Verification
-- [x] `uv run ruff check deep_researcher/ tests/` passes
-- [x] `uv run mypy deep_researcher/` passes
+- [x] `uv run ruff check deep_architect/ tests/` passes
+- [x] `uv run mypy deep_architect/` passes
 - [x] `uv run python -m pytest tests/test_files.py -v` passes (existing tests still pass with updated call sites)
 
 ---
@@ -121,7 +121,7 @@ Add `consecutive_passes: int = 0` to `SprintStatus` so the value survives a cras
 
 ### Changes Required
 
-#### `deep_researcher/models/progress.py`
+#### `deep_architect/models/progress.py`
 
 **Add one field to `SprintStatus` (after `rounds_completed` at line 16):**
 
@@ -146,7 +146,7 @@ No migration needed — existing `progress.json` files that lack this field will
 ### Success Criteria
 
 #### Automated Verification
-- [x] `uv run mypy deep_researcher/` passes
+- [x] `uv run mypy deep_architect/` passes
 - [x] `uv run python -m pytest tests/test_models.py tests/test_files.py -v` passes
 
 ---
@@ -159,7 +159,7 @@ Wire the storage layer changes into `harness.py`: compute `checkpoint_dir` from 
 
 ### Changes Required
 
-#### `deep_researcher/harness.py`
+#### `deep_architect/harness.py`
 
 **1. Compute `checkpoint_dir` after `validate_git_repo` (around line 186):**
 
@@ -256,10 +256,10 @@ This is the new round-completion checkpoint. At this point `sprint_status.rounds
 ### Success Criteria
 
 #### Automated Verification
-- [x] `uv run ruff check deep_researcher/ tests/` passes
-- [x] `uv run mypy deep_researcher/` passes
+- [x] `uv run ruff check deep_architect/ tests/` passes
+- [x] `uv run mypy deep_architect/` passes
 - [x] `uv run python -m pytest tests/ -v` passes (all existing tests pass)
-- [x] `uv run bandit -r deep_researcher/ -ll` passes
+- [x] `uv run bandit -r deep_architect/ -ll` passes
 
 #### Manual Verification
 - [ ] Kill a live run after sprint 2 passes; `--resume` picks up at sprint 3 with no completed sprint re-run
@@ -324,7 +324,7 @@ Checkpoint writes use an atomic pattern (`write_text` to `.tmp` then `os.replace
 - **Generator session context is lost on mid-sprint resume.** The Claude Code CLI session ID is in-process only; it cannot be restored after a crash. On resume, the generator starts a fresh session but retains access to on-disk architecture files via its Read/Grep/Glob tools.
 - `.checkpoints/` is added to `.gitignore` — it is not part of the architecture output and should not be committed.
 
-**Files:** `deep_researcher/io/files.py:41-49`, `deep_researcher/models/progress.py`, `deep_researcher/harness.py:191-210`
+**Files:** `deep_architect/io/files.py:41-49`, `deep_architect/models/progress.py`, `deep_architect/harness.py:191-210`
 ```
 
 ### Success Criteria
@@ -407,7 +407,7 @@ The existing `_INFRA_PATCHES` mocks `validate_git_repo` with `return_value=Magic
 ```python
 mock_repo = MagicMock()
 mock_repo.working_tree_dir = str(output_dir)
-patch("deep_researcher.harness.validate_git_repo", return_value=mock_repo),
+patch("deep_architect.harness.validate_git_repo", return_value=mock_repo),
 ```
 
 This affects all existing tests in the file. The simplest approach is to extract a `_make_mock_repo(output_dir)` helper and use it everywhere.
@@ -422,8 +422,8 @@ async def test_resume_fails_fast_without_checkpoint(output_dir: Path) -> None:
     mock_repo.working_tree_dir = str(output_dir)
 
     with (
-        patch("deep_researcher.harness.validate_git_repo", return_value=mock_repo),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.validate_git_repo", return_value=mock_repo),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
         pytest.raises(FileNotFoundError, match="--resume passed but no checkpoint found"),
     ):
         await run_harness(
@@ -444,9 +444,9 @@ async def test_resume_skips_completed_sprints(output_dir: Path) -> None:
     mock_repo.working_tree_dir = str(output_dir)
 
     # Write a checkpoint with sprint 1 passed, sprint 2 pending
-    from deep_researcher.io.files import save_progress
-    from deep_researcher.models.progress import HarnessProgress, SprintStatus
-    from deep_researcher.sprints import SPRINTS
+    from deep_architect.io.files import save_progress
+    from deep_architect.models.progress import HarnessProgress, SprintStatus
+    from deep_architect.sprints import SPRINTS
     checkpoint_dir = output_dir / ".checkpoints"
     progress = HarnessProgress(
         total_sprints=len(SPRINTS),
@@ -471,16 +471,16 @@ async def test_resume_skips_completed_sprints(output_dir: Path) -> None:
         return _make_contract()
 
     with (
-        patch("deep_researcher.harness.validate_git_repo", return_value=mock_repo),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
-        patch("deep_researcher.harness.negotiate_contract", side_effect=_record_negotiate),
-        patch("deep_researcher.harness.run_generator", new_callable=AsyncMock, return_value=None),
-        patch("deep_researcher.harness.run_critic", new_callable=AsyncMock, return_value=_passing_result()),
-        patch("deep_researcher.harness.check_ping_pong", new_callable=AsyncMock, return_value=MagicMock(similarity_score=0.0)),
+        patch("deep_architect.harness.validate_git_repo", return_value=mock_repo),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.negotiate_contract", side_effect=_record_negotiate),
+        patch("deep_architect.harness.run_generator", new_callable=AsyncMock, return_value=None),
+        patch("deep_architect.harness.run_critic", new_callable=AsyncMock, return_value=_passing_result()),
+        patch("deep_architect.harness.check_ping_pong", new_callable=AsyncMock, return_value=MagicMock(similarity_score=0.0)),
     ):
         await run_harness(prd=prd, output_dir=output_dir, resume=True, config=_make_config())
 
@@ -498,9 +498,9 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
     mock_repo.working_tree_dir = str(output_dir)
 
     # Write checkpoint with sprint 1 at round 2 completed
-    from deep_researcher.io.files import save_progress, save_feedback
-    from deep_researcher.models.progress import HarnessProgress, SprintStatus
-    from deep_researcher.sprints import SPRINTS
+    from deep_architect.io.files import save_progress, save_feedback
+    from deep_architect.models.progress import HarnessProgress, SprintStatus
+    from deep_architect.sprints import SPRINTS
     checkpoint_dir = output_dir / ".checkpoints"
     (output_dir / "feedback").mkdir(parents=True, exist_ok=True)
     (output_dir / "contracts").mkdir(parents=True, exist_ok=True)
@@ -534,16 +534,16 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
         return None
 
     with (
-        patch("deep_researcher.harness.validate_git_repo", return_value=mock_repo),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
-        patch("deep_researcher.harness.negotiate_contract", new_callable=AsyncMock, return_value=_make_contract()),
-        patch("deep_researcher.harness.run_generator", side_effect=_record_generator),
-        patch("deep_researcher.harness.run_critic", new_callable=AsyncMock, return_value=_passing_result()),
-        patch("deep_researcher.harness.check_ping_pong", new_callable=AsyncMock, return_value=MagicMock(similarity_score=0.0)),
+        patch("deep_architect.harness.validate_git_repo", return_value=mock_repo),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.negotiate_contract", new_callable=AsyncMock, return_value=_make_contract()),
+        patch("deep_architect.harness.run_generator", side_effect=_record_generator),
+        patch("deep_architect.harness.run_critic", new_callable=AsyncMock, return_value=_passing_result()),
+        patch("deep_architect.harness.check_ping_pong", new_callable=AsyncMock, return_value=MagicMock(similarity_score=0.0)),
     ):
         await run_harness(prd=prd, output_dir=output_dir, resume=True, config=_make_config())
 
@@ -559,9 +559,9 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
 
 #### Automated Verification
 - [x] `uv run python -m pytest tests/ -v` — all tests pass, including 6 new tests
-- [x] `uv run ruff check deep_researcher/ tests/` passes
-- [x] `uv run mypy deep_researcher/` passes
-- [x] `uv run bandit -r deep_researcher/ -ll` passes
+- [x] `uv run ruff check deep_architect/ tests/` passes
+- [x] `uv run mypy deep_architect/` passes
+- [x] `uv run bandit -r deep_architect/ -ll` passes
 
 ---
 
@@ -601,9 +601,9 @@ Phases must be executed in order — each phase builds on the previous:
 - Ticket: `knowledge/tickets/PROJ-0002.md`
 - Research: `knowledge/research/2026-04-10-PROJ-0002-resume-checkpoint-support.md`
 - ADR: `knowledge/adr/ADR-011-resume-via-progress-json.md`
-- `deep_researcher/io/files.py:41-49` — save/load progress
-- `deep_researcher/models/progress.py:10-28` — HarnessProgress, SprintStatus
-- `deep_researcher/harness.py:191-204` — resume branch
-- `deep_researcher/harness.py:228-232` — local variable init + round loop
-- `deep_researcher/harness.py:349-412` — round completion, consecutive_passes, exit criteria
+- `deep_architect/io/files.py:41-49` — save/load progress
+- `deep_architect/models/progress.py:10-28` — HarnessProgress, SprintStatus
+- `deep_architect/harness.py:191-204` — resume branch
+- `deep_architect/harness.py:228-232` — local variable init + round loop
+- `deep_architect/harness.py:349-412` — round completion, consecutive_passes, exit criteria
 - `tests/test_harness_retry.py` — existing harness tests with mock patterns

@@ -1,4 +1,4 @@
-# Architecture Decision Records — deep-researcher
+# Architecture Decision Records — deep-architect
 
 This directory contains ADRs capturing the key architectural decisions made during implementation of the adversarial C4 architecture harness.
 

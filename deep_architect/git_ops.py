@@ -4,7 +4,7 @@ from pathlib import Path
 
 import git
 
-from deep_researcher.logger import get_logger
+from deep_architect.logger import get_logger
 
 _log = get_logger(__name__)
 

@@ -6,19 +6,19 @@ from pathlib import Path
 
 from rich.console import Console
 
-from deep_researcher.agents.client import init_run_stats, make_agent_options, run_agent_text
-from deep_researcher.agents.critic import check_ping_pong, review_contract, run_critic
-from deep_researcher.agents.generator import GeneratorRoundResult, propose_contract, run_generator
-from deep_researcher.config import AgentConfig, HarnessConfig
-from deep_researcher.exit_criteria import should_ping_pong_exit, sprint_passes
-from deep_researcher.git_ops import (
+from deep_architect.agents.client import init_run_stats, make_agent_options, run_agent_text
+from deep_architect.agents.critic import check_ping_pong, review_contract, run_critic
+from deep_architect.agents.generator import GeneratorRoundResult, propose_contract, run_generator
+from deep_architect.config import AgentConfig, HarnessConfig
+from deep_architect.exit_criteria import should_ping_pong_exit, sprint_passes
+from deep_architect.git_ops import (
     get_modified_files,
     git_commit,
     git_commit_staged,
     restore_arch_files_from_commit,
     validate_git_repo,
 )
-from deep_researcher.io.files import (
+from deep_architect.io.files import (
     append_critic_history,
     append_generator_history,
     append_rollback_event,
@@ -31,12 +31,12 @@ from deep_researcher.io.files import (
     save_progress,
     save_round_log,
 )
-from deep_researcher.logger import get_logger, setup_logging
-from deep_researcher.models.contract import SprintContract
-from deep_researcher.models.feedback import CriticResult
-from deep_researcher.models.progress import HarnessProgress, SprintStatus
-from deep_researcher.prompts import load_prompt
-from deep_researcher.sprints import SPRINTS, SprintDefinition
+from deep_architect.logger import get_logger, setup_logging
+from deep_architect.models.contract import SprintContract
+from deep_architect.models.feedback import CriticResult
+from deep_architect.models.progress import HarnessProgress, SprintStatus
+from deep_architect.prompts import load_prompt
+from deep_architect.sprints import SPRINTS, SprintDefinition
 
 logger = get_logger(__name__)
 console = Console()
@@ -597,7 +597,7 @@ async def run_harness(
                 "Hint: sprint exhausted max_rounds_per_sprint=%d without achieving "
                 "%d consecutive passing round(s). Last consecutive passes: %d/%d. "
                 "To fix: increase max_rounds_per_sprint (currently %d) or lower "
-                "consecutive_passing_rounds (currently %d) in ~/.deep-researcher.toml.",
+                "consecutive_passing_rounds (currently %d) in ~/.deep-architect.toml.",
                 t.max_rounds_per_sprint, t.consecutive_passing_rounds,
                 consecutive_passes, t.consecutive_passing_rounds,
                 t.max_rounds_per_sprint, t.consecutive_passing_rounds,

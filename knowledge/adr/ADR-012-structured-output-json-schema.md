@@ -35,4 +35,4 @@ The critic uses `output_format` with a JSON schema derived from `CriticResult.mo
 - The `passed` field is a Pydantic `model_validator` computed at parse time — it is not stored in the JSON, it is derived.
 - For pydantic-ai structured calls, use the current API (not deprecated `result.data` / `result_type=`).
 
-**Files:** `deep_researcher/agents/client.py:57-59`, `deep_researcher/agents/critic.py:60-75`, `deep_researcher/models/feedback.py`
+**Files:** `deep_architect/agents/client.py:57-59`, `deep_architect/agents/critic.py:60-75`, `deep_architect/models/feedback.py`

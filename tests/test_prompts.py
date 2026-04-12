@@ -1,6 +1,6 @@
 import pytest
 
-from deep_researcher.prompts import load_prompt
+from deep_architect.prompts import load_prompt
 
 EXPECTED_PROMPTS = [
     "generator_system",

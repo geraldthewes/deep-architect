@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from deep_researcher.io.files import (
+from deep_architect.io.files import (
     append_critic_history,
     append_generator_history,
     clean_run_artifacts,
@@ -16,9 +16,9 @@ from deep_researcher.io.files import (
     save_progress,
     save_round_log,
 )
-from deep_researcher.models.contract import SprintContract, SprintCriterion
-from deep_researcher.models.feedback import CriterionScore, CriticResult
-from deep_researcher.models.progress import HarnessProgress, SprintStatus
+from deep_architect.models.contract import SprintContract, SprintCriterion
+from deep_architect.models.feedback import CriterionScore, CriticResult
+from deep_architect.models.progress import HarnessProgress, SprintStatus
 
 
 def make_contract() -> SprintContract:

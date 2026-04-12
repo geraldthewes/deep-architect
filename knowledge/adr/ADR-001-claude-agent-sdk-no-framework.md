@@ -28,4 +28,4 @@ Use `claude-agent-sdk` (Python import: `claude_agent_sdk`) — which wraps the C
 - Tests are straightforward — no framework mocking needed.
 - **Constraint:** Do not add LangGraph, LangChain, or any agent framework (enforced in CLAUDE.md).
 
-**Files:** `deep_researcher/agents/client.py`, `deep_researcher/harness.py`
+**Files:** `deep_architect/agents/client.py`, `deep_architect/harness.py`

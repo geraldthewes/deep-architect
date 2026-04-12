@@ -33,4 +33,4 @@ This is computed as a Pydantic `model_validator` on `CriticResult.passed` at par
 - Severity level is part of `CriterionScore` and must be explicitly set by the critic model.
 - Tests in `test_exit_criteria.py` verify that Critical/High always blocks even at perfect scores.
 
-**Files:** `deep_researcher/models/feedback.py:22-28`, `deep_researcher/exit_criteria.py:6-11`, `tests/test_exit_criteria.py`
+**Files:** `deep_architect/models/feedback.py:22-28`, `deep_architect/exit_criteria.py:6-11`, `tests/test_exit_criteria.py`

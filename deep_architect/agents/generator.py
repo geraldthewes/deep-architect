@@ -3,18 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from deep_researcher.agents.client import (
+from deep_architect.agents.client import (
     extract_input_tokens,
     make_agent_options,
     run_agent,
     run_simple_structured,
 )
-from deep_researcher.config import AgentConfig
-from deep_researcher.logger import get_logger
-from deep_researcher.models.contract import SprintContract
-from deep_researcher.models.feedback import CriticResult
-from deep_researcher.prompts import load_prompt
-from deep_researcher.sprints import SprintDefinition
+from deep_architect.config import AgentConfig
+from deep_architect.logger import get_logger
+from deep_architect.models.contract import SprintContract
+from deep_architect.models.feedback import CriticResult
+from deep_architect.prompts import load_prompt
+from deep_architect.sprints import SprintDefinition
 
 _log = get_logger(__name__)
 

@@ -32,4 +32,4 @@ The output directory must be inside a git repository (validated at startup by `v
 - Commit history faithfully records all iterations including failed ones (critic may score round 1 poorly; that commit still exists).
 - Users can see the full architectural evolution via `git log`.
 
-**Files:** `deep_researcher/git_ops.py`, `deep_researcher/harness.py:285-299`
+**Files:** `deep_architect/git_ops.py`, `deep_architect/harness.py:285-299`

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Build `deep-researcher`: a standalone Python package that takes a BMAD PRD as input and autonomously produces a hardened C4 architecture document in `knowledge/architecture/` using a Generator ↔ Critic adversarial loop. Installable via `pip install` and usable in any repo.
+Build `deep-architect`: a standalone Python package that takes a BMAD PRD as input and autonomously produces a hardened C4 architecture document in `knowledge/architecture/` using a Generator ↔ Critic adversarial loop. Installable via `pip install` and usable in any repo.
 
 ## Current State Analysis
 
@@ -22,12 +22,12 @@ inside a BMAD repo produces a complete, hardened `knowledge/architecture/` folde
 - **deepagents**: Does not exist on PyPI. PRD hallucinated it. Replaced with **pydantic-ai 1.78.0** for structured LLM output.
 - **pydantic-ai**: Supports any OpenAI-compatible endpoint via `OpenAIModel(model, base_url=..., api_key=...)`. `result_type=CriticResult` makes the LLM output a validated Pydantic model — eliminates manual JSON parsing and fragile fallback strategies.
 - **Mermaid C4**: GitHub renders natively. `C4Context` (C1), `C4Container` (C2), `C4Component` (C3). Always end diagrams with `UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")`. Avoid `%%{init}%%` theming.
-- **BMAD output**: The `knowledge/architecture/` folder structure is deep-researcher's output format, not BMAD's native output. Generator decides which area-specific files to create within each sprint's target directory.
+- **BMAD output**: The `knowledge/architecture/` folder structure is deep-architect's output format, not BMAD's native output. Generator decides which area-specific files to create within each sprint's target directory.
 - **Dependency versions**: openai 2.31.0, pydantic 2.12.5, pydantic-ai 1.78.0, typer 0.24.1, gitpython 3.1.46, rich 14.3.3.
 
 ## Prompt Bootstrap Strategy
 
-Prompts live in `deep_researcher/prompts/` as `.md` files loaded at runtime. This keeps them editable without touching Python code and version-controlled separately from logic. Each prompt file documents its bootstrap source so future maintainers know what it's derived from.
+Prompts live in `deep_architect/prompts/` as `.md` files loaded at runtime. This keeps them editable without touching Python code and version-controlled separately from logic. Each prompt file documents its bootstrap source so future maintainers know what it's derived from.
 
 ### Bootstrap Sources
 
@@ -76,7 +76,7 @@ The bootstrap prompts are intentionally minimal — a v1 that works. Future vers
 ### Prompt Loader
 
 ```python
-# deep_researcher/prompts/__init__.py
+# deep_architect/prompts/__init__.py
 from pathlib import Path
 
 _PROMPTS_DIR = Path(__file__).parent
@@ -125,7 +125,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "deep-researcher"
+name = "deep-architect"
 version = "0.1.0"
 description = "Autonomous adversarial C4 architecture harness for BMAD projects"
 requires-python = ">=3.12"
@@ -139,10 +139,10 @@ dependencies = [
 ]
 
 [project.scripts]
-adversarial-architect = "deep_researcher.cli:app"
+adversarial-architect = "deep_architect.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["deep_researcher"]
+packages = ["deep_architect"]
 
 [dependency-groups]
 dev = [
@@ -173,7 +173,7 @@ asyncio_mode = "auto"
 Create all `__init__.py` files and subdirectories:
 
 ```
-deep_researcher/
+deep_architect/
 ├── __init__.py
 ├── __main__.py
 ├── cli.py
@@ -221,8 +221,8 @@ tests/
 └── test_prompts.py                 ← verify all prompts load + variables substitute
 ```
 
-#### 3. `deep_researcher/config.py`
-**File**: `deep_researcher/config.py`
+#### 3. `deep_architect/config.py`
+**File**: `deep_architect/config.py`
 
 ```python
 from __future__ import annotations
@@ -254,14 +254,14 @@ class HarnessConfig(BaseModel):
 
 
 def load_config(config_path: Path | None = None) -> HarnessConfig:
-    """Load config from ~/.deep-researcher.toml, with optional override path."""
+    """Load config from ~/.deep-architect.toml, with optional override path."""
     if config_path is None:
-        config_path = Path.home() / ".deep-researcher.toml"
+        config_path = Path.home() / ".deep-architect.toml"
 
     if not config_path.exists():
         raise FileNotFoundError(
             f"Config file not found: {config_path}\n"
-            "Create ~/.deep-researcher.toml with [generator] and [critic] sections."
+            "Create ~/.deep-architect.toml with [generator] and [critic] sections."
         )
 
     with open(config_path, "rb") as f:
@@ -270,9 +270,9 @@ def load_config(config_path: Path | None = None) -> HarnessConfig:
     return HarnessConfig.model_validate(raw)
 ```
 
-**`~/.deep-researcher.toml` template** (document in `.env.template` equivalent):
+**`~/.deep-architect.toml` template** (document in `.env.template` equivalent):
 ```toml
-# ~/.deep-researcher.toml — deep-researcher configuration
+# ~/.deep-architect.toml — deep-architect configuration
 
 [generator]
 base_url = "https://your-generator-endpoint/v1"
@@ -293,8 +293,8 @@ timeout_hours                 = 3.0
 ping_pong_similarity_threshold = 0.85
 ```
 
-#### 4. `deep_researcher/logger.py`
-**File**: `deep_researcher/logger.py`
+#### 4. `deep_architect/logger.py`
+**File**: `deep_architect/logger.py`
 
 ```python
 from __future__ import annotations
@@ -331,8 +331,8 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 ```
 
-#### 5. `deep_researcher/git_ops.py`
-**File**: `deep_researcher/git_ops.py`
+#### 5. `deep_architect/git_ops.py`
+**File**: `deep_architect/git_ops.py`
 
 ```python
 from __future__ import annotations
@@ -361,8 +361,8 @@ def git_commit(repo: git.Repo, message: str, paths: list[Path]) -> None:
         repo.index.commit(message)
 ```
 
-#### 6. `deep_researcher/cli.py`
-**File**: `deep_researcher/cli.py`
+#### 6. `deep_architect/cli.py`
+**File**: `deep_architect/cli.py`
 
 ```python
 from __future__ import annotations
@@ -374,8 +374,8 @@ from typing import Optional
 import typer
 from rich.console import Console
 
-from deep_researcher.config import load_config
-from deep_researcher.harness import run_harness
+from deep_architect.config import load_config
+from deep_architect.harness import run_harness
 
 app = typer.Typer(help="Adversarial C4 architecture harness for BMAD projects.")
 console = Console()
@@ -386,7 +386,7 @@ def main(
     prd: Path = typer.Option(..., help="Path to the PRD Markdown file"),
     output: Path = typer.Option(..., help="Output directory for architecture files"),
     resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run"),
-    config_file: Optional[Path] = typer.Option(None, "--config", help="Config file path (default: ~/.deep-researcher.toml)"),
+    config_file: Optional[Path] = typer.Option(None, "--config", help="Config file path (default: ~/.deep-architect.toml)"),
     model_generator: Optional[str] = typer.Option(None, "--model-generator", help="Override generator model name"),
     model_critic: Optional[str] = typer.Option(None, "--model-critic", help="Override critic model name"),
 ) -> None:
@@ -410,8 +410,8 @@ def main(
 - [x] `pip install -e .` succeeds
 - [x] `adversarial-architect --help` prints usage without errors
 - [x] `python -m pytest tests/test_config.py -v` passes
-- [x] `ruff check deep_researcher/` passes
-- [x] `mypy deep_researcher/` passes
+- [x] `ruff check deep_architect/` passes
+- [x] `mypy deep_architect/` passes
 
 #### Manual Verification
 - [ ] Running with no config file gives a clear, actionable error message
@@ -428,7 +428,7 @@ Define all data models and file I/O functions. After this phase, all data can be
 
 ### Changes Required
 
-#### 1. `deep_researcher/models/contract.py`
+#### 1. `deep_architect/models/contract.py`
 
 ```python
 from __future__ import annotations
@@ -449,7 +449,7 @@ class SprintContract(BaseModel):
     criteria: list[SprintCriterion] = Field(min_length=3)
 ```
 
-#### 2. `deep_researcher/models/feedback.py`
+#### 2. `deep_architect/models/feedback.py`
 
 ```python
 from __future__ import annotations
@@ -488,7 +488,7 @@ class PingPongResult(BaseModel):
     reasoning: str
 ```
 
-#### 3. `deep_researcher/models/progress.py`
+#### 3. `deep_architect/models/progress.py`
 
 ```python
 from __future__ import annotations
@@ -517,7 +517,7 @@ class HarnessProgress(BaseModel):
     sprint_statuses: list[SprintStatus]
 ```
 
-#### 4. `deep_researcher/io/files.py`
+#### 4. `deep_architect/io/files.py`
 
 ```python
 from __future__ import annotations
@@ -525,9 +525,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from deep_researcher.models.contract import SprintContract
-from deep_researcher.models.feedback import CriticResult
-from deep_researcher.models.progress import HarnessProgress
+from deep_architect.models.contract import SprintContract
+from deep_architect.models.feedback import CriticResult
+from deep_architect.models.progress import HarnessProgress
 
 
 def init_workspace(output_dir: Path) -> None:
@@ -582,7 +582,7 @@ def save_round_log(output_dir: Path, sprint_number: int, round_num: int, data: d
 - [x] Round-trip: save contract → load contract returns identical object
 - [x] `CriticResult.passed` is `False` when any `severity == "Critical"` even if avg ≥ 9.0
 - [x] `CriticResult.passed` is `False` when avg < 9.0 even with no Critical/High
-- [x] `mypy deep_researcher/models/ deep_researcher/io/` passes
+- [x] `mypy deep_architect/models/ deep_architect/io/` passes
 
 ---
 
@@ -593,7 +593,7 @@ Wire up pydantic-ai agents for Generator and Critic using OpenAI-compatible endp
 
 ### Changes Required
 
-#### 1. `deep_researcher/sprints.py`
+#### 1. `deep_architect/sprints.py`
 
 ```python
 from __future__ import annotations
@@ -668,8 +668,8 @@ SPRINTS: list[SprintDefinition] = [
 ]
 ```
 
-#### 2. `deep_researcher/agents/client.py`
-**File**: `deep_researcher/agents/client.py`
+#### 2. `deep_architect/agents/client.py`
+**File**: `deep_architect/agents/client.py`
 
 ```python
 from __future__ import annotations
@@ -677,7 +677,7 @@ from __future__ import annotations
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
 
-from deep_researcher.config import AgentConfig
+from deep_architect.config import AgentConfig
 
 
 def make_openai_model(config: AgentConfig) -> OpenAIModel:
@@ -696,8 +696,8 @@ def make_text_agent(config: AgentConfig, system_prompt: str) -> Agent[None, str]
     )
 ```
 
-#### 3. `deep_researcher/agents/generator.py`
-**File**: `deep_researcher/agents/generator.py`
+#### 3. `deep_architect/agents/generator.py`
+**File**: `deep_architect/agents/generator.py`
 
 ```python
 from __future__ import annotations
@@ -706,9 +706,9 @@ from pathlib import Path
 
 from pydantic_ai import Agent
 
-from deep_researcher.models.contract import SprintContract
-from deep_researcher.models.feedback import CriticResult
-from deep_researcher.sprints import SprintDefinition
+from deep_architect.models.contract import SprintContract
+from deep_architect.models.feedback import CriticResult
+from deep_architect.sprints import SprintDefinition
 
 GENERATOR_SYSTEM_PROMPT = """You are Winston, the BMAD Architect.
 Your role is to produce the highest-quality C4 architecture documentation possible.
@@ -825,8 +825,8 @@ async def propose_contract(
     return result.data
 ```
 
-#### 4. `deep_researcher/agents/critic.py`
-**File**: `deep_researcher/agents/critic.py`
+#### 4. `deep_architect/agents/critic.py`
+**File**: `deep_architect/agents/critic.py`
 
 ```python
 from __future__ import annotations
@@ -835,8 +835,8 @@ from pathlib import Path
 
 from pydantic_ai import Agent
 
-from deep_researcher.models.contract import SprintContract
-from deep_researcher.models.feedback import CriticResult, PingPongResult
+from deep_architect.models.contract import SprintContract
+from deep_architect.models.feedback import CriticResult, PingPongResult
 
 CRITIC_SYSTEM_PROMPT = """You are a hostile senior architect. Your job is to ruthlessly 
 critique C4 architecture documents before they reach production. Be exhaustive and specific.
@@ -944,8 +944,8 @@ async def check_ping_pong(
 ### Success Criteria
 
 #### Automated Verification
-- [x] `mypy deep_researcher/agents/ deep_researcher/sprints.py` passes
-- [x] `ruff check deep_researcher/agents/` passes
+- [x] `mypy deep_architect/agents/ deep_architect/sprints.py` passes
+- [x] `ruff check deep_architect/agents/` passes
 - [x] All 7 sprints have non-empty `primary_files`
 
 #### Manual Verification
@@ -961,12 +961,12 @@ Implement the full adversarial loop: contract negotiation, per-sprint loop, exit
 
 ### Changes Required
 
-#### 1. `deep_researcher/exit_criteria.py`
+#### 1. `deep_architect/exit_criteria.py`
 
 ```python
 from __future__ import annotations
 
-from deep_researcher.models.feedback import CriticResult
+from deep_architect.models.feedback import CriticResult
 
 
 def has_critical_or_high(result: CriticResult) -> bool:
@@ -988,7 +988,7 @@ def should_ping_pong_exit(
     return similarity_score >= threshold and score_improvement < 0.1
 ```
 
-#### 2. `deep_researcher/harness.py`
+#### 2. `deep_architect/harness.py`
 
 ```python
 from __future__ import annotations
@@ -1001,23 +1001,23 @@ from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
 from rich.console import Console
 
-from deep_researcher.agents.client import make_text_agent
-from deep_researcher.agents.critic import (
+from deep_architect.agents.client import make_text_agent
+from deep_architect.agents.critic import (
     check_ping_pong, review_contract, run_critic,
 )
-from deep_researcher.agents.generator import propose_contract, run_generator
-from deep_researcher.config import AgentConfig, HarnessConfig
-from deep_researcher.exit_criteria import should_ping_pong_exit, sprint_passes
-from deep_researcher.git_ops import git_commit, validate_git_repo
-from deep_researcher.io.files import (
+from deep_architect.agents.generator import propose_contract, run_generator
+from deep_architect.config import AgentConfig, HarnessConfig
+from deep_architect.exit_criteria import should_ping_pong_exit, sprint_passes
+from deep_architect.git_ops import git_commit, validate_git_repo
+from deep_architect.io.files import (
     init_workspace, load_progress, save_contract, save_feedback,
     save_progress, save_round_log,
 )
-from deep_researcher.logger import get_logger, setup_logging
-from deep_researcher.models.contract import SprintContract
-from deep_researcher.models.feedback import CriticResult, PingPongResult
-from deep_researcher.models.progress import HarnessProgress, SprintStatus
-from deep_researcher.sprints import SPRINTS, SprintDefinition
+from deep_architect.logger import get_logger, setup_logging
+from deep_architect.models.contract import SprintContract
+from deep_architect.models.feedback import CriticResult, PingPongResult
+from deep_architect.models.progress import HarnessProgress, SprintStatus
+from deep_architect.sprints import SPRINTS, SprintDefinition
 
 logger = get_logger(__name__)
 console = Console()
@@ -1244,7 +1244,7 @@ async def run_final_agreement(
 - [x] `sprint_passes` returns False when avg < 9.0
 - [x] `sprint_passes` returns False when avg ≥ 9.0 but a Critical issue exists
 - [x] `should_ping_pong_exit` returns True only when both conditions met
-- [x] `mypy deep_researcher/harness.py deep_researcher/exit_criteria.py` passes
+- [x] `mypy deep_architect/harness.py deep_architect/exit_criteria.py` passes
 
 #### Manual Verification
 - [ ] Dry-run with mock endpoints shows correct logging output
@@ -1261,7 +1261,7 @@ Finalize git auto-commit logic, ensure JSON round logs are written, and validate
 
 ### Changes Required
 
-#### 1. Update `deep_researcher/git_ops.py` with better staging
+#### 1. Update `deep_architect/git_ops.py` with better staging
 
 ```python
 def git_commit(repo: git.Repo, message: str, paths: list[Path]) -> None:
@@ -1316,7 +1316,7 @@ Complete unit test suite, run all linting and type checking, verify pip install,
 import tomllib
 from pathlib import Path
 import pytest
-from deep_researcher.config import load_config, HarnessConfig
+from deep_architect.config import load_config, HarnessConfig
 
 def test_load_config_missing_file(tmp_path):
     with pytest.raises(FileNotFoundError, match="Config file not found"):
@@ -1362,8 +1362,8 @@ max_rounds_per_sprint = 4
 #### 2. `tests/test_exit_criteria.py`
 
 ```python
-from deep_researcher.exit_criteria import sprint_passes, should_ping_pong_exit
-from deep_researcher.models.feedback import CriticResult, CriterionScore
+from deep_architect.exit_criteria import sprint_passes, should_ping_pong_exit
+from deep_architect.models.feedback import CriticResult, CriterionScore
 
 
 def make_result(avg: float, severities: list[str]) -> CriticResult:
@@ -1410,8 +1410,8 @@ def test_no_ping_pong_when_improving():
 
 ```python
 import pytest
-from deep_researcher.models.feedback import CriticResult, CriterionScore
-from deep_researcher.models.contract import SprintContract, SprintCriterion
+from deep_architect.models.feedback import CriticResult, CriterionScore
+from deep_architect.models.contract import SprintContract, SprintCriterion
 
 
 def test_critic_result_passed_computed():
@@ -1448,7 +1448,7 @@ def test_sprint_contract_validation():
 import pytest
 import git
 from pathlib import Path
-from deep_researcher.git_ops import validate_git_repo, git_commit
+from deep_architect.git_ops import validate_git_repo, git_commit
 
 
 def test_validate_git_repo_success(tmp_path):
@@ -1477,8 +1477,8 @@ def test_git_commit_creates_commit(tmp_path):
 #### 5. `README.md` updates
 
 Document:
-- Installation: `pip install git+https://github.com/geraldthewes/deep-researcher`
-- Config file format (`~/.deep-researcher.toml`)
+- Installation: `pip install git+https://github.com/geraldthewes/deep-architect`
+- Config file format (`~/.deep-architect.toml`)
 - All CLI flags
 - ENV vars used (none — config is via TOML only)
 - How to add to a new BMAD repo
@@ -1487,9 +1487,9 @@ Document:
 
 #### Automated Verification
 - [x] `python -m pytest tests/ -v` — all tests pass
-- [x] `ruff check deep_researcher/ tests/` — zero errors
-- [x] `mypy deep_researcher/` — zero errors
-- [x] `bandit -r deep_researcher/ -ll` — zero medium/high issues
+- [x] `ruff check deep_architect/ tests/` — zero errors
+- [x] `mypy deep_architect/` — zero errors
+- [x] `bandit -r deep_architect/ -ll` — zero medium/high issues
 - [x] `pip install -e .` succeeds in a fresh virtualenv
 - [x] `adversarial-architect --help` works after fresh install
 
@@ -1515,7 +1515,7 @@ Document:
 
 ### Manual Testing
 1. Install in fresh venv: `pip install -e .`
-2. Create `~/.deep-researcher.toml` with real endpoints
+2. Create `~/.deep-architect.toml` with real endpoints
 3. Run against `llm-switch` PRD
 4. Verify git commits appear after each generator pass
 5. Verify `knowledge/architecture/` folder structure matches spec

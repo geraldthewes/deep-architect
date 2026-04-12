@@ -29,4 +29,4 @@ Sprints 3-6 (container-level detail sprints) have `allow_extra_files=True`. Spri
 - `get_modified_files()` returns all changed files; the harness commits them regardless of whether they were in `primary_files`.
 - Sprint-level file contracts (in `SprintContract.files_to_produce`) may be extended by the generator when the flag is set.
 
-**Files:** `deep_researcher/sprints.py:12,43,52,63,82`
+**Files:** `deep_architect/sprints.py:12,43,52,63,82`

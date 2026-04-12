@@ -234,7 +234,7 @@ wheels = [
 ]
 
 [[package]]
-name = "deep-researcher"
+name = "deep-architect"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

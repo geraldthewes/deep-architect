@@ -52,5 +52,5 @@ disk — no special-case logic required.
   subsequent rounds.
 - `test_harness_resets_generator_session_on_retry` replaced — the behavior it tested no longer exists.
 
-**Files:** `deep_researcher/agents/generator.py`, `deep_researcher/harness.py`,
-`deep_researcher/io/files.py`, `deep_researcher/agents/critic.py`
+**Files:** `deep_architect/agents/generator.py`, `deep_architect/harness.py`,
+`deep_architect/io/files.py`, `deep_architect/agents/critic.py`

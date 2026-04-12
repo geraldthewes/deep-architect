@@ -29,4 +29,4 @@ The critic inspects files directly via tools rather than receiving file contents
 - The critic cannot accidentally corrupt files (even if the model tries to call `Write`, the disallowed tools list blocks it).
 - File inspection quality is high: the critic can navigate the full architecture tree the same way a human reviewer would.
 
-**Files:** `deep_researcher/agents/generator.py:20`, `deep_researcher/agents/critic.py:20`
+**Files:** `deep_architect/agents/generator.py:20`, `deep_architect/agents/critic.py:20`

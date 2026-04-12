@@ -1,7 +1,7 @@
 import pytest
 
-from deep_researcher.models.contract import ContractReviewResult, SprintContract, SprintCriterion
-from deep_researcher.models.feedback import CriterionScore, CriticResult
+from deep_architect.models.contract import ContractReviewResult, SprintContract, SprintCriterion
+from deep_architect.models.feedback import CriterionScore, CriticResult
 
 
 def test_critic_result_passed_computed() -> None:

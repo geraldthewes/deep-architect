@@ -39,4 +39,4 @@ Two independent retry mechanisms:
 - If all retries are exhausted, the sprint fails and the run stops with a clear error.
 - Tests in `test_harness_retry.py` cover agent retry, round retry, and session reset behavior.
 
-**Files:** `deep_researcher/agents/client.py:296-406`, `deep_researcher/harness.py:262-343`, `tests/test_harness_retry.py`
+**Files:** `deep_architect/agents/client.py:296-406`, `deep_architect/harness.py:262-343`, `tests/test_harness_retry.py`

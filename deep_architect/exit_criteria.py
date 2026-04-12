@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from deep_researcher.models.feedback import CriticResult
+from deep_architect.models.feedback import CriticResult
 
 
 def has_critical_or_high(result: CriticResult) -> bool:

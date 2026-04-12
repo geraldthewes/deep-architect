@@ -6,9 +6,9 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from deep_researcher.models.contract import SprintContract
-from deep_researcher.models.feedback import CriticResult
-from deep_researcher.models.progress import HarnessProgress
+from deep_architect.models.contract import SprintContract
+from deep_architect.models.feedback import CriticResult
+from deep_architect.models.progress import HarnessProgress
 
 
 def init_workspace(output_dir: Path) -> None:

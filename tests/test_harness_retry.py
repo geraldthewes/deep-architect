@@ -18,11 +18,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import git
 import pytest
 
-from deep_researcher.agents.generator import GeneratorRoundResult
-from deep_researcher.config import AgentConfig, HarnessConfig, ThresholdConfig
-from deep_researcher.harness import run_harness
-from deep_researcher.models.contract import SprintContract, SprintCriterion
-from deep_researcher.models.feedback import CriterionScore, CriticResult
+from deep_architect.agents.generator import GeneratorRoundResult
+from deep_architect.config import AgentConfig, HarnessConfig, ThresholdConfig
+from deep_architect.harness import run_harness
+from deep_architect.models.contract import SprintContract, SprintCriterion
+from deep_architect.models.feedback import CriterionScore, CriticResult
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
@@ -91,11 +91,11 @@ def _make_mock_repo(output_dir: Path) -> MagicMock:
 
 # Patches applied to every harness test so we don't touch the network or file system.
 _INFRA_PATCHES = [
-    patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-    patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
-    patch("deep_researcher.harness.get_modified_files", return_value=[]),
-    patch("deep_researcher.harness.git_commit"),
-    patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+    patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+    patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
+    patch("deep_architect.harness.get_modified_files", return_value=[]),
+    patch("deep_architect.harness.git_commit"),
+    patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
 ]
 
 
@@ -122,26 +122,26 @@ async def test_harness_retries_round_on_generator_failure(
         return GeneratorRoundResult(session_id=None, input_tokens=0)
 
     with (
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
         patch(
-            "deep_researcher.harness.validate_git_repo",
+            "deep_architect.harness.validate_git_repo",
             return_value=_make_mock_repo(output_dir),
         ),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
         patch(
-            "deep_researcher.harness.negotiate_contract",
+            "deep_architect.harness.negotiate_contract",
             new_callable=AsyncMock,
             return_value=_make_contract(),
         ),
         patch(
-            "deep_researcher.harness.run_generator",
+            "deep_architect.harness.run_generator",
             side_effect=_generator_fail_then_succeed,
         ),
         patch(
-            "deep_researcher.harness.run_critic",
+            "deep_architect.harness.run_critic",
             new_callable=AsyncMock,
             return_value=_passing_result(),
         ),
@@ -174,27 +174,27 @@ async def test_harness_retries_round_on_critic_failure(
         return _passing_result()
 
     with (
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
         patch(
-            "deep_researcher.harness.validate_git_repo",
+            "deep_architect.harness.validate_git_repo",
             return_value=_make_mock_repo(output_dir),
         ),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
         patch(
-            "deep_researcher.harness.negotiate_contract",
+            "deep_architect.harness.negotiate_contract",
             new_callable=AsyncMock,
             return_value=_make_contract(),
         ),
         patch(
-            "deep_researcher.harness.run_generator",
+            "deep_architect.harness.run_generator",
             new_callable=AsyncMock,
             return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
         ),
         patch(
-            "deep_researcher.harness.run_critic",
+            "deep_architect.harness.run_critic",
             side_effect=_critic_fail_then_succeed,
         ),
     ):
@@ -224,26 +224,26 @@ async def test_harness_marks_sprint_failed_after_max_retries(
         raise Exception("Generator always fails")
 
     with (
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
         patch(
-            "deep_researcher.harness.validate_git_repo",
+            "deep_architect.harness.validate_git_repo",
             return_value=_make_mock_repo(output_dir),
         ),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
         patch(
-            "deep_researcher.harness.negotiate_contract",
+            "deep_architect.harness.negotiate_contract",
             new_callable=AsyncMock,
             return_value=_make_contract(),
         ),
         patch(
-            "deep_researcher.harness.run_generator",
+            "deep_architect.harness.run_generator",
             side_effect=_always_fail,
         ),
         patch(
-            "deep_researcher.harness.run_critic",
+            "deep_architect.harness.run_critic",
             new_callable=AsyncMock,
             return_value=_passing_result(),
         ),
@@ -270,7 +270,7 @@ async def test_harness_generator_receives_no_session_id(
     """Each generator call starts a new session — session_id is not a parameter."""
     import inspect
 
-    from deep_researcher.agents.generator import run_generator
+    from deep_architect.agents.generator import run_generator
     sig = inspect.signature(run_generator)
     assert "session_id" not in sig.parameters, (
         "run_generator() must not have a session_id parameter — sessions are per-turn only"
@@ -291,23 +291,23 @@ async def test_harness_runs_multiple_rounds_stateless(
         return GeneratorRoundResult(session_id="sdk-session", input_tokens=0)
 
     with (
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
         patch(
-            "deep_researcher.harness.validate_git_repo",
+            "deep_architect.harness.validate_git_repo",
             return_value=_make_mock_repo(output_dir),
         ),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
         patch(
-            "deep_researcher.harness.negotiate_contract",
+            "deep_architect.harness.negotiate_contract",
             new_callable=AsyncMock,
             return_value=_make_contract(),
         ),
-        patch("deep_researcher.harness.run_generator", side_effect=_fake_generator),
+        patch("deep_architect.harness.run_generator", side_effect=_fake_generator),
         patch(
-            "deep_researcher.harness.run_critic",
+            "deep_architect.harness.run_critic",
             new_callable=AsyncMock,
             return_value=_passing_result(),
         ),
@@ -329,10 +329,10 @@ async def test_resume_fails_fast_without_checkpoint(output_dir: Path) -> None:
 
     with (
         patch(
-            "deep_researcher.harness.validate_git_repo",
+            "deep_architect.harness.validate_git_repo",
             return_value=_make_mock_repo(output_dir),
         ),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
         pytest.raises(FileNotFoundError, match="--resume passed but no checkpoint found"),
     ):
         await run_harness(
@@ -345,9 +345,9 @@ async def test_resume_fails_fast_without_checkpoint(output_dir: Path) -> None:
 
 async def test_resume_skips_completed_sprints(output_dir: Path) -> None:
     """--resume skips sprints already marked passed/failed in the checkpoint."""
-    from deep_researcher.io.files import save_progress
-    from deep_researcher.models.progress import HarnessProgress, SprintStatus
-    from deep_researcher.sprints import SPRINTS
+    from deep_architect.io.files import save_progress
+    from deep_architect.models.progress import HarnessProgress, SprintStatus
+    from deep_architect.sprints import SPRINTS
 
     prd = output_dir / "prd.md"
     prd.write_text("# PRD")
@@ -379,27 +379,27 @@ async def test_resume_skips_completed_sprints(output_dir: Path) -> None:
 
     with (
         patch(
-            "deep_researcher.harness.validate_git_repo",
+            "deep_architect.harness.validate_git_repo",
             return_value=_make_mock_repo(output_dir),
         ),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
-        patch("deep_researcher.harness.negotiate_contract", side_effect=_record_negotiate),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.negotiate_contract", side_effect=_record_negotiate),
         patch(
-            "deep_researcher.harness.run_generator",
+            "deep_architect.harness.run_generator",
             new_callable=AsyncMock,
             return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
         ),
         patch(
-            "deep_researcher.harness.run_critic",
+            "deep_architect.harness.run_critic",
             new_callable=AsyncMock,
             return_value=_passing_result(),
         ),
         patch(
-            "deep_researcher.harness.check_ping_pong",
+            "deep_architect.harness.check_ping_pong",
             new_callable=AsyncMock,
             return_value=MagicMock(similarity_score=0.0),
         ),
@@ -413,9 +413,9 @@ async def test_resume_skips_completed_sprints(output_dir: Path) -> None:
 async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> None:
     """--resume with rounds_completed=2 starts the generator at round 3
     and loads the contract from disk instead of re-negotiating."""
-    from deep_researcher.io.files import save_contract, save_feedback, save_progress
-    from deep_researcher.models.progress import HarnessProgress, SprintStatus
-    from deep_researcher.sprints import SPRINTS
+    from deep_architect.io.files import save_contract, save_feedback, save_progress
+    from deep_architect.models.progress import HarnessProgress, SprintStatus
+    from deep_architect.sprints import SPRINTS
 
     prd = output_dir / "prd.md"
     prd.write_text("# PRD")
@@ -464,23 +464,23 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
 
     with (
         patch(
-            "deep_researcher.harness.validate_git_repo",
+            "deep_architect.harness.validate_git_repo",
             return_value=_make_mock_repo(output_dir),
         ),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
-        patch("deep_researcher.harness.negotiate_contract", side_effect=_record_negotiate),
-        patch("deep_researcher.harness.run_generator", side_effect=_record_generator),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.negotiate_contract", side_effect=_record_negotiate),
+        patch("deep_architect.harness.run_generator", side_effect=_record_generator),
         patch(
-            "deep_researcher.harness.run_critic",
+            "deep_architect.harness.run_critic",
             new_callable=AsyncMock,
             return_value=_passing_result(),
         ),
         patch(
-            "deep_researcher.harness.check_ping_pong",
+            "deep_architect.harness.check_ping_pong",
             new_callable=AsyncMock,
             return_value=MagicMock(similarity_score=0.0),
         ),
@@ -508,9 +508,9 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
 async def test_resume_resets_failed_status(output_dir: Path) -> None:
     """--resume with status='failed' resets progress to 'running' so the resumed
     run does not carry stale failure state and ends as 'complete' on success."""
-    from deep_researcher.io.files import load_progress, save_progress
-    from deep_researcher.models.progress import HarnessProgress, SprintStatus
-    from deep_researcher.sprints import SPRINTS
+    from deep_architect.io.files import load_progress, save_progress
+    from deep_architect.models.progress import HarnessProgress, SprintStatus
+    from deep_architect.sprints import SPRINTS
 
     prd = output_dir / "prd.md"
     prd.write_text("# PRD")
@@ -534,31 +534,31 @@ async def test_resume_resets_failed_status(output_dir: Path) -> None:
 
     with (
         patch(
-            "deep_researcher.harness.validate_git_repo",
+            "deep_architect.harness.validate_git_repo",
             return_value=_make_mock_repo(output_dir),
         ),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
         patch(
-            "deep_researcher.harness.negotiate_contract",
+            "deep_architect.harness.negotiate_contract",
             new_callable=AsyncMock,
             return_value=_make_contract(),
         ),
         patch(
-            "deep_researcher.harness.run_generator",
+            "deep_architect.harness.run_generator",
             new_callable=AsyncMock,
             return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
         ),
         patch(
-            "deep_researcher.harness.run_critic",
+            "deep_architect.harness.run_critic",
             new_callable=AsyncMock,
             return_value=_passing_result(),
         ),
         patch(
-            "deep_researcher.harness.check_ping_pong",
+            "deep_architect.harness.check_ping_pong",
             new_callable=AsyncMock,
             return_value=MagicMock(similarity_score=0.0),
         ),
@@ -591,17 +591,17 @@ async def test_harness_creates_sprint_boundary_commit(output_dir: Path) -> None:
         return GeneratorRoundResult(session_id=None, input_tokens=0)
 
     with (
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
         patch(
-            "deep_researcher.harness.negotiate_contract",
+            "deep_architect.harness.negotiate_contract",
             new_callable=AsyncMock,
             return_value=_make_contract(),
         ),
-        patch("deep_researcher.harness.run_generator", side_effect=_writing_generator),
+        patch("deep_architect.harness.run_generator", side_effect=_writing_generator),
         patch(
-            "deep_researcher.harness.run_critic",
+            "deep_architect.harness.run_critic",
             new_callable=AsyncMock,
             return_value=_passing_result(),
         ),
@@ -627,9 +627,9 @@ async def test_resume_mid_sprint_falls_back_to_negotiate_on_missing_contract(
 ) -> None:
     """When --resume mid-sprint but the contract file is missing, fall back
     to re-negotiation instead of crashing."""
-    from deep_researcher.io.files import save_feedback, save_progress
-    from deep_researcher.models.progress import HarnessProgress, SprintStatus
-    from deep_researcher.sprints import SPRINTS
+    from deep_architect.io.files import save_feedback, save_progress
+    from deep_architect.models.progress import HarnessProgress, SprintStatus
+    from deep_architect.sprints import SPRINTS
 
     prd = output_dir / "prd.md"
     prd.write_text("# PRD")
@@ -666,27 +666,27 @@ async def test_resume_mid_sprint_falls_back_to_negotiate_on_missing_contract(
 
     with (
         patch(
-            "deep_researcher.harness.validate_git_repo",
+            "deep_architect.harness.validate_git_repo",
             return_value=_make_mock_repo(output_dir),
         ),
-        patch("deep_researcher.harness.setup_logging", return_value=Path("/tmp/test.log")),
-        patch("deep_researcher.harness.run_preflight_check", new_callable=AsyncMock),
-        patch("deep_researcher.harness.run_final_agreement", new_callable=AsyncMock),
-        patch("deep_researcher.harness.get_modified_files", return_value=[]),
-        patch("deep_researcher.harness.git_commit"),
-        patch("deep_researcher.harness.negotiate_contract", side_effect=_record_negotiate),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.negotiate_contract", side_effect=_record_negotiate),
         patch(
-            "deep_researcher.harness.run_generator",
+            "deep_architect.harness.run_generator",
             new_callable=AsyncMock,
             return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
         ),
         patch(
-            "deep_researcher.harness.run_critic",
+            "deep_architect.harness.run_critic",
             new_callable=AsyncMock,
             return_value=_passing_result(),
         ),
         patch(
-            "deep_researcher.harness.check_ping_pong",
+            "deep_architect.harness.check_ping_pong",
             new_callable=AsyncMock,
             return_value=MagicMock(similarity_score=0.0),
         ),

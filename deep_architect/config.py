@@ -40,14 +40,14 @@ class HarnessConfig(BaseModel):
 
 
 def load_config(config_path: Path | None = None) -> HarnessConfig:
-    """Load config from ~/.deep-researcher.toml, with optional override path."""
+    """Load config from ~/.deep-architect.toml, with optional override path."""
     if config_path is None:
-        config_path = Path.home() / ".deep-researcher.toml"
+        config_path = Path.home() / ".deep-architect.toml"
 
     if not config_path.exists():
         raise FileNotFoundError(
             f"Config file not found: {config_path}\n"
-            "Create ~/.deep-researcher.toml with [generator] and [critic] sections.\n"
+            "Create ~/.deep-architect.toml with [generator] and [critic] sections.\n"
             "Endpoint configuration is via environment variables:\n"
             "  ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_DEFAULT_SONNET_MODEL, etc."
         )

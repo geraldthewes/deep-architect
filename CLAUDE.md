@@ -1,15 +1,15 @@
-# CLAUDE.md — deep-researcher
+# CLAUDE.md — deep-architect
 
 ## Project Overview
 
-`deep-researcher` is a standalone Python package (`adversarial-architect` CLI) that takes a BMAD PRD and autonomously produces a hardened C4 architecture document using a Generator ↔ Critic adversarial loop across 7 fixed sprints. Output lands in `knowledge/architecture/` as Mermaid + Markdown files.
+`deep-architect` is a standalone Python package (`adversarial-architect` CLI) that takes a BMAD PRD and autonomously produces a hardened C4 architecture document using a Generator ↔ Critic adversarial loop across 7 fixed sprints. Output lands in `knowledge/architecture/` as Mermaid + Markdown files.
 
 ## Package Layout
 
 ```
-deep_researcher/
+deep_architect/
 ├── cli.py            # Typer entry point (adversarial-architect)
-├── config.py         # HarnessConfig loaded from ~/.deep-researcher.toml
+├── config.py         # HarnessConfig loaded from ~/.deep-architect.toml
 ├── harness.py        # Main orchestration loop (run_harness)
 ├── sprints.py        # SPRINTS list — 7 fixed SprintDefinition objects
 ├── exit_criteria.py  # sprint_passes(), should_ping_pong_exit()
@@ -42,19 +42,19 @@ uv sync
 uv run python -m pytest tests/ -v
 
 # Lint
-uv run ruff check deep_researcher/ tests/
+uv run ruff check deep_architect/ tests/
 
 # Type check (strict)
-uv run mypy deep_researcher/
+uv run mypy deep_architect/
 
 # Security scan
-uv run bandit -r deep_researcher/ -ll
+uv run bandit -r deep_architect/ -ll
 ```
 
 All four must pass clean before committing. Run them together:
 
 ```bash
-uv run ruff check deep_researcher/ tests/ && uv run mypy deep_researcher/ && uv run python -m pytest tests/ -v && uv run bandit -r deep_researcher/ -ll
+uv run ruff check deep_architect/ tests/ && uv run mypy deep_architect/ && uv run python -m pytest tests/ -v && uv run bandit -r deep_architect/ -ll
 ```
 
 ## Architecture Decision Records
@@ -91,7 +91,7 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 ## Adding a New Sprint
 
 1. Add a `SprintDefinition` entry to `SPRINTS` in `sprints.py`
-2. Create `deep_researcher/prompts/sprint_N_name.md`
+2. Create `deep_architect/prompts/sprint_N_name.md`
 3. Add the prompt name to `EXPECTED_PROMPTS` in `tests/test_prompts.py`
 4. Update the sprint count references in `harness.py` (progress total) and `README.md`
 
@@ -101,7 +101,7 @@ Logic lives entirely in `exit_criteria.py`. The thresholds (`min_score`, `ping_p
 
 ## Config File
 
-Users create `~/.deep-researcher.toml` (template: `.deep-researcher.toml.template`). The TOML config controls model aliases and thresholds only. Authentication and endpoint are set via environment variables (see above). `load_config()` in `config.py` raises `FileNotFoundError` with a clear message if the file is missing.
+Users create `~/.deep-architect.toml` (template: `.deep-architect.toml.template`). The TOML config controls model aliases and thresholds only. Authentication and endpoint are set via environment variables (see above). `load_config()` in `config.py` raises `FileNotFoundError` with a clear message if the file is missing.
 
 ## Testing Notes
 

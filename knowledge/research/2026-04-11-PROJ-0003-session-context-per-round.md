@@ -3,7 +3,7 @@ date: 2026-04-11T12:45:00-04:00
 researcher: Claude (automated)
 git_commit: b4fae512566e0ce2ac5d3a278a611fb61f2f6629
 branch: master
-repository: deep-researcher
+repository: deep-architect
 topic: "PROJ-0003: Save context at each round for generator and critic and start new session"
 tags: [research, codebase, session-management, generator, critic, context-accumulation, history-files]
 status: complete
@@ -17,7 +17,7 @@ last_updated_by: Claude (automated)
 **Researcher**: Claude (automated)
 **Git Commit**: b4fae512566e0ce2ac5d3a278a611fb61f2f6629
 **Branch**: master
-**Repository**: deep-researcher
+**Repository**: deep-architect
 
 ## Research Question
 
@@ -255,30 +255,30 @@ ADR-004 ("Generator Session Persistence") explicitly established the current pat
 ## Code References
 
 ### session_id Threading
-- `deep_researcher/harness.py:303` — `generator_session_id = None` per sprint
-- `deep_researcher/harness.py:361-375` — session passed to generator, captured from return
-- `deep_researcher/harness.py:430-431` — session reset on exception
-- `deep_researcher/harness.py:319-323` — "session context lost" on harness resume
-- `deep_researcher/agents/generator.py:43` — `session_id` parameter on `run_generator()`
-- `deep_researcher/agents/generator.py:105-112` — `make_agent_options(resume=session_id)`
-- `deep_researcher/agents/generator.py:121-124` — `session_id` returned in `GeneratorRoundResult`
-- `deep_researcher/agents/client.py:295-337` — `make_agent_options()` with `resume` parameter
-- `deep_researcher/agents/client.py:455-461` — `resume` cleared on agent-level retry
+- `deep_architect/harness.py:303` — `generator_session_id = None` per sprint
+- `deep_architect/harness.py:361-375` — session passed to generator, captured from return
+- `deep_architect/harness.py:430-431` — session reset on exception
+- `deep_architect/harness.py:319-323` — "session context lost" on harness resume
+- `deep_architect/agents/generator.py:43` — `session_id` parameter on `run_generator()`
+- `deep_architect/agents/generator.py:105-112` — `make_agent_options(resume=session_id)`
+- `deep_architect/agents/generator.py:121-124` — `session_id` returned in `GeneratorRoundResult`
+- `deep_architect/agents/client.py:295-337` — `make_agent_options()` with `resume` parameter
+- `deep_architect/agents/client.py:455-461` — `resume` cleared on agent-level retry
 
 ### generator_learnings.md
-- `deep_researcher/agents/generator.py:76-85` — read and inject into prompt
-- `deep_researcher/prompts/generator_system.md:28-39` — LLM instructions to maintain the file
-- `deep_researcher/io/files.py:80-83` — deleted on clean start
+- `deep_architect/agents/generator.py:76-85` — read and inject into prompt
+- `deep_architect/prompts/generator_system.md:28-39` — LLM instructions to maintain the file
+- `deep_architect/io/files.py:80-83` — deleted on clean start
 
 ### Context Injection
-- `deep_researcher/agents/generator.py:63-102` — full prompt construction (PRD, contract, feedback, learnings)
-- `deep_researcher/agents/critic.py:49-57` — critic prompt construction (contract, files, round number)
+- `deep_architect/agents/generator.py:63-102` — full prompt construction (PRD, contract, feedback, learnings)
+- `deep_architect/agents/critic.py:49-57` — critic prompt construction (contract, files, round number)
 
 ### File I/O Patterns
-- `deep_researcher/io/files.py:12-15` — `init_workspace()` creates subdirectories
-- `deep_researcher/io/files.py:18-21` — `save_contract()` pattern: `contracts/sprint-{N}.json`
-- `deep_researcher/io/files.py:29-34` — `save_feedback()` pattern: `feedback/sprint-{N}-round-{M}.json`
-- `deep_researcher/io/files.py:42-48` — `save_progress()` atomic write pattern
+- `deep_architect/io/files.py:12-15` — `init_workspace()` creates subdirectories
+- `deep_architect/io/files.py:18-21` — `save_contract()` pattern: `contracts/sprint-{N}.json`
+- `deep_architect/io/files.py:29-34` — `save_feedback()` pattern: `feedback/sprint-{N}-round-{M}.json`
+- `deep_architect/io/files.py:42-48` — `save_progress()` atomic write pattern
 
 ### Tests
 - `tests/test_harness_retry.py:267-318` — session reset after crash

@@ -3,7 +3,7 @@ date: 2026-04-10T20:19:00-04:00
 researcher: Claude
 git_commit: 0256d47
 branch: master
-repository: deep-researcher
+repository: deep-architect
 topic: "What already exists for resume/checkpoint support and what needs to change for PROJ-0002"
 tags: [research, codebase, resume, checkpoint, harness, progress]
 status: complete
@@ -17,7 +17,7 @@ last_updated_by: Claude
 **Researcher**: Claude
 **Git Commit**: 0256d47
 **Branch**: master
-**Repository**: deep-researcher
+**Repository**: deep-architect
 
 ## Research Question
 
@@ -198,15 +198,15 @@ The planning phase should resolve this.
 
 ## Code References
 
-- `deep_researcher/models/progress.py:10-28` — HarnessProgress and SprintStatus models
-- `deep_researcher/io/files.py:41-49` — save_progress / load_progress
-- `deep_researcher/harness.py:191-204` — Resume branch logic
-- `deep_researcher/harness.py:208` — Sprint loop with start_sprint_idx slicing
-- `deep_researcher/harness.py:225-226` — current_sprint update + save at sprint start
-- `deep_researcher/cli.py:20-42` — --resume CLI flag
-- `deep_researcher/config.py:16-26` — ThresholdConfig (no resume fields)
-- `deep_researcher/agents/client.py:251-293` — make_agent_options with session resume param
-- `deep_researcher/git_ops.py:12-43` — Git operations
+- `deep_architect/models/progress.py:10-28` — HarnessProgress and SprintStatus models
+- `deep_architect/io/files.py:41-49` — save_progress / load_progress
+- `deep_architect/harness.py:191-204` — Resume branch logic
+- `deep_architect/harness.py:208` — Sprint loop with start_sprint_idx slicing
+- `deep_architect/harness.py:225-226` — current_sprint update + save at sprint start
+- `deep_architect/cli.py:20-42` — --resume CLI flag
+- `deep_architect/config.py:16-26` — ThresholdConfig (no resume fields)
+- `deep_architect/agents/client.py:251-293` — make_agent_options with session resume param
+- `deep_architect/git_ops.py:12-43` — Git operations
 - `tests/test_files.py:73-86` — HarnessProgress round-trip test (default values only)
 - `tests/test_harness_retry.py` — Harness tests (all resume=False)
 - `knowledge/adr/ADR-011-resume-via-progress-json.md` — Design decision document

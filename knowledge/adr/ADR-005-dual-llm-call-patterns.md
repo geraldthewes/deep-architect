@@ -38,4 +38,4 @@ These operations have very different requirements for tool use and structured ou
 - Cost-optimized: simple structured calls are cheaper; agent calls are only used when tools are needed.
 - Do not use `result.data`, `result.output`, or `result_type=` — these are old pydantic-ai API. Use the current pydantic-ai API.
 
-**Files:** `deep_researcher/agents/client.py:97-138,296-490`, `deep_researcher/agents/generator.py`, `deep_researcher/agents/critic.py`
+**Files:** `deep_architect/agents/client.py:97-138,296-490`, `deep_architect/agents/generator.py`, `deep_architect/agents/critic.py`

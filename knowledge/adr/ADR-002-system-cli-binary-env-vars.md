@@ -36,4 +36,4 @@ Relevant environment variables:
 - If an env var alias is unset, `resolve_model_id()` passes the value through unchanged, so full model IDs also work directly in the TOML.
 - The TOML config controls only behavior (model aliases, max turns, thresholds) — never infrastructure.
 
-**Files:** `deep_researcher/agents/client.py:235-248`, `deep_researcher/config.py`
+**Files:** `deep_architect/agents/client.py:235-248`, `deep_architect/config.py`

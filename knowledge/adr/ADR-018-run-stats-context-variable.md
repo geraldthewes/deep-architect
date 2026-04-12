@@ -33,4 +33,4 @@ At the end of the run, `run_stats.log_summary()` logs a summary.
 - Token counts depend on the LLM response including usage metadata. If the endpoint does not return usage, stats will be zero.
 - The context variable approach means stats are not accessible from outside the async task — by design.
 
-**Files:** `deep_researcher/agents/client.py:141-217`, `deep_researcher/harness.py:180,448`
+**Files:** `deep_architect/agents/client.py:141-217`, `deep_architect/harness.py:180,448`

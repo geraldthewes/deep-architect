@@ -75,11 +75,11 @@ On resume:
 
 ## Key Files
 
-- `deep_researcher/io/files.py:42-53` — `save_progress` (atomic write), `load_progress`
-- `deep_researcher/io/files.py:64-84` — `clean_run_artifacts`
-- `deep_researcher/models/progress.py:10-29` — `SprintStatus`, `HarnessProgress`
-- `deep_researcher/harness.py:206-247` — checkpoint_dir setup, fail-fast, resume/init branch
-- `deep_researcher/harness.py:258-264` — already-complete sprint skip
-- `deep_researcher/harness.py:266-295` — contract reload on mid-sprint resume
-- `deep_researcher/harness.py:306-325` — round-state restoration and round loop start
-- `deep_researcher/harness.py:490-492` — `consecutive_passes` persistence after each round
+- `deep_architect/io/files.py:42-53` — `save_progress` (atomic write), `load_progress`
+- `deep_architect/io/files.py:64-84` — `clean_run_artifacts`
+- `deep_architect/models/progress.py:10-29` — `SprintStatus`, `HarnessProgress`
+- `deep_architect/harness.py:206-247` — checkpoint_dir setup, fail-fast, resume/init branch
+- `deep_architect/harness.py:258-264` — already-complete sprint skip
+- `deep_architect/harness.py:266-295` — contract reload on mid-sprint resume
+- `deep_architect/harness.py:306-325` — round-state restoration and round loop start
+- `deep_architect/harness.py:490-492` — `consecutive_passes` persistence after each round

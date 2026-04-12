@@ -12,7 +12,7 @@ import pytest
 from claude_agent_sdk import ResultMessage
 from pydantic import BaseModel
 
-from deep_researcher.agents.client import (
+from deep_architect.agents.client import (
     DISALLOWED_TOOLS,
     _extract_json,
     json_schema_format,
@@ -21,7 +21,7 @@ from deep_researcher.agents.client import (
     run_agent,
     run_simple_structured,
 )
-from deep_researcher.config import AgentConfig
+from deep_architect.config import AgentConfig
 
 # Sentinel CLI path — avoids shutil.which("claude") during tests.
 _FAKE_CLI = "/usr/bin/true"
@@ -256,7 +256,7 @@ async def test_run_agent_no_retry_by_default() -> None:
         raise Exception("CLI crashed")
         yield
 
-    with patch("deep_researcher.agents.client.query", side_effect=_failing_query):
+    with patch("deep_architect.agents.client.query", side_effect=_failing_query):
         with pytest.raises(Exception, match="CLI crashed"):
             await run_agent(opts, "prompt", label="test")
 
@@ -279,7 +279,7 @@ async def test_run_agent_retries_on_failure() -> None:
         else:
             yield result
 
-    with patch("deep_researcher.agents.client.query", side_effect=_query_fail_then_succeed):
+    with patch("deep_architect.agents.client.query", side_effect=_query_fail_then_succeed):
         returned = await run_agent(opts, "prompt", label="test", max_retries=1)
 
     assert call_count == 2
@@ -298,7 +298,7 @@ async def test_run_agent_exhausts_retries_and_raises() -> None:
         raise Exception("always fails")
         yield
 
-    with patch("deep_researcher.agents.client.query", side_effect=_always_fail):
+    with patch("deep_architect.agents.client.query", side_effect=_always_fail):
         with pytest.raises(Exception, match="always fails"):
             await run_agent(opts, "prompt", label="test", max_retries=2)
 
@@ -322,7 +322,7 @@ async def test_run_agent_clears_resume_on_retry() -> None:
         else:
             yield result
 
-    with patch("deep_researcher.agents.client.query", side_effect=_record_and_maybe_fail):
+    with patch("deep_architect.agents.client.query", side_effect=_record_and_maybe_fail):
         await run_agent(opts, "prompt", label="test", max_retries=1)
 
     assert captured_resumes[0] == "session-abc"
@@ -375,7 +375,7 @@ def _make_response(text: str) -> MagicMock:
     return response
 
 
-@patch("deep_researcher.agents.client._anthropic.AsyncAnthropic")
+@patch("deep_architect.agents.client._anthropic.AsyncAnthropic")
 async def test_run_simple_structured_success(mock_cls: MagicMock) -> None:
     """Valid JSON response is parsed and returned as the output type."""
     mock_cls.return_value.messages.create = AsyncMock(
@@ -387,7 +387,7 @@ async def test_run_simple_structured_success(mock_cls: MagicMock) -> None:
     assert result.label == "hello"
 
 
-@patch("deep_researcher.agents.client._anthropic.AsyncAnthropic")
+@patch("deep_architect.agents.client._anthropic.AsyncAnthropic")
 async def test_run_simple_structured_strips_code_fence(mock_cls: MagicMock) -> None:
     """JSON wrapped in a code fence is extracted and parsed correctly."""
     fenced = '```json\n{"value": 7, "label": "fenced"}\n```'
@@ -400,7 +400,7 @@ async def test_run_simple_structured_strips_code_fence(mock_cls: MagicMock) -> N
     assert result.label == "fenced"
 
 
-@patch("deep_researcher.agents.client._anthropic.AsyncAnthropic")
+@patch("deep_architect.agents.client._anthropic.AsyncAnthropic")
 async def test_run_simple_structured_retries_on_bad_json(mock_cls: MagicMock) -> None:
     """A non-JSON first response is retried; a valid second response succeeds."""
     mock_cls.return_value.messages.create = AsyncMock(
@@ -415,7 +415,7 @@ async def test_run_simple_structured_retries_on_bad_json(mock_cls: MagicMock) ->
     assert mock_cls.return_value.messages.create.call_count == 2
 
 
-@patch("deep_researcher.agents.client._anthropic.AsyncAnthropic")
+@patch("deep_architect.agents.client._anthropic.AsyncAnthropic")
 async def test_run_simple_structured_raises_after_three_failures(
     mock_cls: MagicMock,
 ) -> None:

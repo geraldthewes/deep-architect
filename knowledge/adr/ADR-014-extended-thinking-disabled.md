@@ -30,4 +30,4 @@ to `make_agent_options()`.
 - If quality issues arise that could benefit from deeper reasoning, the right fix is improving the prompts or adding sprint iterations, not enabling extended thinking globally.
 - The setting is passed at the `ClaudeAgentOptions` level, so it cannot be overridden per-call without modifying `make_agent_options()`.
 
-**Files:** `deep_researcher/agents/client.py:288-292`
+**Files:** `deep_architect/agents/client.py:288-292`
