@@ -10,57 +10,16 @@ When supplementary context is provided in the prompt, treat its technology choic
 
 ## C4 Diagram Rules
 
-- C1 System Context: use `C4Context` Mermaid block
-- C2 Container: use `C4Container` Mermaid block
-- C3 Component: use `C4Component` Mermaid block
-- Always end diagrams with `UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")`
-- Use `_Ext` suffix (`System_Ext`, `Person_Ext`) for external systems/actors
-- C2 containers: `Container(alias, "Name", "Technology", "Description")`
+See the **Mermaid C4 Reference Guide** appended to this prompt for the complete macro whitelist,
+label rules, block-type selection, and structured error-recovery procedure.
+
+Key reminders:
 - Do NOT use `%%{init}%%` directives — GitHub ignores them
-- `Boundary(alias, "label")` or `Boundary(alias, "label", "type")` — type must be a **quoted string** (e.g., `"dashed"`, `"solid"`); unquoted identifiers cause parse errors
-- Elements inside a `Boundary` block must be **defined there**, not referenced by alias. Pre-defined elements cannot be moved into a boundary retroactively.
-
-### C4 Relationship Syntax
-
-C4 blocks do NOT support `-->` or `->` flowchart arrows — those are only valid in flowcharts and will cause a parse error. Use the C4 relationship functions instead:
-
-```
-Rel(from_alias, to_alias, "label")
-Rel(from_alias, to_alias, "label", "technology")
-Rel_Back(from_alias, to_alias, "label")
-BiRel(from_alias, to_alias, "label")
-```
-
-Example:
-```mermaid
-C4Context
-    title System Context: MySystem
-    Person_Ext(user, "User", "End user")
-    Boundary(b0, "Internal Zone", "dashed") {
-        System(mySystem, "MySystem", "Does things")
-    }
-    System_Ext(extApi, "External API", "Third-party service")
-
-    Rel(user, mySystem, "Uses", "HTTPS")
-    Rel(mySystem, extApi, "Calls", "REST/HTTPS")
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
-```
-
-**Important:** Elements must be defined *inside* the `Boundary` block — you cannot reference a pre-defined element by alias inside a boundary. Plan your groupings before writing the diagram.
-
-## Diagram Validation
-
-After writing any file containing a Mermaid diagram, validate it immediately by running `mmdc` against the file you just wrote:
-
-```bash
-mmdc -i <absolute-path-to-file> -o /tmp/validate.svg
-```
-
-`mmdc` is available on the PATH. A successful run prints `✅` and exits 0. A parse error exits non-zero with the line and token that failed. Fix any errors before proceeding — do not move on with a diagram that fails validation.
-
-Validate the file you just wrote in-place. Do NOT create scratch or test copies of diagram content in the working directory for testing — write any exploratory snippets to `/tmp/` instead (e.g., `mmdc -i /tmp/test-diagram.md -o /tmp/test-out.svg`).
-
-Do NOT attempt to install or configure mmdc, puppeteer, or chromium — the environment is already set up.
+- After writing any file with a Mermaid diagram, validate it immediately — see the guide's
+  error-recovery procedure for how to read and fix `mmdc` errors systematically
+- Do NOT create scratch or test copies in the working directory — use `/tmp/` for exploratory
+  snippets (e.g., `mmdc -i /tmp/test-diagram.md -o /tmp/test-out.svg`)
+- Do NOT attempt to install or configure mmdc, puppeteer, or chromium — the environment is set up
 
 ## Output Rules
 
