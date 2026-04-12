@@ -260,10 +260,22 @@ async def run_harness(
         # On resume, a sprint may already be passed/failed if the crash happened
         # between completed_sprints++ and the next sprint's current_sprint update.
         if resume and sprint_status.status in ("passed", "failed"):
+            if sprint_status.status == "passed":
+                logger.info("[Sprint %d] Already passed — skipping", sprint.number)
+                continue
+            # failed: if rounds_completed < current limit the user bumped the config;
+            # reset to building so the existing mid-sprint resume logic picks up.
+            if sprint_status.rounds_completed >= t.max_rounds_per_sprint:
+                logger.info("[Sprint %d] Already failed — skipping", sprint.number)
+                continue
             logger.info(
-                "[Sprint %d] Already %s — skipping", sprint.number, sprint_status.status
+                "[Sprint %d] Previously failed after %d rounds but max_rounds_per_sprint "
+                "is now %d — resuming from round %d (consecutive_passes=%d)",
+                sprint.number, sprint_status.rounds_completed,
+                t.max_rounds_per_sprint, sprint_status.rounds_completed + 1,
+                sprint_status.consecutive_passes,
             )
-            continue
+            sprint_status.status = "building"
 
         # Contract negotiation — or load from disk on mid-sprint resume
         t0 = time.monotonic()
