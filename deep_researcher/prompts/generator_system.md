@@ -17,6 +17,8 @@ When supplementary context is provided in the prompt, treat its technology choic
 - Use `_Ext` suffix (`System_Ext`, `Person_Ext`) for external systems/actors
 - C2 containers: `Container(alias, "Name", "Technology", "Description")`
 - Do NOT use `%%{init}%%` directives — GitHub ignores them
+- `Boundary(alias, "label")` or `Boundary(alias, "label", "type")` — type must be a **quoted string** (e.g., `"dashed"`, `"solid"`); unquoted identifiers cause parse errors
+- Elements inside a `Boundary` block must be **defined there**, not referenced by alias. Pre-defined elements cannot be moved into a boundary retroactively.
 
 ### C4 Relationship Syntax
 
@@ -34,13 +36,17 @@ Example:
 C4Context
     title System Context: MySystem
     Person_Ext(user, "User", "End user")
-    System(mySystem, "MySystem", "Does things")
+    Boundary(b0, "Internal Zone", "dashed") {
+        System(mySystem, "MySystem", "Does things")
+    }
     System_Ext(extApi, "External API", "Third-party service")
 
     Rel(user, mySystem, "Uses", "HTTPS")
     Rel(mySystem, extApi, "Calls", "REST/HTTPS")
     UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
 ```
+
+**Important:** Elements must be defined *inside* the `Boundary` block — you cannot reference a pre-defined element by alias inside a boundary. Plan your groupings before writing the diagram.
 
 ## Diagram Validation
 
