@@ -226,6 +226,27 @@ def _do_early_accept(
     sprint_status.final_score = best_result.average_score
 
 
+def _log_resume_scores(progress: HarnessProgress) -> None:
+    """Log a score summary for every sprint that has any tracked score."""
+    any_scores = False
+    for ss in progress.sprint_statuses:
+        if ss.final_score is not None:
+            logger.info(
+                "  Sprint %d (%s): final_score=%.1f",
+                ss.sprint_number, ss.sprint_name, ss.final_score,
+            )
+            any_scores = True
+        elif ss.best_scores:
+            avg = sum(ss.best_scores.values()) / len(ss.best_scores)
+            logger.info(
+                "  Sprint %d (%s): best_so_far=%.1f (round %d)",
+                ss.sprint_number, ss.sprint_name, avg, ss.best_round or 0,
+            )
+            any_scores = True
+    if not any_scores:
+        logger.info("  No scores recorded yet.")
+
+
 async def run_harness(
     prd: Path,
     output_dir: Path,
@@ -291,6 +312,7 @@ async def run_harness(
         progress.status = "running"  # reset — user explicitly chose to retry
         start_sprint_idx = progress.current_sprint - 1
         logger.info("Resuming from sprint %d", progress.current_sprint)
+        _log_resume_scores(progress)
     else:
         progress = HarnessProgress(
             total_sprints=len(SPRINTS),
