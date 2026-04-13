@@ -11,7 +11,7 @@ class SprintStatus(BaseModel):
     sprint_number: int
     sprint_name: str
     status: Literal[
-        "pending", "negotiating", "building", "evaluating", "passed", "failed"
+        "pending", "negotiating", "building", "evaluating", "passed", "failed", "accepted"
     ] = "pending"
     rounds_completed: int = 0
     consecutive_passes: int = 0

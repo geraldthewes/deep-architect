@@ -188,6 +188,8 @@ async def run_harness(
     resume: bool,
     config: HarnessConfig,
     context_files: list[Path] | None = None,
+    *,
+    strict: bool = False,
 ) -> None:
     """Run the full adversarial C4 architecture harness."""
     log_dir = output_dir / "logs"
@@ -264,11 +266,13 @@ async def run_harness(
 
         sprint_status = progress.sprint_statuses[sprint.number - 1]
 
-        # On resume, a sprint may already be passed/failed if the crash happened
+        # On resume, a sprint may already be passed/failed/accepted if the crash happened
         # between completed_sprints++ and the next sprint's current_sprint update.
-        if resume and sprint_status.status in ("passed", "failed"):
-            if sprint_status.status == "passed":
-                logger.info("[Sprint %d] Already passed — skipping", sprint.number)
+        if resume and sprint_status.status in ("passed", "failed", "accepted"):
+            if sprint_status.status in ("passed", "accepted"):
+                logger.info(
+                    "[Sprint %d] Already %s — skipping", sprint.number, sprint_status.status
+                )
                 continue
             # failed: if rounds_completed < current limit the user bumped the config;
             # reset to building so the existing mid-sprint resume logic picks up.
@@ -589,33 +593,80 @@ async def run_harness(
         else:
             # Max rounds exhausted without passing
             elapsed_total = time.time() - start_time
-            logger.error(
-                "[Sprint %d] FAILED after %d rounds (elapsed=%.1fm)",
-                sprint.number, t.max_rounds_per_sprint, elapsed_total / 60,
-            )
-            logger.error(
-                "Hint: sprint exhausted max_rounds_per_sprint=%d without achieving "
-                "%d consecutive passing round(s). Last consecutive passes: %d/%d. "
-                "To fix: increase max_rounds_per_sprint (currently %d) or lower "
-                "consecutive_passing_rounds (currently %d) in ~/.deep-architect.toml.",
-                t.max_rounds_per_sprint, t.consecutive_passing_rounds,
-                consecutive_passes, t.consecutive_passing_rounds,
-                t.max_rounds_per_sprint, t.consecutive_passing_rounds,
-            )
-            sprint_status.status = "failed"
-            progress.status = "failed"
-            save_progress(checkpoint_dir, progress)
-            return
+            if not strict and best_result is not None and best_commit_sha is not None:
+                logger.warning(
+                    "[Sprint %d] Max rounds exhausted (elapsed=%.1fm, best_score=%.2f < "
+                    "threshold=%.2f). Accepting best-effort result (pass --strict to halt "
+                    "instead).",
+                    sprint.number, elapsed_total / 60,
+                    best_result.average_score, t.min_score,
+                )
+                restored = restore_arch_files_from_commit(repo, best_commit_sha)
+                if restored:
+                    git_commit_staged(
+                        repo,
+                        f"Accept best-effort sprint {sprint.number} "
+                        f"(score {best_result.average_score:.2f} / "
+                        f"threshold {t.min_score:.2f})",
+                    )
+                    logger.info(
+                        "[Sprint %d] Best-effort restore committed: %d file(s)",
+                        sprint.number, len(restored),
+                    )
+                sprint_status.status = "accepted"
+                sprint_status.final_score = best_result.average_score
+                last_result = best_result
+            else:
+                logger.error(
+                    "[Sprint %d] FAILED after %d rounds (elapsed=%.1fm)",
+                    sprint.number, t.max_rounds_per_sprint, elapsed_total / 60,
+                )
+                logger.error(
+                    "Hint: sprint exhausted max_rounds_per_sprint=%d without achieving "
+                    "%d consecutive passing round(s). Last consecutive passes: %d/%d. "
+                    "To fix: increase max_rounds_per_sprint (currently %d) or lower "
+                    "consecutive_passing_rounds (currently %d) in ~/.deep-architect.toml.",
+                    t.max_rounds_per_sprint, t.consecutive_passing_rounds,
+                    consecutive_passes, t.consecutive_passing_rounds,
+                    t.max_rounds_per_sprint, t.consecutive_passing_rounds,
+                )
+                sprint_status.status = "failed"
+                progress.status = "failed"
+                save_progress(checkpoint_dir, progress)
+                return
 
         if sprint_status.status == "failed":
             # Round retry exhaustion caused the loop to break before passing
-            logger.error(
-                "[Sprint %d] Sprint failed due to unrecoverable round failure",
-                sprint.number,
-            )
-            progress.status = "failed"
-            save_progress(checkpoint_dir, progress)
-            return
+            if not strict and best_result is not None and best_commit_sha is not None:
+                logger.warning(
+                    "[Sprint %d] Unrecoverable round failure with a prior best result "
+                    "(score=%.2f). Accepting best-effort result (pass --strict to halt "
+                    "instead).",
+                    sprint.number, best_result.average_score,
+                )
+                restored = restore_arch_files_from_commit(repo, best_commit_sha)
+                if restored:
+                    git_commit_staged(
+                        repo,
+                        f"Accept best-effort sprint {sprint.number} "
+                        f"(score {best_result.average_score:.2f} / "
+                        f"threshold {t.min_score:.2f})",
+                    )
+                    logger.info(
+                        "[Sprint %d] Best-effort restore committed: %d file(s)",
+                        sprint.number, len(restored),
+                    )
+                sprint_status.status = "accepted"
+                sprint_status.final_score = best_result.average_score
+                last_result = best_result
+            else:
+                logger.error(
+                    "[Sprint %d] Sprint failed due to unrecoverable round failure",
+                    sprint.number,
+                )
+                progress.status = "failed"
+                save_progress(checkpoint_dir, progress)
+                return
 
         progress.completed_sprints += 1
         save_progress(checkpoint_dir, progress)

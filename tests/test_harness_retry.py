@@ -9,6 +9,8 @@ deterministic.  We focus on verifying that:
   - --resume fails fast when no checkpoint exists
   - --resume skips already-passed sprints
   - --resume mid-sprint starts from the correct round
+  - soft-fail (strict=False) accepts best-effort result and continues when max rounds exhausted
+  - strict=True halts the run on sprint failure
 """
 from __future__ import annotations
 
@@ -67,6 +69,18 @@ def _passing_result() -> CriticResult:
             CriterionScore(criterion="c", score=9.5, severity="Low", details="ok"),
         ],
         overall_summary="All good",
+    )
+
+
+def _failing_result() -> CriticResult:
+    return CriticResult(
+        scores={"a": 7.0, "b": 7.0, "c": 7.0},
+        feedback=[
+            CriterionScore(criterion="a", score=7.0, severity="Low", details="needs work"),
+            CriterionScore(criterion="b", score=7.0, severity="Low", details="needs work"),
+            CriterionScore(criterion="c", score=7.0, severity="Low", details="needs work"),
+        ],
+        overall_summary="Below threshold",
     )
 
 
@@ -696,3 +710,116 @@ async def test_resume_mid_sprint_falls_back_to_negotiate_on_missing_contract(
     assert 1 in negotiate_calls, (
         "Sprint 1 should have fallen back to negotiate_contract when contract file is missing"
     )
+
+
+def _make_config_one_round() -> HarnessConfig:
+    """Config with max_rounds_per_sprint=1 so every sprint exhausts after one round."""
+    return HarnessConfig(
+        generator=AgentConfig(model="test-model", max_turns=1, max_agent_retries=0),
+        critic=AgentConfig(model="test-model", max_turns=1, max_agent_retries=0),
+        thresholds=ThresholdConfig(
+            min_score=9.0,
+            consecutive_passing_rounds=1,
+            max_rounds_per_sprint=1,
+            max_total_rounds=30,
+            timeout_hours=1.0,
+            max_round_retries=0,
+        ),
+    )
+
+
+async def test_soft_fail_accepts_best_result_and_continues(output_dir: Path) -> None:
+    """With strict=False (default), a sprint that exhausts max rounds without meeting
+    exit criteria is accepted using best_result and the run continues to completion."""
+    prd = output_dir / "prd.md"
+    prd.write_text("# Test PRD")
+
+    mock_repo = _make_mock_repo(output_dir)
+    mock_repo.head.commit.hexsha = "abc123deadbeef"
+
+    with (
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.validate_git_repo", return_value=mock_repo),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.git_commit_staged"),
+        patch("deep_architect.harness.restore_arch_files_from_commit", return_value=[]),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch(
+            "deep_architect.harness.negotiate_contract",
+            new_callable=AsyncMock,
+            return_value=_make_contract(),
+        ),
+        patch(
+            "deep_architect.harness.run_generator",
+            new_callable=AsyncMock,
+            return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
+        ),
+        patch(
+            "deep_architect.harness.run_critic",
+            new_callable=AsyncMock,
+            return_value=_failing_result(),
+        ),
+    ):
+        await run_harness(
+            prd=prd,
+            output_dir=output_dir,
+            resume=False,
+            config=_make_config_one_round(),
+            strict=False,
+        )
+
+    progress_file = output_dir / ".checkpoints" / "progress.json"
+    assert progress_file.exists()
+    progress_json = progress_file.read_text()
+    assert '"accepted"' in progress_json, "Sprint should be accepted when max rounds exhausted"
+    assert '"complete"' in progress_json, "Run should complete all sprints in soft-fail mode"
+
+
+async def test_strict_mode_halts_on_sprint_failure(output_dir: Path) -> None:
+    """With strict=True, a sprint that exhausts max rounds causes the run to stop
+    and the progress file records a failed status."""
+    prd = output_dir / "prd.md"
+    prd.write_text("# Test PRD")
+
+    mock_repo = _make_mock_repo(output_dir)
+    mock_repo.head.commit.hexsha = "abc123deadbeef"
+
+    with (
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch("deep_architect.harness.run_final_agreement", new_callable=AsyncMock),
+        patch("deep_architect.harness.validate_git_repo", return_value=mock_repo),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch(
+            "deep_architect.harness.negotiate_contract",
+            new_callable=AsyncMock,
+            return_value=_make_contract(),
+        ),
+        patch(
+            "deep_architect.harness.run_generator",
+            new_callable=AsyncMock,
+            return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
+        ),
+        patch(
+            "deep_architect.harness.run_critic",
+            new_callable=AsyncMock,
+            return_value=_failing_result(),
+        ),
+    ):
+        await run_harness(
+            prd=prd,
+            output_dir=output_dir,
+            resume=False,
+            config=_make_config_one_round(),
+            strict=True,
+        )
+
+    progress_file = output_dir / ".checkpoints" / "progress.json"
+    assert progress_file.exists()
+    progress_json = progress_file.read_text()
+    assert '"failed"' in progress_json, "Run should be marked failed in strict mode"
+    assert '"complete"' not in progress_json, "Run must not complete in strict mode"
+

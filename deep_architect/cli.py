@@ -56,6 +56,14 @@ def main(
         ),
         min=1,
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help=(
+            "Halt the run when a sprint cannot meet exit criteria, rather than "
+            "accepting the best-effort result and continuing."
+        ),
+    ),
 ) -> None:
     """Run the adversarial C4 architecture harness."""
     if not prd.exists():
@@ -131,7 +139,8 @@ def main(
     try:
         asyncio.run(
             run_harness(
-                prd=prd, output_dir=output, resume=resume, config=cfg, context_files=context
+                prd=prd, output_dir=output, resume=resume, config=cfg,
+                context_files=context, strict=strict,
             )
         )
     except KeyboardInterrupt:
