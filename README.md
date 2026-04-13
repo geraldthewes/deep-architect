@@ -126,6 +126,9 @@ That's it. The tool runs unattended. When it finishes, `knowledge/architecture/`
 | `--config PATH` | Config file path (default: `~/.deep-architect.toml`) |
 | `--model-generator TEXT` | Override the generator model alias for this run |
 | `--model-critic TEXT` | Override the critic model alias for this run |
+| `--context PATH` | Supplementary context file injected into every generator prompt (repeatable) |
+| `--reset-sprint N` | Reset sprint N to its initial state and resume from it; deletes sprint N's contract, feedback, and history entries |
+| `--strict` | Halt the run when a sprint cannot meet exit criteria, instead of accepting the best-effort result and continuing |
 
 ### Overriding Models Per-Run
 
@@ -135,6 +138,29 @@ uv run adversarial-architect \
   --output knowledge/architecture \
   --model-generator opus \
   --model-critic sonnet
+```
+
+### Injecting Supplementary Context
+
+Pass one or more `--context` files to inject additional material (e.g. an existing tech-stack doc, a security policy, or a prior architecture) into every generator prompt:
+
+```bash
+uv run adversarial-architect \
+  --prd knowledge/prd.md \
+  --output knowledge/architecture \
+  --context knowledge/tech-stack.md \
+  --context knowledge/security-policy.md
+```
+
+### Strict Mode
+
+By default, when a sprint exhausts its maximum rounds without fully meeting exit criteria, the harness accepts the best-effort result and moves on. Use `--strict` to halt instead:
+
+```bash
+uv run adversarial-architect \
+  --prd knowledge/prd.md \
+  --output knowledge/architecture \
+  --strict
 ```
 
 ---
@@ -209,8 +235,10 @@ knowledge/architecture/
 │
 ├── contracts/                 # Sprint contracts (JSON) — for inspection
 ├── feedback/                  # Critic feedback per round (JSON) — for debugging
-├── logs/                      # Full run logs
-└── progress.json              # Run state — used by --resume
+└── logs/                      # Full run logs
+
+.checkpoints/                  # At the git repo root (not inside knowledge/)
+└── progress.json              # Run state — used by --resume and --reset-sprint
 ```
 
 The Mermaid diagrams in these files render natively on GitHub.
@@ -219,7 +247,17 @@ The Mermaid diagrams in these files render natively on GitHub.
 
 ## Resuming an Interrupted Run
 
-If the run is interrupted (crash, timeout, Ctrl+C), resume from where it left off:
+If the run is interrupted (crash, timeout, Ctrl+C), the harness detects a prior checkpoint automatically on the next invocation and asks whether to continue:
+
+```
+Prior run detected: sprint 3/7, 2 sprint(s) completed, 11 round(s) run, status=running
+
+Continue from where it left off? [Y/n]:
+```
+
+Answering **Y** resumes seamlessly. Answering **N** prompts you to confirm a clean start, which removes prior checkpoints, contracts, and feedback files.
+
+You can also pass `--resume` explicitly to skip the prompt and always resume:
 
 ```bash
 uv run adversarial-architect \
@@ -228,7 +266,20 @@ uv run adversarial-architect \
   --resume
 ```
 
-The harness reads `progress.json` to find the last completed sprint and picks up from there. Already-committed architecture files are left untouched.
+Already-committed architecture files are left untouched.
+
+### Resetting a Specific Sprint
+
+To re-run a single sprint without discarding the rest of the run, use `--reset-sprint N`:
+
+```bash
+uv run adversarial-architect \
+  --prd knowledge/prd.md \
+  --output knowledge/architecture \
+  --reset-sprint 3
+```
+
+This deletes sprint 3's contract, feedback files, and history entries, then automatically resumes from sprint 3. Sprints above 3 are untouched.
 
 ---
 
@@ -287,7 +338,7 @@ The output directory must be inside a git repo. Initialize one first: `git init`
 The SDK may fall back to the bundled Claude binary, which can ignore custom env vars. Set `cli_path` in `~/.deep-architect.toml` to the output of `which claude`.
 
 **A sprint fails after max rounds**
-Check the feedback JSON for recurring issues. Common causes: the PRD lacks enough detail, or `max_turns` is too low for the model to complete a full architecture file in one agent loop. Try increasing `max_turns` in the config.
+By default the harness accepts the best-effort result and continues (soft-fail). Pass `--strict` to halt instead. Check the feedback JSON for recurring issues. Common causes: the PRD lacks enough detail, or `max_turns` is too low for the model to complete a full architecture file in one agent loop. Try increasing `max_turns` in the config.
 
 **The agent crashes mid-run with "Command failed with exit code 1"**
 The model called a disallowed tool (e.g. `TodoWrite`). The harness will automatically retry the round up to `max_round_retries` times (default 2), and each agent call is retried up to `max_agent_retries` times (default 2). If crashes persist, check the logs for the "unexpected tool call" warning to identify which tool is being hallucinated. Setting `context_window` in the config helps spot high-context turns where hallucinations become more likely.
