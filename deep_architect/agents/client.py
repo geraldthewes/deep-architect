@@ -311,7 +311,7 @@ def make_agent_options(
     """
 
     def _stderr_cb(line: str) -> None:
-        _log.warning("[claude stderr] %s", line)
+        _log.error("[claude stderr] %s", line)
 
     # An empty allowed_tools list is falsy, so the SDK would NOT pass --allowedTools,
     # leaving all default tools unrestricted.  Use tools=[] instead, which maps to
@@ -492,8 +492,22 @@ async def run_agent(
     A timed-out attempt is retried like any other failure (with a fresh session).
     """
     last_exc: Exception | None = None
+    stderr_lines: list[str] = []
+
+    # Wrap the SDK stderr callback to also buffer lines for error reporting.
+    # This lets us re-emit them with full attempt context when an exception is
+    # caught, even if the real-time callback already fired.
+    _orig_stderr = options.stderr
+
+    def _buffered_stderr(line: str) -> None:
+        stderr_lines.append(line)
+        if _orig_stderr:
+            _orig_stderr(line)
+
+    options = replace(options, stderr=_buffered_stderr)
 
     for attempt in range(1, max_retries + 2):
+        stderr_lines.clear()
         try:
             result, turn_count, tool_count, text_block_count = await _consume_query(
                 prompt, options, label, context_window, last_known_input_tokens,
@@ -512,6 +526,16 @@ async def run_agent(
 
         except Exception as exc:
             last_exc = exc
+            # Yield to the event loop so the SDK stderr reader task gets one
+            # more chance to drain remaining lines before we log and retry.
+            await asyncio.sleep(0)
+            if stderr_lines:
+                _log.error(
+                    "[%s] attempt %d/%d — CLI stderr (%d line(s)):",
+                    label, attempt, max_retries + 1, len(stderr_lines),
+                )
+                for line in stderr_lines:
+                    _log.error("[%s] stderr: %s", label, line)
             if attempt <= max_retries:
                 _log.error(
                     "[%s] attempt %d/%d failed: %s — retrying with fresh session",
