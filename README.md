@@ -179,15 +179,15 @@ After all 7 sprints, both agents independently review the complete architecture 
 
 ### Sprints
 
-| # | Sprint | What Gets Produced |
-|---|--------|--------------------|
-| 1 | C1 System Context | Top-level diagram: users, system boundary, external dependencies |
-| 2 | C2 Container Overview | All major containers, tech stack decisions |
-| 3 | Frontend Container | Frontend architecture, auth flows, routing, state management |
-| 4 | Backend / Orchestration | API design, business logic, LLM orchestration, workers |
-| 5 | Database + Knowledge Base | Data stores, vector store, caching, schema overview |
-| 6 | Edge / Deployment / Observability | Edge functions, deployment topology, auth, scaling, monitoring |
-| 7 | ADRs + Cross-Cutting Concerns | Architecture Decision Records, NFRs, security, compliance |
+| # | Sprint | What Gets Produced | Output Files |
+|---|--------|--------------------|----|
+| 1 | C1 System Context | Top-level diagram: users, system boundary, external dependencies | `c1-context.md` |
+| 2 | C2 Container Overview | All major containers, tech stack decisions | `c2-container.md` |
+| 3 | Frontend Container | Frontend architecture, auth flows, routing, state management | `frontend/c2-container.md` (+ area docs) |
+| 4 | Backend / Orchestration | API design, business logic, LLM orchestration, workers | `backend/c2-container.md` (+ area docs) |
+| 5 | Database + Knowledge Base | Data stores, vector store, caching, schema overview | `database/c2-container.md` (+ area docs) |
+| 6 | Edge / Deployment / Observability | Edge functions, deployment topology, auth, scaling, monitoring | `edge-functions/c2-container.md`, `deployment.md` |
+| 7 | ADRs + Cross-Cutting Concerns | Architecture Decision Records, NFRs, security, compliance | `decisions/` (+ area docs) |
 
 ### Console Output
 
