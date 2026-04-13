@@ -10,7 +10,7 @@ from deep_architect.agents.client import init_run_stats, make_agent_options, run
 from deep_architect.agents.critic import check_ping_pong, review_contract, run_critic
 from deep_architect.agents.generator import GeneratorRoundResult, propose_contract, run_generator
 from deep_architect.config import AgentConfig, HarnessConfig
-from deep_architect.exit_criteria import should_ping_pong_exit, sprint_passes
+from deep_architect.exit_criteria import is_perfect_score, should_ping_pong_exit, sprint_passes
 from deep_architect.git_ops import (
     get_modified_files,
     git_commit,
@@ -519,6 +519,16 @@ async def run_harness(
                     "[Sprint %d] New best score: %.1f (commit %s)",
                     sprint.number, best_result.average_score, best_commit_sha[:8],
                 )
+
+            # Perfect score: immediate sprint victory — no further improvement possible
+            if is_perfect_score(result):
+                logger.info(
+                    "[Sprint %d] Perfect score (10.0/10.0 all criteria) — declaring victory",
+                    sprint.number,
+                )
+                sprint_status.status = "passed"
+                sprint_status.final_score = result.average_score
+                break
 
             # Exit criteria
             if sprint_passes(result, t.min_score):

@@ -1,4 +1,4 @@
-from deep_architect.exit_criteria import should_ping_pong_exit, sprint_passes
+from deep_architect.exit_criteria import is_perfect_score, should_ping_pong_exit, sprint_passes
 from deep_architect.models.feedback import CriterionScore, CriticResult
 
 
@@ -51,3 +51,27 @@ def test_no_ping_pong_below_threshold() -> None:
     curr = make_result(9.0, ["Medium"])
     prev = make_result(8.95, ["Medium"])
     assert should_ping_pong_exit(0.80, curr, prev, 0.85) is False
+
+
+def test_perfect_score_all_10() -> None:
+    r = make_result(10.0, ["Low", "Low", "Low"])
+    assert is_perfect_score(r) is True
+
+
+def test_perfect_score_single_criterion() -> None:
+    r = make_result(10.0, ["Low"])
+    assert is_perfect_score(r) is True
+
+
+def test_perfect_score_fails_when_one_criterion_below() -> None:
+    feedback = [
+        CriterionScore(criterion="c0", score=10.0, severity="Low", details="ok"),
+        CriterionScore(criterion="c1", score=9.5, severity="Low", details="ok"),
+    ]
+    r = CriticResult(scores={}, feedback=feedback, overall_summary="test")
+    assert is_perfect_score(r) is False
+
+
+def test_perfect_score_fails_for_passing_but_not_perfect() -> None:
+    r = make_result(9.5, ["Low", "Medium"])
+    assert is_perfect_score(r) is False
