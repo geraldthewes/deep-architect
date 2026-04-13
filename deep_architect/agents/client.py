@@ -345,18 +345,37 @@ async def _consume_query(
     label: str,
     context_window: int | None,
     last_known_input_tokens: int,
+    inactivity_seconds: float | None = None,
 ) -> tuple[ResultMessage, int, int, int]:
     """Consume one query generator and return (result, turn_count, tool_count, text_block_count).
 
-    Extracted so it can be wrapped with asyncio.wait_for() for timeout enforcement.
     Raises RuntimeError if the query completes without a ResultMessage or reports an error.
+
+    If *inactivity_seconds* is set, the deadline is reset after every message from the SDK.
+    The timeout only fires when no message has arrived within that window — i.e. the
+    connection appears stalled.  A long-running but actively-streaming agent will never
+    be interrupted.
     """
     result: ResultMessage | None = None
     turn_count = 0
     tool_count = 0
     text_block_count = 0
 
-    async for message in query(prompt=prompt, options=options):
+    # Drive the SDK generator manually so we can apply a per-step timeout.
+    # asyncio.wait_for() wraps each __anext__() call individually, which means
+    # the deadline resets after every message.  The timeout only fires when no
+    # message has arrived within the window — i.e. the connection is stalled —
+    # and never interrupts an agent that is actively producing output.
+    gen = query(prompt=prompt, options=options).__aiter__()
+    while True:
+        try:
+            message = (
+                await asyncio.wait_for(gen.__anext__(), timeout=inactivity_seconds)
+                if inactivity_seconds is not None
+                else await gen.__anext__()
+            )
+        except StopAsyncIteration:
+            break
         if isinstance(message, AssistantMessage):
             turn_count += 1
 
@@ -465,30 +484,26 @@ async def run_agent(
     the previous round's ResultMessage to show a meaningful baseline until real
     per-turn counts become available.
 
-    If *timeout_seconds* is set, each attempt is bounded by that wall-clock limit.
+    If *timeout_seconds* is set, it acts as an **inactivity** timeout: the clock
+    resets after every message received from the SDK.  The timeout fires only when
+    no message arrives within that window, indicating a stalled connection (e.g.
+    after laptop hibernation).  A busy agent producing output every few seconds
+    will never be interrupted regardless of total run time.
     A timed-out attempt is retried like any other failure (with a fresh session).
-    Use this to recover from stale network connections (e.g. after laptop hibernation).
     """
     last_exc: Exception | None = None
 
     for attempt in range(1, max_retries + 2):
         try:
-            if timeout_seconds is not None:
-                result, turn_count, tool_count, text_block_count = await asyncio.wait_for(
-                    _consume_query(
-                        prompt, options, label, context_window, last_known_input_tokens
-                    ),
-                    timeout=timeout_seconds,
-                )
-            else:
-                result, turn_count, tool_count, text_block_count = await _consume_query(
-                    prompt, options, label, context_window, last_known_input_tokens
-                )
+            result, turn_count, tool_count, text_block_count = await _consume_query(
+                prompt, options, label, context_window, last_known_input_tokens,
+                inactivity_seconds=timeout_seconds,
+            )
 
         except TimeoutError:
             _log.warning(
-                "[%s] attempt %d/%d TIMED OUT after %.0fs"
-                " — network may have disconnected (e.g. after hibernation)",
+                "[%s] attempt %d/%d TIMED OUT — no response for %.0fs"
+                " (connection may be stalled, e.g. after hibernation)",
                 label, attempt, max_retries + 1, timeout_seconds,
             )
             last_exc = TimeoutError(f"Agent timed out after {timeout_seconds}s")

@@ -180,9 +180,13 @@ async def test_run_agent_structured_timeout_triggers_retry() -> None:
 
 
 def test_agent_config_default_timeout() -> None:
-    """AgentConfig.agent_timeout_seconds class-level default is 1800.0 (30 minutes)."""
+    """AgentConfig.agent_timeout_seconds class-level default is None.
+
+    Role-specific defaults (3600s for generator, 1800s for critic) are applied
+    by HarnessConfig._apply_role_defaults, not by the field default itself.
+    """
     config = AgentConfig(model="sonnet")
-    assert config.agent_timeout_seconds == 1800.0
+    assert config.agent_timeout_seconds is None
 
 
 def test_agent_config_timeout_can_be_none() -> None:
