@@ -28,7 +28,7 @@ Propose a sprint contract as a JSON object with this exact structure:
 Requirements for criteria:
 - Include 5–10 criteria total
 - Each criterion must be SPECIFIC and TESTABLE — not vague
-- Cover: Mermaid diagram validity, C4 completeness, narrative quality, PRD accuracy, relationship documentation
+- Cover: Mermaid diagram validity, C4 completeness, narrative quality, PRD accuracy, relationship documentation, Markdown readability (heading hierarchy, whitespace, list formatting, code block labels)
 - Add criteria for edge cases relevant to this sprint
 - Threshold must be ≥ 9.0 for critical quality requirements
 

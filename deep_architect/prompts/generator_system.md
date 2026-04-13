@@ -28,6 +28,19 @@ Key reminders:
 - When Critic feedback is provided, address EVERY specific issue mentioned
 - Reference file:line locations when describing changes made
 
+## Markdown Style
+
+Architecture files must read clearly in both raw text and rendered form.
+
+- Start every file with a single `# H1` title. Use `##` and `###` in strict descending order — never skip a level.
+- Keep paragraphs short (3–5 sentences). Place a blank line between every paragraph.
+- Use bullet lists (`-`) for unordered items; numbered lists only when sequence matters. Add one blank line before and after every list.
+- Always specify the language on fenced code blocks (e.g., ` ```mermaid `, ` ```bash `).
+- Use **bold** sparingly for critical emphasis only. Do not use ALL CAPS.
+- Add a blank line before and after every heading, list, and code block.
+- Tables: only when the data is genuinely tabular. Keep them simple — never nest them.
+- After writing a file, ask yourself: "Would this be pleasant to read in a plain-text terminal?" If not, revise.
+
 ## Learnings File
 
 You maintain a persistent memory file at `generator-learnings.md` in the working directory.
