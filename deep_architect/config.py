@@ -3,7 +3,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AgentConfig(BaseModel):
@@ -11,7 +11,7 @@ class AgentConfig(BaseModel):
     max_turns: int = 50
     max_agent_retries: int = 2
     context_window: int | None = None  # model context window size; logged when set
-    agent_timeout_seconds: float | None = 1800.0  # per-attempt wall-clock limit; None to disable
+    agent_timeout_seconds: float | None = None  # per-attempt wall-clock limit; None → role default
 
 
 class ThresholdConfig(BaseModel):
@@ -38,6 +38,22 @@ class HarnessConfig(BaseModel):
     critic: AgentConfig = Field(default_factory=_default_critic)
     thresholds: ThresholdConfig = Field(default_factory=ThresholdConfig)
     cli_path: str | None = None  # Override claude CLI path; defaults to shutil.which("claude")
+
+    @model_validator(mode="after")
+    def _apply_role_defaults(self) -> HarnessConfig:
+        """Apply per-role timeout defaults when not set in TOML.
+
+        Pydantic uses the AgentConfig field-level default (None) when a
+        [generator] or [critic] section exists in TOML but omits
+        agent_timeout_seconds.  The default_factory values on the fields
+        above are only used when the entire section is absent.  This
+        validator closes that gap.
+        """
+        if self.generator.agent_timeout_seconds is None:
+            self.generator.agent_timeout_seconds = 3600.0
+        if self.critic.agent_timeout_seconds is None:
+            self.critic.agent_timeout_seconds = 1800.0
+        return self
 
 
 def load_config(config_path: Path | None = None) -> HarnessConfig:

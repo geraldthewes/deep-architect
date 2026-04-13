@@ -108,6 +108,40 @@ max_agent_retries = 1
     assert cfg.critic.max_agent_retries == 1
 
 
+def test_role_timeout_defaults_when_omitted_from_toml(tmp_path: Path) -> None:
+    """Generator gets 3600s and critic gets 1800s even when agent_timeout_seconds
+    is absent from the TOML — the class-level default (None) must not win."""
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text("""
+[generator]
+model = "opus"
+max_turns = 50
+
+[critic]
+model = "sonnet"
+max_turns = 30
+""")
+    cfg = load_config(cfg_file)
+    assert cfg.generator.agent_timeout_seconds == 3600.0
+    assert cfg.critic.agent_timeout_seconds == 1800.0
+
+
+def test_explicit_timeout_in_toml_is_preserved(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text("""
+[generator]
+model = "sonnet"
+agent_timeout_seconds = 7200
+
+[critic]
+model = "sonnet"
+agent_timeout_seconds = 900
+""")
+    cfg = load_config(cfg_file)
+    assert cfg.generator.agent_timeout_seconds == 7200.0
+    assert cfg.critic.agent_timeout_seconds == 900.0
+
+
 def test_load_config_with_max_round_retries(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text("""
