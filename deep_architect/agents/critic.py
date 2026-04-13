@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from deep_architect.agents.client import (
-    json_schema_format,
     make_agent_options,
     run_agent_structured,
     run_simple_structured,
@@ -72,7 +71,6 @@ async def run_critic(
         allowed_tools=CRITIC_TOOLS,
         cwd=str(output_dir),
         cli_path=cli_path,
-        output_format=json_schema_format(CriticResult),
     )
 
     label = f"Critic sprint={contract.sprint_number} round={round_num}"

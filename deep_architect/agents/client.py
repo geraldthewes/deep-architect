@@ -693,7 +693,7 @@ async def run_agent_structured(
     if result.structured_output is not None:
         output: dict[str, Any] = result.structured_output
         return output
-    # Fallback: parse from result text
+    # Fallback: parse from result text (strip code fences if present)
     text = result.result or ""
-    parsed: dict[str, Any] = json.loads(text)
+    parsed: dict[str, Any] = json.loads(_extract_json(text))
     return parsed

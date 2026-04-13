@@ -20,6 +20,7 @@ from deep_architect.agents.client import (
     make_agent_options,
     resolve_model_id,
     run_agent,
+    run_agent_structured,
     run_simple_structured,
 )
 from deep_architect.config import AgentConfig
@@ -495,3 +496,39 @@ async def test_run_agent_no_crash_context_logged_on_success(
 
     error_lines = [r.message for r in caplog.records if r.levelno == logging.ERROR]
     assert not any("Last" in line and "event" in line for line in error_lines)
+
+
+# ---------------------------------------------------------------------------
+# run_agent_structured — fallback JSON parsing
+# ---------------------------------------------------------------------------
+
+
+async def test_run_agent_structured_fallback_handles_code_fenced_json() -> None:
+    """Fallback parser must handle JSON wrapped in ```json ... ``` fences.
+
+    When output_format is None the model may return code-fenced JSON.
+    The current json.loads() fallback raises JSONDecodeError on this input;
+    _extract_json must be used instead.
+    """
+    config = AgentConfig(model="test-model", max_turns=5)
+    opts = make_agent_options(config, "system", allowed_tools=[], cli_path=_FAKE_CLI)
+
+    result_msg = ResultMessage(
+        subtype="success",
+        is_error=False,
+        duration_ms=100,
+        duration_api_ms=100,
+        num_turns=1,
+        session_id="sess",
+        result='```json\n{"x": 42, "label": "fenced"}\n```',
+        structured_output=None,  # no --json-schema used
+    )
+
+    async def _yield_result(**_kwargs):  # type: ignore[no-untyped-def]
+        yield result_msg
+
+    with patch("deep_architect.agents.client.query", side_effect=_yield_result):
+        # Currently FAILS with json.JSONDecodeError — json.loads can't strip code fences
+        output = await run_agent_structured(opts, "prompt", label="test")
+
+    assert output == {"x": 42, "label": "fenced"}

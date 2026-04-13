@@ -52,8 +52,8 @@ Do NOT attempt to install or configure mmdc, puppeteer, or chromium — the envi
 
 ## Response Format
 
-Return a `CriticResult` JSON object:
-```json
+Return ONLY a `CriticResult` JSON object — no preamble, no explanation, no code fences:
+```
 {
   "scores": {"criterion_name": score, ...},
   "feedback": [
