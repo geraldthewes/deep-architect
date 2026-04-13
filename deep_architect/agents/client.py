@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import os
 import re
@@ -346,6 +347,7 @@ async def _consume_query(
     context_window: int | None,
     last_known_input_tokens: int,
     inactivity_seconds: float | None = None,
+    event_buffer: collections.deque[str] | None = None,
 ) -> tuple[ResultMessage, int, int, int]:
     """Consume one query generator and return (result, turn_count, tool_count, text_block_count).
 
@@ -433,6 +435,8 @@ async def _consume_query(
                             label, turn_count, _tool_summary(block),
                             ctx_suffix,
                         )
+                    if event_buffer is not None and block.name != _STRUCTURED_OUTPUT_TOOL:
+                        event_buffer.append(f"turn={turn_count} {_tool_summary(block)}")
 
         elif isinstance(message, RateLimitEvent):
             info = message.rate_limit_info
@@ -454,6 +458,11 @@ async def _consume_query(
 
         elif isinstance(message, ResultMessage):
             result = message
+
+        else:
+            _log.debug(
+                "[%s] unhandled SDK message type: %s", label, type(message).__name__
+            )
 
     if result is None:
         raise RuntimeError("Agent query completed without a ResultMessage")
@@ -493,6 +502,9 @@ async def run_agent(
     """
     last_exc: Exception | None = None
     stderr_lines: list[str] = []
+    # Ring buffer of the last 10 tool calls — survives across retries so we
+    # always have the most recent context at the point of failure.
+    last_events: collections.deque[str] = collections.deque(maxlen=10)
 
     # Wrap the SDK stderr callback to also buffer lines for error reporting.
     # This lets us re-emit them with full attempt context when an exception is
@@ -512,6 +524,7 @@ async def run_agent(
             result, turn_count, tool_count, text_block_count = await _consume_query(
                 prompt, options, label, context_window, last_known_input_tokens,
                 inactivity_seconds=timeout_seconds,
+                event_buffer=last_events,
             )
 
         except TimeoutError:
@@ -526,9 +539,18 @@ async def run_agent(
 
         except Exception as exc:
             last_exc = exc
-            # Yield to the event loop so the SDK stderr reader task gets one
-            # more chance to drain remaining lines before we log and retry.
-            await asyncio.sleep(0)
+            # Give the SDK stderr reader task time to drain remaining lines.
+            # asyncio.sleep(0) yields only one cycle; 0.25s is enough for the
+            # async reader to flush whatever the subprocess wrote before dying.
+            await asyncio.sleep(0.25)
+            # Log pre-crash tool-call context first so it appears near the error.
+            if last_events:
+                _log.error(
+                    "[%s] Last %d event(s) before crash:",
+                    label, len(last_events),
+                )
+                for evt in last_events:
+                    _log.error("[%s]   %s", label, evt)
             if stderr_lines:
                 _log.error(
                     "[%s] attempt %d/%d — CLI stderr (%d line(s)):",
@@ -536,6 +558,14 @@ async def run_agent(
                 )
                 for line in stderr_lines:
                     _log.error("[%s] stderr: %s", label, line)
+            # Best-effort extraction of structured fields (stripped by SDK bug
+            # #798/#800 in v0.1.58, but preserved here for future SDK releases).
+            exit_code = getattr(exc, "exit_code", None)
+            sdk_stderr = getattr(exc, "stderr", None)
+            if exit_code is not None:
+                _log.error("[%s] exit_code=%s", label, exit_code)
+            if sdk_stderr and sdk_stderr != "Check stderr output for details":
+                _log.error("[%s] SDK stderr: %s", label, sdk_stderr)
             if attempt <= max_retries:
                 _log.error(
                     "[%s] attempt %d/%d failed: %s — retrying with fresh session",

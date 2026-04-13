@@ -5,11 +5,12 @@ helper functions, and retry logic (with mocked query() / AsyncAnthropic).
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from claude_agent_sdk import ResultMessage
+from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
 from pydantic import BaseModel
 
 from deep_architect.agents.client import (
@@ -427,3 +428,70 @@ async def test_run_simple_structured_raises_after_three_failures(
     with pytest.raises(RuntimeError, match="structured output failed after 3 attempts"):
         await run_simple_structured(config, "sys", "prompt", _Dummy, label="test")
     assert mock_cls.return_value.messages.create.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# run_agent — pre-crash event ring buffer
+# ---------------------------------------------------------------------------
+
+
+def _fake_tool_message() -> AssistantMessage:
+    """Build an AssistantMessage containing a single Bash tool call."""
+    tool = ToolUseBlock(
+        id="tool-1",
+        name="Bash",
+        input={"command": "echo hello"},
+    )
+    return AssistantMessage(content=[tool], model="test-model")
+
+
+async def test_run_agent_logs_last_events_before_crash(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When the CLI crashes, the last tool calls seen are logged as crash context."""
+    config = AgentConfig(model="test-model", max_turns=5)
+    opts = make_agent_options(config, "system", allowed_tools=["Bash"], cli_path=_FAKE_CLI)
+    result = _fake_result()
+    call_count = 0
+
+    async def _tool_then_crash(**_kwargs):  # type: ignore[no-untyped-def]
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First attempt: yield one tool call then crash.
+            yield _fake_tool_message()
+            raise Exception("CLI crashed after tool")
+        else:
+            yield result
+
+    with caplog.at_level(logging.ERROR, logger="deep_architect.agents.client"):
+        with patch("deep_architect.agents.client.query", side_effect=_tool_then_crash):
+            await run_agent(opts, "prompt", label="crash-test", max_retries=1)
+
+    error_lines = [r.message for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("Last" in line and "event" in line for line in error_lines), (
+        f"Expected 'Last N event(s) before crash' in logs; got: {error_lines}"
+    )
+    assert any("Bash: echo hello" in line for line in error_lines), (
+        f"Expected tool summary in logs; got: {error_lines}"
+    )
+
+
+async def test_run_agent_no_crash_context_logged_on_success(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No crash-context block is logged on a successful run."""
+    config = AgentConfig(model="test-model", max_turns=5)
+    opts = make_agent_options(config, "system", allowed_tools=["Bash"], cli_path=_FAKE_CLI)
+    result = _fake_result()
+
+    async def _succeed(**_kwargs):  # type: ignore[no-untyped-def]
+        yield _fake_tool_message()
+        yield result
+
+    with caplog.at_level(logging.ERROR, logger="deep_architect.agents.client"):
+        with patch("deep_architect.agents.client.query", side_effect=_succeed):
+            await run_agent(opts, "prompt", label="ok-test")
+
+    error_lines = [r.message for r in caplog.records if r.levelno == logging.ERROR]
+    assert not any("Last" in line and "event" in line for line in error_lines)
