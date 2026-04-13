@@ -1,4 +1,9 @@
-from deep_architect.exit_criteria import is_perfect_score, should_ping_pong_exit, sprint_passes
+from deep_architect.exit_criteria import (
+    is_perfect_score,
+    should_early_accept,
+    should_ping_pong_exit,
+    sprint_passes,
+)
 from deep_architect.models.feedback import CriterionScore, CriticResult
 
 
@@ -75,3 +80,35 @@ def test_perfect_score_fails_when_one_criterion_below() -> None:
 def test_perfect_score_fails_for_passing_but_not_perfect() -> None:
     r = make_result(9.5, ["Low", "Medium"])
     assert is_perfect_score(r) is False
+
+
+# ---------------------------------------------------------------------------
+# should_early_accept
+# ---------------------------------------------------------------------------
+
+def test_early_accept_triggers() -> None:
+    assert should_early_accept(9.8, 3, 9.5, 3) is True
+
+
+def test_early_accept_exact_boundary() -> None:
+    assert should_early_accept(9.5, 3, 9.5, 3) is True
+
+
+def test_early_accept_score_too_low() -> None:
+    assert should_early_accept(9.3, 5, 9.5, 3) is False
+
+
+def test_early_accept_stalls_too_few() -> None:
+    assert should_early_accept(9.8, 2, 9.5, 3) is False
+
+
+def test_early_accept_both_conditions_must_hold() -> None:
+    # Score high enough but stalls short by one
+    assert should_early_accept(9.9, 2, 9.5, 3) is False
+    # Stalls met but score just below threshold
+    assert should_early_accept(9.49, 3, 9.5, 3) is False
+
+
+def test_early_accept_custom_thresholds() -> None:
+    assert should_early_accept(9.8, 2, 9.8, 2) is True
+    assert should_early_accept(9.79, 2, 9.8, 2) is False

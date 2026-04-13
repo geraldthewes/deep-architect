@@ -29,6 +29,10 @@ from deep_architect.logger import get_logger
 _log = get_logger(__name__)
 
 
+class TurnLimitError(RuntimeError):
+    """Raised when the agent exhausts its max_turns budget."""
+
+
 # Tool names the SDK legitimately provides.
 KNOWN_TOOLS: frozenset[str] = frozenset({"Read", "Write", "Edit", "Bash", "Glob", "Grep"})
 # Internal CLI tool used when --json-schema is active; not a user tool but not a hallucination.
@@ -378,6 +382,17 @@ async def _consume_query(
             )
         except StopAsyncIteration:
             break
+        except TimeoutError:
+            raise  # let run_agent's TimeoutError handler deal with it
+        except Exception as exc:
+            # If the CLI exited because the turn limit was reached, surface a
+            # clear error rather than the opaque "exit code 1" message.
+            if options.max_turns is not None and turn_count >= options.max_turns:
+                raise TurnLimitError(
+                    f"Turn limit reached (max_turns={options.max_turns}, "
+                    f"turns_completed={turn_count})"
+                ) from exc
+            raise
         if isinstance(message, AssistantMessage):
             turn_count += 1
 
@@ -526,6 +541,23 @@ async def run_agent(
                 inactivity_seconds=timeout_seconds,
                 event_buffer=last_events,
             )
+
+        except TurnLimitError as exc:
+            # Log context then re-raise immediately — retrying with a fresh
+            # session won't help; the task simply needs more turns.
+            if last_events:
+                _log.error(
+                    "[%s] Last %d event(s) before turn limit:",
+                    label, len(last_events),
+                )
+                for evt in last_events:
+                    _log.error("[%s]   %s", label, evt)
+            _log.error(
+                "[%s] %s — not retrying (increase max_turns=%d in ~/.deep-architect.toml)",
+                label, exc, options.max_turns or 0,
+            )
+            last_exc = exc
+            raise
 
         except TimeoutError:
             _log.warning(

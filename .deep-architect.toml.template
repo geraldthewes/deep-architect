@@ -36,3 +36,5 @@ timeout_hours                  = 0.0   # 0 = disabled; set to a positive value t
 ping_pong_similarity_threshold = 0.85
 max_round_retries              = 2   # Retry a generator+critic round up to N times on failure
 rollback_regression_threshold  = 0.05  # Roll back to best commit if score drops more than this below the best
+early_accept_score             = 9.5   # Accept sprint early if best score >= this AND stall_count >= early_accept_stalls
+early_accept_stalls            = 3     # Turn-limit events + non-improving rounds before early accept (requires best >= early_accept_score)

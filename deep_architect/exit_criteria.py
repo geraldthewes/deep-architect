@@ -25,3 +25,18 @@ def should_ping_pong_exit(
     """Exit if similarity above threshold AND no meaningful score improvement."""
     score_improvement = current.average_score - previous.average_score
     return similarity_score >= threshold and score_improvement < 0.1
+
+
+def should_early_accept(
+    best_score: float,
+    stall_count: int,
+    early_accept_score: float,
+    early_accept_stalls: int,
+) -> bool:
+    """True when the best score is good enough and enough rounds have stalled.
+
+    A stall is a turn-limit event or a completed round that did not improve
+    on the current best score.  When enough stalls accumulate against an
+    already-high best score, further rounds are unlikely to help.
+    """
+    return best_score >= early_accept_score and stall_count >= early_accept_stalls

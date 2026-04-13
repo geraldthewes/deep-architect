@@ -3,14 +3,25 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 
-from deep_architect.agents.client import init_run_stats, make_agent_options, run_agent_text
+from deep_architect.agents.client import (
+    TurnLimitError,
+    init_run_stats,
+    make_agent_options,
+    run_agent_text,
+)
 from deep_architect.agents.critic import check_ping_pong, review_contract, run_critic
 from deep_architect.agents.generator import GeneratorRoundResult, propose_contract, run_generator
 from deep_architect.config import AgentConfig, HarnessConfig
-from deep_architect.exit_criteria import is_perfect_score, should_ping_pong_exit, sprint_passes
+from deep_architect.exit_criteria import (
+    is_perfect_score,
+    should_early_accept,
+    should_ping_pong_exit,
+    sprint_passes,
+)
 from deep_architect.git_ops import (
     get_modified_files,
     git_commit,
@@ -182,6 +193,39 @@ async def run_final_agreement(
         )
 
 
+def _do_early_accept(
+    sprint: SprintDefinition,
+    sprint_status: SprintStatus,
+    best_result: CriticResult,
+    best_commit_sha: str | None,
+    current_result: CriticResult | None,
+    repo: Any,
+) -> None:
+    """Restore best commit (if needed) and mark the sprint as passed."""
+    logger.info(
+        "[Sprint %d] Early accept: best_score=%.1f — declaring good enough",
+        sprint.number, best_result.average_score,
+    )
+    if (
+        best_commit_sha is not None
+        and current_result is not None
+        and current_result.average_score < best_result.average_score
+    ):
+        restored = restore_arch_files_from_commit(repo, best_commit_sha)
+        if restored:
+            git_commit_staged(
+                repo,
+                f"Early accept sprint {sprint.number}: restore best "
+                f"(score {best_result.average_score:.1f})",
+            )
+            logger.info(
+                "[Sprint %d] Best-effort restore committed: %d file(s)",
+                sprint.number, len(restored),
+            )
+    sprint_status.status = "passed"
+    sprint_status.final_score = best_result.average_score
+
+
 async def run_harness(
     prd: Path,
     output_dir: Path,
@@ -325,6 +369,7 @@ async def run_harness(
 
         last_result: CriticResult | None = None
         consecutive_passes = 0
+        stall_count = 0
         best_result: CriticResult | None = None
         best_commit_sha: str | None = None
 
@@ -384,6 +429,7 @@ async def run_harness(
 
             # Inner retry loop — recovers from CLI crashes (e.g. disallowed tool call)
             round_ok = False
+            turn_limited = False
             result: CriticResult | None = None
             for round_attempt in range(1, t.max_round_retries + 2):
                 try:
@@ -460,6 +506,25 @@ async def run_harness(
                     round_ok = True
                     break
 
+                except TurnLimitError:
+                    # Generator ran out of turns — don't retry with a fresh session.
+                    # Commit whatever partial work was written and let the sprint
+                    # loop decide whether to early-accept or continue.
+                    logger.warning(
+                        "[Sprint %d] Round %d: turn limit reached — committing partial work",
+                        sprint.number, round_num,
+                    )
+                    written = get_modified_files(repo)
+                    if written:
+                        git_commit(
+                            repo,
+                            f"Generator turn limit sprint {sprint.number}"
+                            f" round {round_num} (partial)",
+                            written,
+                        )
+                    turn_limited = True
+                    break  # exits inner retry loop; round_ok stays False
+
                 except Exception as exc:
                     logger.error(
                         "[Sprint %d] Round %d attempt %d/%d FAILED: %s",
@@ -475,6 +540,28 @@ async def run_harness(
                             "[Sprint %d] Round %d exhausted all %d attempts",
                             sprint.number, round_num, t.max_round_retries + 1,
                         )
+
+            if turn_limited:
+                stall_count += 1
+                logger.warning(
+                    "[Sprint %d] Round %d: stall_count=%d (turn limit)",
+                    sprint.number, round_num, stall_count,
+                )
+                if best_result is not None and should_early_accept(
+                    best_result.average_score, stall_count,
+                    t.early_accept_score, t.early_accept_stalls,
+                ):
+                    _do_early_accept(
+                        sprint, sprint_status, best_result, best_commit_sha,
+                        last_result, repo,
+                    )
+                    last_result = best_result
+                    break
+                progress.total_rounds += 1
+                sprint_status.rounds_completed = round_num
+                sprint_status.consecutive_passes = consecutive_passes
+                save_progress(checkpoint_dir, progress)
+                continue  # proceed to next round without marking as failed
 
             if not round_ok:
                 sprint_status.status = "failed"
@@ -510,7 +597,8 @@ async def run_harness(
                 )
 
             # Track best for keep-best hill climbing
-            if best_result is None or result.average_score > best_result.average_score:
+            is_improvement = best_result is None or result.average_score > best_result.average_score
+            if is_improvement:
                 best_result = result
                 best_commit_sha = repo.head.commit.hexsha
                 sprint_status.best_round = round_num
@@ -519,6 +607,26 @@ async def run_harness(
                     "[Sprint %d] New best score: %.1f (commit %s)",
                     sprint.number, best_result.average_score, best_commit_sha[:8],
                 )
+            else:
+                # is_improvement is False ↔ best_result is not None (see expression above)
+                assert best_result is not None
+                # Round did not improve on best — count as a stall
+                stall_count += 1
+                logger.info(
+                    "[Sprint %d] Round %d stalled (score=%.1f <= best=%.1f), stall_count=%d",
+                    sprint.number, round_num,
+                    result.average_score, best_result.average_score, stall_count,
+                )
+                if should_early_accept(
+                    best_result.average_score, stall_count,
+                    t.early_accept_score, t.early_accept_stalls,
+                ):
+                    _do_early_accept(
+                        sprint, sprint_status, best_result, best_commit_sha,
+                        result, repo,
+                    )
+                    last_result = best_result
+                    break
 
             # Perfect score: immediate sprint victory — no further improvement possible
             if is_perfect_score(result):

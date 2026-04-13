@@ -23,6 +23,8 @@ class ThresholdConfig(BaseModel):
     ping_pong_similarity_threshold: float = 0.85
     max_round_retries: int = 2
     rollback_regression_threshold: float = 0.05
+    early_accept_score: float = 9.5   # min best-score to trigger early accept
+    early_accept_stalls: int = 3       # stall rounds needed to trigger early accept
 
 
 def _default_generator() -> AgentConfig:

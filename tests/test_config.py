@@ -154,3 +154,27 @@ max_round_retries = 0
 """)
     cfg = load_config(cfg_file)
     assert cfg.thresholds.max_round_retries == 0
+
+
+def test_threshold_early_accept_defaults() -> None:
+    from deep_architect.config import ThresholdConfig
+
+    cfg = ThresholdConfig()
+    assert cfg.early_accept_score == 9.5
+    assert cfg.early_accept_stalls == 3
+
+
+def test_load_config_with_early_accept(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text("""
+[generator]
+model = "sonnet"
+[critic]
+model = "sonnet"
+[thresholds]
+early_accept_score  = 9.8
+early_accept_stalls = 2
+""")
+    cfg = load_config(cfg_file)
+    assert cfg.thresholds.early_accept_score == 9.8
+    assert cfg.thresholds.early_accept_stalls == 2
