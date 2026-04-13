@@ -513,6 +513,8 @@ async def run_harness(
             if best_result is None or result.average_score > best_result.average_score:
                 best_result = result
                 best_commit_sha = repo.head.commit.hexsha
+                sprint_status.best_round = round_num
+                sprint_status.best_scores = dict(result.scores)
                 logger.info(
                     "[Sprint %d] New best score: %.1f (commit %s)",
                     sprint.number, best_result.average_score, best_commit_sha[:8],

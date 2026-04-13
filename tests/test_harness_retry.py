@@ -770,11 +770,21 @@ async def test_soft_fail_accepts_best_result_and_continues(output_dir: Path) -> 
             strict=False,
         )
 
+    from deep_architect.io.files import load_progress
+
     progress_file = output_dir / ".checkpoints" / "progress.json"
     assert progress_file.exists()
     progress_json = progress_file.read_text()
     assert '"accepted"' in progress_json, "Sprint should be accepted when max rounds exhausted"
     assert '"complete"' in progress_json, "Run should complete all sprints in soft-fail mode"
+
+    reloaded = load_progress(output_dir / ".checkpoints")
+    sprint_1 = reloaded.sprint_statuses[0]
+    assert sprint_1.best_round == 1, f"best_round should be 1, got {sprint_1.best_round}"
+    assert sprint_1.best_scores is not None, "best_scores should be populated"
+    assert all(v == 7.0 for v in sprint_1.best_scores.values()), (
+        f"All best_scores should be 7.0, got {sprint_1.best_scores}"
+    )
 
 
 async def test_strict_mode_halts_on_sprint_failure(output_dir: Path) -> None:

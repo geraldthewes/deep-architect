@@ -16,6 +16,8 @@ class SprintStatus(BaseModel):
     rounds_completed: int = 0
     consecutive_passes: int = 0
     final_score: float | None = None
+    best_round: int | None = None
+    best_scores: dict[str, float] | None = None
 
 
 class HarnessProgress(BaseModel):

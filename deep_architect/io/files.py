@@ -172,6 +172,8 @@ def reset_sprint_artifacts(
     sprint_status.rounds_completed = 0
     sprint_status.consecutive_passes = 0
     sprint_status.final_score = None
+    sprint_status.best_round = None
+    sprint_status.best_scores = None
 
     # Walk current_sprint back if needed
     if progress.current_sprint >= sprint_number:
