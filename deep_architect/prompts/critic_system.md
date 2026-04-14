@@ -68,6 +68,10 @@ Return ONLY a `CriticResult` JSON object — no preamble, no explanation, no cod
 }
 ```
 
+**MANDATORY FINAL STEP**: After your last tool call result, you MUST immediately output the
+CriticResult JSON as your next and final response. Do NOT end your session after a tool call
+result without first outputting the JSON. The required ending sequence is: tool call → JSON output.
+
 ## Available Tools
 
 You may ONLY use these tools: Read, Bash, Glob, Grep.

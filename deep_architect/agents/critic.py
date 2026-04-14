@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from deep_architect.agents.client import (
+    json_schema_format,
     make_agent_options,
     run_agent_structured,
     run_simple_structured,
@@ -71,22 +73,72 @@ async def run_critic(
         allowed_tools=CRITIC_TOOLS,
         cwd=str(output_dir),
         cli_path=cli_path,
+        output_format=json_schema_format(CriticResult),
     )
 
     label = f"Critic sprint={contract.sprint_number} round={round_num}"
-    raw = await run_agent_structured(
-        options, prompt, label=label,
-        max_retries=config.max_agent_retries,
-        context_window=config.context_window,
-        timeout_seconds=config.agent_timeout_seconds,
-    )
-    result = CriticResult.model_validate(raw)
+    try:
+        raw = await run_agent_structured(
+            options, prompt, label=label,
+            max_retries=config.max_agent_retries,
+            context_window=config.context_window,
+            timeout_seconds=config.agent_timeout_seconds,
+        )
+        result = CriticResult.model_validate(raw)
+    except (ValueError, json.JSONDecodeError) as exc:
+        _log.warning(
+            "[%s] structured output failed (%s) — attempting rescue call", label, exc
+        )
+        result = await _critic_rescue(
+            config, contract, output_dir, round_num, system_prompt, label
+        )
+
     _log.info(
         "[Critic sprint=%d round=%d] avg=%.1f passed=%s criteria=%d",
         contract.sprint_number, round_num,
         result.average_score, result.passed, len(result.feedback),
     )
     return result
+
+
+async def _critic_rescue(
+    config: AgentConfig,
+    contract: SprintContract,
+    output_dir: Path,
+    round_num: int,
+    system_prompt: str,
+    label: str,
+) -> CriticResult:
+    """Rescue path: read architecture files via Python I/O and make a single structured API call.
+
+    Used when the agentic critic completes its tool-use loop but fails to emit a final
+    JSON response (e.g. the session ends after the last tool call with no text turn).
+    Reads files directly rather than via agent tools so no subprocess is needed.
+    Note: mmdc diagram validation is skipped; Mermaid scores may be less precise.
+    """
+    file_sections: list[str] = []
+    for fname in contract.files_to_produce:
+        path = output_dir / fname
+        if path.exists():
+            try:
+                content = path.read_text(encoding="utf-8")
+                file_sections.append(f"### {fname}\n```\n{content}\n```")
+            except OSError as read_exc:
+                _log.warning("[%s] rescue: could not read %s: %s", label, path, read_exc)
+
+    files_text = (
+        "\n\n".join(file_sections) if file_sections else "(no architecture files found)"
+    )
+    rescue_prompt = load_prompt(
+        "critic_rescue",
+        contract_json=contract.model_dump_json(indent=2),
+        files_text=files_text,
+        round_num=str(round_num),
+    )
+    _log.info("[%s] rescue: evaluating %d file(s) via direct API call", label, len(file_sections))
+    return await run_simple_structured(
+        config, system_prompt, rescue_prompt, CriticResult, label=f"{label}-rescue"
+    )
 
 
 async def check_ping_pong(

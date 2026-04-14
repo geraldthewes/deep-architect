@@ -1,9 +1,12 @@
-"""Tests that run_critic builds options without output_format.
+"""Tests that run_critic builds options with output_format set.
 
-CLI 2.1.104+ breaks when --json-schema is used with the LiteLTM proxy.
-The StructuredOutput tool injected by --json-schema causes invalid_request on
-the initial API call. The critic system prompt already provides JSON format
-instructions, so output_format is not needed.
+output_format → --json-schema flag → injects StructuredOutput tool the model must
+call to terminate, enforcing JSON output at the protocol level rather than relying
+on prompt instructions alone.
+
+CLI 2.1.104 broke this (LiteLTM proxy returned invalid_request for the injected
+StructuredOutput tool). It was temporarily removed. CLI 2.1.107 confirmed working
+again via scripts/test_output_format.py --approach A.
 """
 from __future__ import annotations
 
@@ -39,13 +42,15 @@ _MOCK_CRITIC_RESULT = {
 }
 
 
-async def test_run_critic_does_not_use_output_format(tmp_path: Path) -> None:
-    """run_critic must not pass output_format to the CLI agent options.
+async def test_run_critic_uses_output_format(tmp_path: Path) -> None:
+    """run_critic must pass output_format to enforce structured JSON output.
 
     output_format → --json-schema flag → StructuredOutput tool injected into
-    API request → LiteLTM returns invalid_request for unknown StructuredOutput tool.
+    the CLI session. The model must call this tool to end its session, so JSON
+    output is enforced at the protocol level rather than by prompt instruction.
 
-    Currently FAILS because critic.py passes output_format=json_schema_format(CriticResult).
+    Confirmed working with CLI 2.1.107 + LiteLTM proxy via
+    scripts/test_output_format.py --approach A.
     """
     captured: dict[str, object] = {}
 
@@ -64,8 +69,10 @@ async def test_run_critic_does_not_use_output_format(tmp_path: Path) -> None:
     ):
         await run_critic(config, contract, tmp_path, round_num=1, cli_path="/usr/bin/true")
 
-    assert captured["output_format"] is None, (
-        "Critic must not use output_format (--json-schema): "
-        "breaks with Claude Code CLI 2.1.104 + LiteLTM proxy. "
-        "The critic_system.md already instructs JSON format."
+    assert captured["output_format"] is not None, (
+        "Critic must use output_format (--json-schema) to enforce JSON output at the "
+        "protocol level. CLI 2.1.107 + LiteLTM confirmed working."
+    )
+    assert captured["output_format"].get("type") == "json_schema", (
+        "output_format must be a json_schema dict"
     )

@@ -30,6 +30,7 @@ This directory contains ADRs capturing the key architectural decisions made duri
 | [ADR-022](ADR-022-per-agent-timeout-sigterm.md) | Per-Agent Timeout and Graceful SIGTERM Handling | Accepted |
 | [ADR-023](ADR-023-keep-best-rollback.md) | Keep-Best Hill Climbing with Rollback on Score Regression | Accepted |
 | [ADR-024](ADR-024-soft-fail-sprint.md) | Soft-Fail Sprint Completion — Accept Best-Effort Result Instead of Halting | Accepted |
+| [ADR-025](ADR-025-critic-rescue-fallback.md) | Critic Rescue Fallback for Empty Structured Output | Accepted |
 
 ## Key Themes
 
