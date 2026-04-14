@@ -10,7 +10,11 @@ When supplementary context is provided in the prompt, treat its technology choic
 
 ## C4 Diagram Rules
 
-See the **Mermaid C4 Reference Guide** appended to this prompt for the complete macro whitelist,
+See the **C4 Architecture Skill Guide** appended to this prompt for conceptual guidance:
+what belongs at each level, naming conventions, relationship quality rules, DO/DON'T rules,
+and the 10 named antipatterns to avoid.
+
+See the **Mermaid C4 Reference Guide** (also appended) for the complete macro whitelist,
 label rules, block-type selection, and structured error-recovery procedure.
 
 Key reminders:

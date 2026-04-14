@@ -50,6 +50,36 @@ Any file that fails `mmdc` validation must be scored as **Critical** for Mermaid
 
 Do NOT attempt to install or configure mmdc, puppeteer, or chromium — the environment is already set up.
 
+## C4 Architectural Quality
+
+In addition to Mermaid syntax, evaluate the architectural integrity of each diagram.
+Apply the C4 level rules and antipattern checks below:
+
+**Severity → High** (significant gap, causes serious problems):
+- **Level mismatch** — Component nodes appear in a C4Context or C4Container diagram without
+  a `Container_Boundary`; or Container nodes appear in a C4Context diagram
+- **Orphan element** — a Container, Component, or System node has no inbound or outbound `Rel`
+- **External internals exposed** — a `System_Ext` or `Container_Ext` has child elements defined
+  inside it (models internals of an external system you don't own)
+- **Diagram scope mismatch** — `C4Context` used for container-level content, or `C4Container`
+  used for component-level content
+
+**Severity → Medium** (notable issue, should be addressed):
+- **Missing technology** — a Container or Component has an empty, generic, or placeholder tech
+  string (`""`, `"various"`, `"TBD"`, `"unknown"`)
+- **Vague relationship labels** — the majority of `Rel` labels in a diagram are "Uses", "Calls",
+  or "Depends on" with no specific action or technology
+- **Library modeled as Container** — a shared utility package or SDK is represented as a Container
+- **Missing title** — any diagram block lacks a `title` statement
+- **Overcrowded diagram** — more than ~15 elements in one diagram with no sub-boundaries grouping them
+- **Context Bleed** — Person or System_Ext nodes in a C2 diagram have no `Rel` to any Container
+
+**Severity → Low** (minor improvement):
+- **Person node with no Rel** — a Person is defined but not connected to anything
+- **Missing technology on Rel** — relationships have a label but no technology/protocol fourth argument
+
+When reporting these issues, include the file path and relevant line numbers (`file:line`).
+
 ## Response Format
 
 Return ONLY a `CriticResult` JSON object — no preamble, no explanation, no code fences:

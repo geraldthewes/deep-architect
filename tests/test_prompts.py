@@ -18,6 +18,7 @@ EXPECTED_PROMPTS = [
     "sprint_6_edge",
     "sprint_7_adrs",
     "mermaid_c4_guide",
+    "c4_skill",
     "critic_rescue",
 ]
 

@@ -104,7 +104,13 @@ async def run_generator(
         "Each file must be a complete, standalone Markdown document."
     )
 
-    system_prompt = load_prompt("generator_system") + "\n\n" + load_prompt("mermaid_c4_guide")
+    system_prompt = (
+        load_prompt("generator_system")
+        + "\n\n"
+        + load_prompt("c4_skill")
+        + "\n\n"
+        + load_prompt("mermaid_c4_guide")
+    )
     options = make_agent_options(
         config,
         system_prompt,
