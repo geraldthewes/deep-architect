@@ -416,6 +416,15 @@ async def run_harness(
                         best_result = prior
                 except FileNotFoundError:
                     pass
+            # If the last completed round was a regression that was rolled back,
+            # restore the generator's feedback pointer to the best round so it
+            # resumes with the critic feedback that matches the rolled-back spec.
+            if (
+                last_result is not None
+                and best_result is not None
+                and best_result.average_score > last_result.average_score
+            ):
+                last_result = best_result
             logger.info(
                 "[Sprint %d] Resuming from round %d (rounds_completed=%d, consecutive_passes=%d)",
                 sprint.number, start_round,
