@@ -33,6 +33,13 @@ class TurnLimitError(RuntimeError):
     """Raised when the agent exhausts its max_turns budget."""
 
 
+# Tracks the last non-empty assistant text block seen during _consume_query.
+# Used by run_agent_structured as a fallback when ResultMessage.result is empty
+# (e.g. the agent ended its session after a tool call, producing no final text).
+# ContextVar is safe here because _consume_query and run_agent_structured always
+# run in the same asyncio task — the value is set and read in the same coroutine chain.
+_last_agent_text: ContextVar[str] = ContextVar("_last_agent_text", default="")
+
 # Tool names the SDK legitimately provides.
 KNOWN_TOOLS: frozenset[str] = frozenset({"Read", "Write", "Edit", "Bash", "Glob", "Grep"})
 # Internal CLI tool used when --json-schema is active; not a user tool but not a hallucination.
@@ -59,9 +66,39 @@ DISALLOWED_TOOLS: list[str] = [
 ]
 
 
+def _deref_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Resolve all $ref entries inline so the schema has no $defs.
+
+    CLI 2.1.104+ rejects output_format schemas that contain $ref / $defs.
+    This flattens Pydantic's default schema output so every reference is inlined.
+    """
+    defs = schema.get("$defs", {})
+    if not defs:
+        return schema
+
+    def _resolve(node: Any) -> Any:
+        if isinstance(node, dict):
+            if "$ref" in node:
+                ref: str = node["$ref"]  # e.g. "#/$defs/CriterionScore"
+                name = ref.split("/")[-1]
+                return _resolve(defs[name])
+            return {k: _resolve(v) for k, v in node.items() if k != "$defs"}
+        if isinstance(node, list):
+            return [_resolve(i) for i in node]
+        return node
+
+    resolved = _resolve(schema)
+    assert isinstance(resolved, dict)
+    return resolved
+
+
 def json_schema_format(model_class: type[BaseModel]) -> dict[str, Any]:
-    """Build an output_format dict from a Pydantic model's JSON schema."""
-    return {"type": "json_schema", "schema": model_class.model_json_schema()}
+    """Build an output_format dict from a Pydantic model's JSON schema.
+
+    The schema is dereffed so it contains no $defs/$ref entries, which are
+    rejected by CLI 2.1.104+.
+    """
+    return {"type": "json_schema", "schema": _deref_schema(model_class.model_json_schema())}
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +403,9 @@ async def _consume_query(
     turn_count = 0
     tool_count = 0
     text_block_count = 0
+    # Reset last-text tracker for this query so a stale value from a prior
+    # call in the same task never leaks into the fallback path.
+    _last_agent_text.set("")
 
     # Drive the SDK generator manually so we can apply a per-step timeout.
     # asyncio.wait_for() wraps each __anext__() call individually, which means
@@ -422,6 +462,8 @@ async def _consume_query(
             for block in message.content:
                 if isinstance(block, TextBlock):
                     text_block_count += 1
+                    if block.text.strip():
+                        _last_agent_text.set(block.text)
                     snippet = block.text[:200].replace("\n", " ")
                     if len(block.text) > 200:
                         snippet += "..."
@@ -693,7 +735,18 @@ async def run_agent_structured(
     if result.structured_output is not None:
         output: dict[str, Any] = result.structured_output
         return output
-    # Fallback: parse from result text (strip code fences if present)
-    text = result.result or ""
-    parsed: dict[str, Any] = json.loads(_extract_json(text))
+    # Fallback: parse from result text (strip code fences if present).
+    # If result.result is empty (agent ended after a tool call with no final
+    # text turn), fall back to the last non-empty text block seen during the
+    # session — captured by _consume_query via _last_agent_text.
+    text = result.result or _last_agent_text.get() or ""
+    extracted = _extract_json(text)
+    if not extracted:
+        raise ValueError(
+            f"[{label}] Agent returned no structured output and no parseable text. "
+            "The agent likely ended its session after a tool call without emitting a "
+            "final JSON response. Check that the system prompt instructs the model to "
+            "end with a JSON object as its last message."
+        )
+    parsed: dict[str, Any] = json.loads(extracted)
     return parsed
