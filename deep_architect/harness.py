@@ -41,6 +41,7 @@ from deep_architect.io.files import (
     save_feedback,
     save_progress,
     save_round_log,
+    write_index,
 )
 from deep_architect.logger import get_logger, setup_logging
 from deep_architect.models.contract import SprintContract
@@ -840,7 +841,10 @@ async def run_harness(
     await run_final_agreement(config.generator, config.critic, output_dir, cli_path=cli_path)
     progress.status = "complete"
     save_progress(checkpoint_dir, progress)
-    # Final commit: capture terminal progress state
+    # Write navigational index before the final commit so it lands in git
+    index_path = write_index(output_dir, SPRINTS, progress)
+    logger.info("Index written: %s", index_path)
+    # Final commit: capture terminal progress state + index
     written = get_modified_files(repo)
     git_commit(
         repo,

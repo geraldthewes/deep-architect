@@ -15,6 +15,7 @@ from deep_architect.io.files import (
     save_feedback,
     save_progress,
     save_round_log,
+    write_index,
 )
 from deep_architect.models.contract import SprintContract, SprintCriterion
 from deep_architect.models.feedback import CriterionScore, CriticResult
@@ -399,6 +400,101 @@ def test_reset_sprint_invalid_number(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="out of range"):
         reset_sprint_artifacts(tmp_path, checkpoint_dir, sprint_number=5)
+
+
+def test_write_index(tmp_path: Path) -> None:
+    """write_index creates INDEX.md grouped by sprint, excluding harness artifacts."""
+    from deep_architect.sprints import SPRINTS
+
+    init_workspace(tmp_path)
+
+    # Architecture files across several sprints
+    (tmp_path / "c1-context.md").write_text("# C1")
+    (tmp_path / "c2-container.md").write_text("# C2")
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "frontend" / "c2-container.md").write_text("# FE C2")
+    (tmp_path / "frontend" / "auth.md").write_text("# Auth")
+    (tmp_path / "decisions").mkdir(exist_ok=True)
+    (tmp_path / "decisions" / "ADR-001.md").write_text("# ADR-001")
+
+    # Harness artifacts that must NOT appear in the index
+    (tmp_path / "generator-history.md").write_text("history")
+    (tmp_path / "generator-learnings.md").write_text("learnings")
+    (tmp_path / "feedback" / "sprint-1-round-1.json").write_text("{}")
+
+    statuses = [
+        SprintStatus(sprint_number=i, sprint_name=f"S{i}", status="passed", final_score=8.5)
+        for i in range(1, 8)
+    ]
+    progress = HarnessProgress(total_sprints=7, sprint_statuses=statuses)
+
+    index_path = write_index(tmp_path, SPRINTS, progress)
+
+    assert index_path == tmp_path / "INDEX.md"
+    content = index_path.read_text()
+
+    # Architecture files appear
+    assert "c1-context.md" in content
+    assert "c2-container.md" in content
+    assert "frontend/c2-container.md" in content
+    assert "frontend/auth.md" in content
+    assert "decisions/ADR-001.md" in content
+
+    # Harness artifacts do not appear
+    assert "generator-history.md" not in content
+    assert "generator-learnings.md" not in content
+    assert "sprint-1-round-1.json" not in content
+
+    # Sprint headers include score and status icon
+    assert "Sprint 1 · C1 System Context — 8.5/10 ✓" in content
+    assert "Sprint 3 · Frontend Container — 8.5/10 ✓" in content
+    assert "Sprint 7 · ADRs + Cross-Cutting Concerns — 8.5/10 ✓" in content
+
+
+def test_write_index_failed_sprint(tmp_path: Path) -> None:
+    """Failed sprints show ✗ and score if available; missing files are simply absent."""
+    from deep_architect.sprints import SPRINTS
+
+    init_workspace(tmp_path)
+    (tmp_path / "c1-context.md").write_text("# C1")
+
+    statuses = [
+        SprintStatus(sprint_number=i, sprint_name=f"S{i}", status="pending")
+        for i in range(1, 8)
+    ]
+    statuses[0].status = "passed"
+    statuses[0].final_score = 9.0
+    statuses[1].status = "failed"
+    statuses[1].final_score = 5.5
+    progress = HarnessProgress(total_sprints=7, sprint_statuses=statuses)
+
+    content = write_index(tmp_path, SPRINTS, progress).read_text()
+
+    assert "Sprint 1 · C1 System Context — 9.0/10 ✓" in content
+    assert "Sprint 2 · C2 Container Overview — 5.5/10 ✗" in content
+    # Sprint with no score shows dash
+    assert "— ✗" in content
+
+
+def test_write_index_excludes_artifact_subdirs(tmp_path: Path) -> None:
+    """Files inside contracts/, feedback/, and logs/ are never indexed."""
+    from deep_architect.sprints import SPRINTS
+
+    init_workspace(tmp_path)
+    (tmp_path / "contracts" / "sprint-1.json").write_text("{}")
+    (tmp_path / "feedback" / "sprint-1-round-1.json").write_text("{}")
+    (tmp_path / "logs" / "run.log").write_text("log")
+
+    statuses = [
+        SprintStatus(sprint_number=i, sprint_name=f"S{i}") for i in range(1, 8)
+    ]
+    progress = HarnessProgress(total_sprints=7, sprint_statuses=statuses)
+
+    content = write_index(tmp_path, SPRINTS, progress).read_text()
+
+    assert "sprint-1.json" not in content
+    assert "sprint-1-round-1.json" not in content
+    assert "run.log" not in content
 
 
 def test_clean_run_artifacts_removes_history_files(tmp_path: Path) -> None:
