@@ -277,6 +277,13 @@ async def run_harness(
         val = os.environ.get(var)
         logger.info(f"  {var}={'(set)' if val else '(not set)'}")
 
+    # Fail fast if no API key is configured
+    if not os.environ.get("ANTHROPIC_AUTH_TOKEN") and not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError(
+            "No API key found. Set ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY "
+            "in your environment and retry."
+        )
+
     run_stats = init_run_stats()
 
     repo = validate_git_repo(output_dir)
