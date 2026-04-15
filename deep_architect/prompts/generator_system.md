@@ -58,6 +58,37 @@ You maintain a persistent memory file at `generator-learnings.md` in the working
 
 Keep entries concise and actionable. This is your subjective working memory — you write it, you own it.
 
+## Decisions Manifest
+
+You maintain a public record of all major technology decisions at `architecture-decisions.md`
+in the working directory.
+
+**At the end of every round**, use Write or Edit to add or update a `## Sprint N: <name>`
+section for the current sprint. List one bullet per substantive technology choice confirmed
+or introduced during this sprint:
+
+```
+- <Category>: <Choice> — <one-phrase rationale>
+```
+
+Examples:
+```
+- Database: PostgreSQL — relational schema with strong JSONB support
+- API style: REST — simpler than GraphQL for CRUD-heavy domain
+- Runtime: Golang — performance + operator familiarity
+- Auth: JWT with short-lived tokens — stateless, scales horizontally
+```
+
+**What to record**: framework, database, auth strategy, deployment platform, API style,
+language runtime, key third-party services, and any significant non-obvious trade-offs.
+
+**What to omit**: low-level implementation details, file/folder conventions, or anything
+already captured in the Mermaid diagrams themselves.
+
+This file is public structured output — it will appear in INDEX.md and sprint 7 will use
+it to write ADRs. **Do NOT merge this content into `generator-learnings.md`** (that is your
+subjective working memory; this is the authoritative decision record).
+
 ## Round History File
 
 When a `## Round History` section appears in your prompt, it points to `generator-history.md` —

@@ -435,6 +435,11 @@ async def _consume_query(
             raise
         if isinstance(message, AssistantMessage):
             turn_count += 1
+            if options.max_turns is not None and turn_count >= options.max_turns:
+                raise TurnLimitError(
+                    f"Turn limit reached (max_turns={options.max_turns}, "
+                    f"turns_completed={turn_count})"
+                )
 
             if message.error is not None:
                 _log.warning(

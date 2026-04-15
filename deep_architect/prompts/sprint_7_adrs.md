@@ -40,6 +40,17 @@ List the alternatives considered and why they were rejected.
 - ...
 ```
 
+## Step 0: Read the Decisions Manifest
+
+Before opening any other architecture file, read `architecture-decisions.md` in the working
+directory. This file contains a sprint-by-sprint record of every major technology decision
+recorded by the generator throughout sprints 1–6. Use it as your primary source for deciding
+which ADRs to write and what content to put in them.
+
+Only open individual architecture files when you need additional context for a specific
+decision (e.g., to understand consequences or verify a detail). Do NOT Glob and read all
+`.md` files — the manifest exists precisely to make that unnecessary.
+
 ## ADRs to Generate
 
 Generate ADRs for the major decisions made across all sprints, including:
