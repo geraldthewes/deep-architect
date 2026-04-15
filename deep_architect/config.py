@@ -18,7 +18,7 @@ class ThresholdConfig(BaseModel):
     min_score: float = 9.0
     consecutive_passing_rounds: int = 2
     max_rounds_per_sprint: int = 6
-    max_total_rounds: int = 40
+    max_total_rounds: int = 0  # 0 = unlimited
     timeout_hours: float = 0.0  # 0 = disabled; positive value enforces a wall-clock limit
     ping_pong_similarity_threshold: float = 0.85
     max_round_retries: int = 2

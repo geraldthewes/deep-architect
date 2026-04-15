@@ -442,7 +442,7 @@ async def run_harness(
         for round_num in range(start_round, t.max_rounds_per_sprint + 1):
             # Global safety checks
             elapsed_total = time.time() - start_time
-            if progress.total_rounds >= t.max_total_rounds:
+            if t.max_total_rounds > 0 and progress.total_rounds >= t.max_total_rounds:
                 logger.error(
                     "Max total rounds reached (elapsed=%.1fm) — stopping.",
                     elapsed_total / 60,
