@@ -13,7 +13,7 @@ Produce `frontend/c2-container.md` and any area-specific documents warranted by 
 - API communication pattern
 - Build and deployment approach
 
-## C4Container for Frontend
+## Flowchart for Frontend
 Show containers within the frontend boundary:
 - Browser/client application container
 - Any server-side rendering container
@@ -23,7 +23,7 @@ Show containers within the frontend boundary:
 ## File Structure for frontend/c2-container.md
 1. `# Frontend Container` heading
 2. Narrative describing the frontend architecture approach
-3. Mermaid C4Container diagram scoped to the frontend
+3. Mermaid flowchart diagram scoped to the frontend
 4. `## Key Design Decisions` section
 5. `## Integration Points` section (how frontend talks to backend)
 

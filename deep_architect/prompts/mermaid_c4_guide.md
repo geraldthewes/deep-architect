@@ -1,128 +1,169 @@
-# Mermaid C4 Reference Guide
+# Mermaid Flowchart Reference Guide
 
-This reference defines every valid C4 macro, label rules, and a structured error-recovery
-procedure. Follow it exactly to produce diagrams that validate on the first `mmdc` run.
+This reference defines the flowchart conventions for all C4 architecture diagrams.
+Use `flowchart` diagrams exclusively — do **NOT** use `C4Context`, `C4Container`,
+`C4Component`, or any other C4 Mermaid block types. Those have inconsistent tooling
+support and frequently fail to render in VS Code and common Markdown viewers.
 
-## Valid C4 Macros (Whitelist)
+## Diagram Type
 
-Use **only** macros from this list. Any other identifier causes a
-"Lexical error: Unrecognized text" failure.
+Always open with `flowchart LR` (left-to-right) for context and container diagrams.
+Use `flowchart TD` (top-down) when a vertical flow better fits the content (e.g.,
+request-response chains, database tiers).
 
-### People / Actors
-| Macro | Usage |
-|-------|-------|
-| `Person(alias, "Name", "Description")` | Internal person |
-| `Person_Ext(alias, "Name", "Description")` | External person |
-
-### Systems (C1 / C4Context)
-| Macro | Usage |
-|-------|-------|
-| `System(alias, "Name", "Description")` | Internal system |
-| `System_Ext(alias, "Name", "Description")` | External system |
-| `SystemDb(alias, "Name", "Description")` | Internal database system |
-| `SystemDb_Ext(alias, "Name", "Description")` | External database system |
-| `SystemQueue(alias, "Name", "Description")` | Internal queue system |
-| `SystemQueue_Ext(alias, "Name", "Description")` | External queue system |
-
-### Containers (C2 / C4Container only)
-| Macro | Usage |
-|-------|-------|
-| `Container(alias, "Name", "Tech", "Description")` | Internal container |
-| `Container_Ext(alias, "Name", "Tech", "Description")` | External container |
-| `ContainerDb(alias, "Name", "Tech", "Description")` | Internal database container |
-| `ContainerDb_Ext(alias, "Name", "Tech", "Description")` | External database container |
-| `ContainerQueue(alias, "Name", "Tech", "Description")` | Internal queue container |
-| `ContainerQueue_Ext(alias, "Name", "Tech", "Description")` | External queue container |
-
-### Components (C3 / C4Component only)
-| Macro | Usage |
-|-------|-------|
-| `Component(alias, "Name", "Tech", "Description")` | Internal component |
-| `Component_Ext(alias, "Name", "Tech", "Description")` | External component |
-| `ComponentDb(alias, "Name", "Tech", "Description")` | Internal database component |
-| `ComponentDb_Ext(alias, "Name", "Tech", "Description")` | External database component |
-| `ComponentQueue(alias, "Name", "Tech", "Description")` | Internal queue component |
-| `ComponentQueue_Ext(alias, "Name", "Tech", "Description")` | External queue component |
-
-### Boundaries
-| Macro | Usage |
-|-------|-------|
-| `Boundary(alias, "Label") { }` | Generic boundary |
-| `Boundary(alias, "Label", "type") { }` | Typed boundary — type must be a **quoted string** |
-| `Enterprise_Boundary(alias, "Label") { }` | Enterprise boundary |
-| `System_Boundary(alias, "Label") { }` | System boundary |
-| `Container_Boundary(alias, "Label") { }` | Container boundary |
-
-Valid `type` strings: `"dashed"`, `"solid"`. An unquoted identifier (e.g., `dashed` without
-quotes) is a parse error.
-
-### Relationships
-| Macro | Usage |
-|-------|-------|
-| `Rel(from, to, "Label")` | Directed relationship |
-| `Rel(from, to, "Label", "Technology")` | Directed with technology annotation |
-| `Rel_Back(from, to, "Label")` | Reverse direction |
-| `Rel_Neighbor(from, to, "Label")` | Adjacent (reduces crossing lines) |
-| `Rel_Back_Neighbor(from, to, "Label")` | Reverse adjacent |
-| `BiRel(from, to, "Label")` | Bidirectional |
-
-**Never use `-->` or `->` in C4 blocks** — those are flowchart-only syntax and will cause
-a parse error in `C4Context`, `C4Container`, and `C4Component` blocks.
-
-### Layout
 ```
-UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+flowchart LR
+    ...
 ```
-Always include this as the **last line** of every diagram.
 
 ---
 
-## Label Character Rules
+## Title
 
-- All string arguments must use **double quotes** (`"…"`), never single quotes.
-- The following characters inside a label string **must** be replaced with HTML entities:
-  - `"` → `#quot;`
-  - `<` → `#lt;`
-  - `>` → `#gt;`
-  - `&` → `#amp;`
-- The following are safe unescaped inside double-quoted strings: alphanumeric, spaces, `-`, `_`,
-  `.`, `,`, `!`, `?`, `/`, `@`, `:`, `(`, `)`.
+Add a title via YAML frontmatter before the `flowchart` keyword:
+
+```
+---
+title: C1 System Context for Payment Platform
+---
+flowchart LR
+    ...
+```
+
+This renders in VS Code, GitHub, and all tools that support standard Mermaid.
 
 ---
 
-## Block-Type Selection
+## Node Shape Conventions
 
-| Sprint scope | Block keyword |
-|-------------|---------------|
-| C1 System Context | `C4Context` |
-| C2 Container | `C4Container` |
-| C3 Component | `C4Component` |
+Use these shapes consistently to convey element type:
+
+| C4 concept | Mermaid shape | Syntax example |
+|---|---|---|
+| Person / Actor | Rounded stadium | `user(["End User\n(Actor)"])` |
+| Internal system / container / component | Rectangle | `api["API Server\n(Go, Docker)"]` |
+| External system / service | Subroutine | `stripe[["Stripe\n(External)"]]` |
+| Database / data store | Cylinder | `db[("PostgreSQL\n(Primary DB)")]` |
+| Queue / message bus | Flag | `q>"Job Queue\n(Redis Streams)"]` |
+| Boundary / zone | Subgraph | `subgraph sys["System Name"]` ... `end` |
 
 ---
 
-## Boundary Placement Rule
+## Label Rules
 
-Elements inside a `Boundary` block **must be defined inside its `{ }` block**.
-You cannot declare an element before the boundary and then reference it by alias inside the
-boundary — that is a parse error. Plan all groupings before writing the diagram.
+- All node labels use **double quotes** inside the shape brackets: `alias["text"]`
+- Use `\n` for line breaks inside labels — **never** use `<br>`, `&lt;br&gt;`, or any HTML tag
+- Use parentheses to annotate element type or technology: `"API Server\n(Go, Docker)"`
+- The only character that needs escaping inside a label: `"` → `#quot;`
+- Alphanumeric characters, spaces, `-`, `_`, `.`, `,`, `!`, `?`, `/`, `@`, `:`, `(`, `)` are safe
 
-```mermaid
-C4Container
-    title Example
-    Container_Boundary(api_zone, "API Zone") {
-        Container(api, "API Server", "Go", "Handles requests")
-        ContainerDb(db, "Database", "PostgreSQL", "Stores data")
-    }
-    Container_Ext(cdn, "CDN", "Fastly", "Edge cache")
-    Rel(api, db, "Reads/Writes", "SQL")
-    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+**Correct**:
+```
+api["API Server\n(Go, Docker)"]
+db[("User Database\n(PostgreSQL 15)")]
+stripe[["Stripe\n(External Payment)"]]
+```
+
+**Wrong — do not do this**:
+```
+api["API Server<br>(Go, Docker)"]        %% HTML tag — will fail to render
+api["API Server&lt;br&gt;(Go)"]         %% HTML entity — also wrong
+```
+
+---
+
+## Boundaries (Subgraphs)
+
+Use `subgraph` to group related nodes. This replaces `System_Boundary`, `Container_Boundary`,
+and `Enterprise_Boundary` from C4 macro syntax.
+
+```
+subgraph sys["Payment Platform"]
+    web["Web App\n(React/Next.js)"]
+    api["API Server\n(Go)"]
+    db[("PostgreSQL\n(Primary DB)")]
+end
+```
+
+**Rules**:
+- Define nodes **inside** the `subgraph ... end` block, not before it
+- Nodes defined outside any subgraph are treated as external elements
+- Nest subgraphs only when you need to show sub-boundaries (e.g., DMZ within VPC)
+
+---
+
+## Relationships (Edges)
+
+Use labeled directional arrows:
+
+```
+api -->|"Reads/Writes via SQL"| db
+user -->|"Uses via HTTPS"| web
+api -->|"Charges card via REST"| stripe
+```
+
+- Use `-->|"label"|` for directed relationships
+- Include the technology/protocol in the label: `"Calls via REST/HTTPS"`, `"Publishes via AMQP"`
+- Avoid vague labels — "Uses", "Calls", "Depends on" are not acceptable as final labels
+- Use `<-->` for genuinely bidirectional flows (e.g., WebSockets); otherwise use two directed edges
+
+---
+
+## Complete Examples
+
+### C1 System Context
+
+```
+---
+title: C1 System Context for Payment Platform
+---
+flowchart LR
+    user(["Mobile Customer\n(Actor)"])
+    ops(["Operations Admin\n(Actor)"])
+
+    sys["Payment Platform\n(Internal System)"]
+
+    stripe[["Stripe\n(External)"]]
+    sendgrid[["SendGrid\n(External)"]]
+
+    user -->|"Submits payments via HTTPS"| sys
+    ops -->|"Manages via HTTPS"| sys
+    sys -->|"Processes charges via REST"| stripe
+    sys -->|"Sends receipts via SMTP"| sendgrid
+```
+
+### C2 Container Diagram
+
+```
+---
+title: C2 Container Diagram for Payment Platform
+---
+flowchart LR
+    user(["Mobile Customer\n(Actor)"])
+
+    subgraph sys["Payment Platform"]
+        web["Web App\n(React/Next.js, Docker)"]
+        api["API Server\n(Go, Docker)"]
+        worker["Background Worker\n(Go, Docker)"]
+        db[("PostgreSQL\n(Primary DB)")]
+        cache["Redis Cache\n(Redis 7)"]
+    end
+
+    stripe[["Stripe\n(External)"]]
+
+    user -->|"Uses via HTTPS"| web
+    web -->|"Calls via REST/HTTPS"| api
+    api -->|"Reads/Writes via SQL"| db
+    api -->|"Reads/Writes via Redis protocol"| cache
+    api -->|"Enqueues jobs via Redis Streams"| worker
+    worker -->|"Charges cards via REST"| stripe
 ```
 
 ---
 
 ## Structured Error Recovery Procedure
 
-When `mmdc -i <file> -o /tmp/validate.svg` exits non-zero, follow these steps exactly:
+When `mmdc -i <file> -o /tmp/validate.svg` exits non-zero, follow these steps:
 
 ### Step 1 — Capture the full error
 ```bash
@@ -130,26 +171,24 @@ mmdc -i <absolute-file-path> -o /tmp/validate.svg 2>&1 | head -40
 ```
 
 ### Step 2 — Read the error output
-The error names a line number and the unexpected token, for example:
+The error names a line number and the unexpected token:
 ```
-Error: Parse error on line 14:
-...ContainerQueue_Ext(q, "Job Queue"
------------------------^
-Expecting 'NEWLINE', got 'INVALID'
+Error: Parse error on line 8:
+...api["API Server<br>(Go)"]
+--------------------------^
+Expecting 'SQE', got 'INVALID'
 ```
 
 ### Step 3 — Read that line in the file
-Use the Read tool to view the file. Go to the reported line number.
+Use the Read tool to view the file at the reported line number.
 
 ### Step 4 — Identify the failure cause (check in order)
-1. **Unknown macro** — Is the identifier at that line in the whitelist above? If not, replace
-   it with the closest valid macro.
-2. **Flowchart arrow** — Does the line contain `-->` or `->`? Replace with a `Rel()` call.
-3. **Unquoted boundary type** — Does a `Boundary(...)` call have an unquoted third argument?
-   Add double quotes around it.
-4. **Unescaped entity** — Does a label string contain `<`, `>`, `"`, or `&`? Replace with the
-   HTML entity equivalents listed above.
-5. **Missing closing brace** — Does a `Boundary` block lack a matching `}`? Add it.
+1. **HTML in label** — Does the label contain `<br>`, `<span>`, or any HTML tag? Replace with `\n`
+2. **Unclosed subgraph** — Is there a `subgraph` block without a matching `end`? Add it.
+3. **Wrong quote style** — Does a label use single quotes instead of double quotes? Fix to double.
+4. **Unescaped quote** — Does a label string contain a literal `"`? Replace with `#quot;`
+5. **Bad arrow syntax** — Does the file contain `->` (single dash)? Fix to `-->`
+6. **Mismatched brackets** — Does a node have `["text"` without the closing `]`? Fix it.
 
 ### Step 5 — Fix the one reported line only
 Use the Edit tool to change only the specific line. Do NOT rewrite the whole diagram.
@@ -166,11 +205,12 @@ If it exits non-zero again, repeat from Step 2 with the new error. If it exits 0
 
 Run through this before writing the final diagram to a file:
 
-- [ ] Every element macro appears in the whitelist above
-- [ ] All string arguments use double quotes
-- [ ] All Boundary-contained elements are defined *inside* `{ }`, not before it
-- [ ] No `-->` or `->` arrows — only `Rel()` / `BiRel()` / `Rel_Back()` etc.
-- [ ] Boundary `type` argument (if used) is a quoted string: `"dashed"` or `"solid"`
-- [ ] Labels containing `<`, `>`, `"`, or `&` use HTML entities
-- [ ] Last line is `UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")`
-- [ ] Block keyword matches the sprint scope (C4Context / C4Container / C4Component)
+- [ ] Opens with `flowchart LR` or `flowchart TD` — NOT `C4Context`, `C4Container`, or `C4Component`
+- [ ] Title is set via YAML frontmatter (`---` / `title: ...` / `---`)
+- [ ] All labels use double quotes and `\n` for line breaks (no `<br>` or HTML entities)
+- [ ] All nodes inside a `subgraph` are defined within `subgraph ... end`, not before it
+- [ ] Every relationship has a descriptive label including technology/protocol
+- [ ] External systems use the subroutine shape `[["Name\n(External)"]]`
+- [ ] Databases use the cylinder shape `[("Name\n(Tech)")]`
+- [ ] Persons/actors use the stadium shape `(["Name\n(Role)"])`
+- [ ] No orphan nodes — every node has at least one edge

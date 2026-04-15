@@ -12,33 +12,32 @@ containers and their relationships, plus a technology stack decision summary.
 - **Frontend**: Framework, rendering strategy (SSR/CSR/SSG)
 - **Infrastructure**: Cloud provider, containerization, orchestration
 
-## C4Container Mermaid Template
+## Flowchart Mermaid Template
 ```
-C4Container
-  title Container Diagram for [System Name]
+---
+title: C2 Container Diagram for [System Name]
+---
+flowchart LR
+    user(["User\n(Actor)"])
 
-  Person(user, "User", "Description")
+    subgraph sys["System Name"]
+        web["Web App\n(React/Next.js, Docker)"]
+        api["API Server\n(FastAPI/Python, Docker)"]
+        db[("Database\n(PostgreSQL)")]
+    end
 
-  System_Boundary(sys, "System Name") {
-    Container(web, "Web App", "React/Next.js", "User interface")
-    Container(api, "API Server", "FastAPI/Python", "Business logic")
-    Container(db, "Database", "PostgreSQL", "Persistent data store")
-  }
+    ext[["External System\n(External)"]]
 
-  System_Ext(ext, "External System", "Purpose")
-
-  Rel(user, web, "Uses", "HTTPS")
-  Rel(web, api, "Calls", "REST/HTTPS")
-  Rel(api, db, "Reads/Writes", "SQL")
-  Rel(api, ext, "Calls", "REST/HTTPS")
-
-  UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+    user -->|"Uses via HTTPS"| web
+    web -->|"Calls via REST/HTTPS"| api
+    api -->|"Reads/Writes via SQL"| db
+    api -->|"Calls via REST/HTTPS"| ext
 ```
 
 ## File Structure for c2-container.md
 1. `# C2 Container Overview` heading
 2. Narrative (3–5 sentences) covering the overall architecture approach
-3. Mermaid C4Container diagram
+3. Mermaid flowchart diagram
 4. `## Technology Decisions` section with rationale for each major choice
 5. `## Container Relationships` section describing key interactions
 
@@ -48,3 +47,4 @@ C4Container
 - [ ] Relationships have meaningful labels
 - [ ] External systems from C1 are referenced
 - [ ] Technology decisions include brief rationale
+- [ ] YAML frontmatter `title:` present at top of diagram block

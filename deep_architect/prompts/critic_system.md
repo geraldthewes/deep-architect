@@ -50,33 +50,46 @@ Any file that fails `mmdc` validation must be scored as **Critical** for Mermaid
 
 Do NOT attempt to install or configure mmdc, puppeteer, or chromium — the environment is already set up.
 
+## Diagram Validation Note
+
+The `mmdc` command validates `flowchart` diagrams identically to any other Mermaid diagram type.
+Do **not** flag a diagram for using `flowchart LR` or `flowchart TD` — this is the required format.
+Do **not** accept diagrams that use `C4Context`, `C4Container`, or `C4Component` block types — those
+are banned; score them Critical for diagram type and require conversion to flowchart.
+
 ## C4 Architectural Quality
 
 In addition to Mermaid syntax, evaluate the architectural integrity of each diagram.
 Apply the C4 level rules and antipattern checks below:
 
 **Severity → High** (significant gap, causes serious problems):
-- **Level mismatch** — Component nodes appear in a C4Context or C4Container diagram without
-  a `Container_Boundary`; or Container nodes appear in a C4Context diagram
-- **Orphan element** — a Container, Component, or System node has no inbound or outbound `Rel`
-- **External internals exposed** — a `System_Ext` or `Container_Ext` has child elements defined
-  inside it (models internals of an external system you don't own)
-- **Diagram scope mismatch** — `C4Context` used for container-level content, or `C4Container`
-  used for component-level content
+- **Wrong scope for level** — a Sprint 1 (context) diagram shows internal containers, services,
+  or technology stack details; or a Sprint 2+ diagram has no `subgraph` grouping for system internals
+- **Orphan node** — any node has no inbound or outbound edge; every node must participate in
+  at least one relationship
+- **External system inside system subgraph** — a node labeled "(External)" is placed inside the
+  `subgraph` block for the system boundary (exposes internals of a system you don't own)
+- **Missing subgraph boundary** — a Sprint 2+ diagram with more than 3 system nodes and no
+  `subgraph` grouping to separate system internals from external actors
 
 **Severity → Medium** (notable issue, should be addressed):
-- **Missing technology** — a Container or Component has an empty, generic, or placeholder tech
-  string (`""`, `"various"`, `"TBD"`, `"unknown"`)
-- **Vague relationship labels** — the majority of `Rel` labels in a diagram are "Uses", "Calls",
-  or "Depends on" with no specific action or technology
-- **Library modeled as Container** — a shared utility package or SDK is represented as a Container
-- **Missing title** — any diagram block lacks a `title` statement
-- **Overcrowded diagram** — more than ~15 elements in one diagram with no sub-boundaries grouping them
-- **Context Bleed** — Person or System_Ext nodes in a C2 diagram have no `Rel` to any Container
+- **Missing technology in label** — a container or component node has no technology annotation
+  in its label (e.g., `api["API Server"]` with no tech in parentheses); every container must
+  show a specific technology choice
+- **Vague edge labels** — the majority of `-->|"label"|` edges use "Uses", "Calls", or
+  "Depends on" with no specific action or protocol
+- **Library modeled as container** — a shared utility package or SDK appears as a standalone node
+  rather than as a component within a container
+- **Missing title** — the diagram has no YAML frontmatter `title:` line
+- **Overcrowded diagram** — more than ~15 nodes in one diagram with no `subgraph` groupings
+- **Context Bleed** — actor or external system nodes in a C2 diagram have no edge connecting
+  them to any container node inside the system subgraph
+- **HTML line break in label** — a node label contains `&lt;br&gt;` or `<br>` instead of `\n`
 
 **Severity → Low** (minor improvement):
-- **Person node with no Rel** — a Person is defined but not connected to anything
-- **Missing technology on Rel** — relationships have a label but no technology/protocol fourth argument
+- **Actor with no edge** — a person/actor node is defined but not connected to anything
+- **Edge label missing protocol** — edges have a descriptive action label but no technology
+  or protocol specified (e.g., `"Sends notifications"` without `"via SMTP"`)
 
 When reporting these issues, include the file path and relevant line numbers (`file:line`).
 

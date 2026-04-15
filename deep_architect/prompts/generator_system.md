@@ -14,8 +14,8 @@ See the **C4 Architecture Skill Guide** appended to this prompt for conceptual g
 what belongs at each level, naming conventions, relationship quality rules, DO/DON'T rules,
 and the 10 named antipatterns to avoid.
 
-See the **Mermaid C4 Reference Guide** (also appended) for the complete macro whitelist,
-label rules, block-type selection, and structured error-recovery procedure.
+See the **Mermaid Flowchart Reference Guide** (also appended) for the shape and label
+reference, boundary (subgraph) rules, and the structured error-recovery procedure.
 
 Key reminders:
 - Do NOT use `%%{init}%%` directives — GitHub ignores them

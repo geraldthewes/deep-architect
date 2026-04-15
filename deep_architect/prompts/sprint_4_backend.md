@@ -13,7 +13,7 @@ Produce `backend/c2-container.md` and area-specific documents as needed
 - Internal service communication
 - Error handling and retry patterns
 
-## C4Container for Backend
+## Flowchart for Backend
 Show containers within the backend boundary:
 - API server / gateway
 - Business logic service(s)
@@ -24,7 +24,7 @@ Show containers within the backend boundary:
 ## File Structure for backend/c2-container.md
 1. `# Backend Container` heading
 2. Narrative describing backend architecture
-3. Mermaid C4Container diagram scoped to backend
+3. Mermaid flowchart diagram scoped to backend
 4. `## API Design Principles` section
 5. `## Orchestration` section (if LLM/agent workflows are in scope)
 6. `## Background Processing` section

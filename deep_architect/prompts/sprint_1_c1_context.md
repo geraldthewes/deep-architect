@@ -11,25 +11,24 @@ its primary users, and all external dependencies.
 - The core system itself (→ `System` node)
 - Key data flows and integration points (→ relationship labels)
 
-## C4Context Mermaid Template
+## Flowchart Mermaid Template
 ```
-C4Context
-  title System Context for [System Name]
+---
+title: C1 System Context for [System Name]
+---
+flowchart LR
+    user(["User Role\n(Actor)"])
+    sys["System Name\n(Internal System)"]
+    ext[["External System\n(External)"]]
 
-  Person(user, "User Role", "Brief description")
-  System(sys, "System Name", "What it does")
-  System_Ext(ext, "External System", "Purpose")
-
-  Rel(user, sys, "Uses", "HTTPS")
-  Rel(sys, ext, "Calls", "REST API")
-
-  UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
+    user -->|"Uses via HTTPS"| sys
+    sys -->|"Calls REST API"| ext
 ```
 
 ## File Structure for c1-context.md
 1. `# C1 System Context` heading
 2. Brief narrative (2–3 sentences) explaining the system's purpose
-3. Mermaid C4Context diagram
+3. Mermaid flowchart diagram
 4. `## Relationships` section describing each arrow
 
 ## Quality Checklist
@@ -37,4 +36,4 @@ C4Context
 - [ ] All user personas from the PRD appear as Person nodes
 - [ ] Relationship labels are specific (not just "uses")
 - [ ] Technology strings on external systems where known
-- [ ] UpdateLayoutConfig present at end of diagram
+- [ ] YAML frontmatter `title:` present at top of diagram block

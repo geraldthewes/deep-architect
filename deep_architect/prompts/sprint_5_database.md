@@ -13,7 +13,7 @@ Produce `database/c2-container.md` and any supporting documents
 - Backup and recovery strategy
 - Migration strategy
 
-## C4Container for Database Layer
+## Flowchart for Database Layer
 Show containers within the data boundary:
 - Primary database container
 - Vector/embedding store container (if applicable)
@@ -24,7 +24,7 @@ Show containers within the data boundary:
 ## File Structure for database/c2-container.md
 1. `# Database + Knowledge Base Container` heading
 2. Narrative describing data architecture
-3. Mermaid C4Container diagram scoped to data layer
+3. Mermaid flowchart diagram scoped to data layer
 4. `## Data Models` section (high-level entity descriptions)
 5. `## Knowledge Base Architecture` section (if AI/RAG is in scope)
 6. `## Scaling and Performance` section
