@@ -225,8 +225,9 @@ async def test_harness_retries_round_on_critic_failure(
 async def test_harness_marks_sprint_failed_after_max_retries(
     output_dir: Path,
 ) -> None:
-    """When all retry attempts for a round are exhausted, the sprint is marked
-    failed and the harness returns without completing the run."""
+    """When the generator always fails, each round is treated as a stall.
+    After all max_rounds_per_sprint rounds are exhausted without a critic
+    result, the sprint is marked failed and the harness returns."""
     prd = output_dir / "prd.md"
     prd.write_text("# Test PRD")
 
@@ -269,8 +270,9 @@ async def test_harness_marks_sprint_failed_after_max_retries(
             config=_make_config(max_round_retries=1),
         )
 
-    # 1 initial + 1 retry = 2 attempts before failing
-    assert gen_call_count == 2
+    # (1 initial + 1 retry) × max_rounds_per_sprint(3) = 6 total generator calls.
+    # Each failed round is treated as a stall; all rounds are exhausted before failing.
+    assert gen_call_count == 6
     # Progress file should reflect failure (now lives in .checkpoints/)
     progress_file = output_dir / ".checkpoints" / "progress.json"
     assert progress_file.exists()

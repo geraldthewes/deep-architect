@@ -607,9 +607,32 @@ async def run_harness(
                 continue  # proceed to next round without marking as failed
 
             if not round_ok:
-                sprint_status.status = "failed"
-                sprint_status.final_score = last_result.average_score if last_result else 0.0
-                break
+                # Round failed after exhausting all retries — treat like a stall
+                # (no-op round) rather than terminating the sprint.  A transient
+                # crash or timeout does not mean the remaining rounds will fail;
+                # consuming the slot and continuing gives the sprint its full
+                # budget.  The for…else clause handles exhaustion of all rounds.
+                stall_count += 1
+                logger.warning(
+                    "[Sprint %d] Round %d: all attempts failed — treating as stall"
+                    " (stall_count=%d)",
+                    sprint.number, round_num, stall_count,
+                )
+                if best_result is not None and should_early_accept(
+                    best_result.average_score, stall_count,
+                    t.early_accept_score, t.early_accept_stalls,
+                ):
+                    _do_early_accept(
+                        sprint, sprint_status, best_result, best_commit_sha,
+                        last_result, repo,
+                    )
+                    last_result = best_result
+                    break
+                progress.total_rounds += 1
+                sprint_status.rounds_completed = round_num
+                sprint_status.consecutive_passes = consecutive_passes
+                save_progress(checkpoint_dir, progress)
+                continue
 
             assert result is not None
             progress.total_rounds += 1
@@ -794,39 +817,6 @@ async def run_harness(
                     t.max_rounds_per_sprint, t.consecutive_passing_rounds,
                 )
                 sprint_status.status = "failed"
-                progress.status = "failed"
-                save_progress(checkpoint_dir, progress)
-                return
-
-        if sprint_status.status == "failed":
-            # Round retry exhaustion caused the loop to break before passing
-            if not strict and best_result is not None and best_commit_sha is not None:
-                logger.warning(
-                    "[Sprint %d] Unrecoverable round failure with a prior best result "
-                    "(score=%.2f). Accepting best-effort result (pass --strict to halt "
-                    "instead).",
-                    sprint.number, best_result.average_score,
-                )
-                restored = restore_arch_files_from_commit(repo, best_commit_sha)
-                if restored:
-                    git_commit_staged(
-                        repo,
-                        f"Accept best-effort sprint {sprint.number} "
-                        f"(score {best_result.average_score:.2f} / "
-                        f"threshold {t.min_score:.2f})",
-                    )
-                    logger.info(
-                        "[Sprint %d] Best-effort restore committed: %d file(s)",
-                        sprint.number, len(restored),
-                    )
-                sprint_status.status = "accepted"
-                sprint_status.final_score = best_result.average_score
-                last_result = best_result
-            else:
-                logger.error(
-                    "[Sprint %d] Sprint failed due to unrecoverable round failure",
-                    sprint.number,
-                )
                 progress.status = "failed"
                 save_progress(checkpoint_dir, progress)
                 return
