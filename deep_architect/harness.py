@@ -402,6 +402,7 @@ async def run_harness(
         stall_count = 0
         best_result: CriticResult | None = None
         best_commit_sha: str | None = None
+        last_known_gen_input_tokens: int = 0
 
         # On mid-sprint resume: restore round state from checkpoint
         start_round = sprint_status.rounds_completed + 1
@@ -486,11 +487,14 @@ async def run_harness(
                         round_num,
                         cli_path=cli_path,
                         supplementary_context=supplementary_context,
+                        last_known_input_tokens=last_known_gen_input_tokens,
                     )
                     logger.info(
                         "[Sprint %d] Generator round %d completed in %.1fs",
                         sprint.number, round_num, time.monotonic() - t0,
                     )
+                    if gen_round.input_tokens:
+                        last_known_gen_input_tokens = gen_round.input_tokens
 
                     # Detect files written by the generator and auto-commit
                     written = get_modified_files(repo)

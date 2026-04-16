@@ -41,6 +41,7 @@ async def run_generator(
     *,
     cli_path: str | None = None,
     supplementary_context: str = "",
+    last_known_input_tokens: int = 0,
 ) -> GeneratorRoundResult:
     """Run the Generator for one round."""
     _log.info("[Generator sprint=%d round=%d] Starting new session", sprint.number, round_num)
@@ -124,6 +125,7 @@ async def run_generator(
         options, prompt, label=label,
         max_retries=config.max_agent_retries,
         context_window=config.context_window,
+        last_known_input_tokens=last_known_input_tokens,
         timeout_seconds=config.agent_timeout_seconds,
     )
     return GeneratorRoundResult(
