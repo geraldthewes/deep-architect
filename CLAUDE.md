@@ -119,3 +119,24 @@ Users create `~/.deep-architect.toml` (template: `.deep-architect.toml.template`
 - Do not store endpoint URLs or API keys in the TOML config — use environment variables
 - Do not pass file contents as prompt text to the critic — it has Read tools for that
 - Do not swallow exceptions; log them and let them propagate
+
+<!-- OCR:START -->
+## Open Code Review Instructions
+
+These instructions are for AI assistants handling code review in this project.
+
+Always open `.ocr/skills/SKILL.md` when the request:
+- Asks for code review, PR review, or feedback on changes
+- Mentions "review my code" or similar phrases
+- Wants multi-perspective analysis of code quality
+- Asks to map, organize, or navigate a large changeset
+
+Use `.ocr/skills/SKILL.md` to learn:
+- How to run the 8-phase review workflow
+- How to generate a Code Review Map for large changesets
+- Available reviewer personas and their focus areas
+- Session management and output format
+
+Keep this managed block so `ocr init` can refresh the instructions.
+
+<!-- OCR:END -->

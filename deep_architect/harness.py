@@ -154,8 +154,12 @@ async def run_final_agreement(
     output_dir: Path,
     *,
     cli_path: str | None = None,
-) -> None:
-    """Both agents must independently output READY_TO_SHIP."""
+) -> tuple[bool, bool]:
+    """Both agents must independently output READY_TO_SHIP.
+
+    Returns (gen_ready, critic_ready). Non-blocking per ADR-017: a NOT READY
+    result logs the agent's full feedback but does not fail the run.
+    """
     logger.info("Running final mutual agreement round...")
 
     final_prompt = load_prompt("final_agreement", output_dir=str(output_dir))
@@ -189,9 +193,16 @@ async def run_final_agreement(
         logger.info("Mutual agreement reached: READY_TO_SHIP")
     else:
         logger.warning(
-            f"Final agreement: Generator={'READY' if gen_ready else 'NOT READY'}, "
-            f"Critic={'READY' if critic_ready else 'NOT READY'}"
+            "Final agreement: Generator=%s, Critic=%s — review feedback below before shipping",
+            "READY" if gen_ready else "NOT READY",
+            "READY" if critic_ready else "NOT READY",
         )
+        if not gen_ready:
+            logger.warning("Generator final-agreement feedback:\n%s", gen_result.strip())
+        if not critic_ready:
+            logger.warning("Critic final-agreement feedback:\n%s", critic_result.strip())
+
+    return gen_ready, critic_ready
 
 
 def _do_early_accept(
@@ -832,7 +843,9 @@ async def run_harness(
         )
 
     # Final mutual agreement round
-    await run_final_agreement(config.generator, config.critic, output_dir, cli_path=cli_path)
+    gen_ready, critic_ready = await run_final_agreement(
+        config.generator, config.critic, output_dir, cli_path=cli_path
+    )
     progress.status = "complete"
     save_progress(checkpoint_dir, progress)
     # Write navigational index before the final commit so it lands in git
@@ -846,8 +859,15 @@ async def run_harness(
         written,
     )
     total_elapsed = time.time() - start_time
-    logger.info(
-        "Harness COMPLETE in %.1f minutes — architecture is production-ready",
-        total_elapsed / 60,
-    )
+    if gen_ready and critic_ready:
+        logger.info(
+            "Harness COMPLETE in %.1f minutes — architecture is production-ready",
+            total_elapsed / 60,
+        )
+    else:
+        logger.warning(
+            "Harness COMPLETE in %.1f minutes — all sprints passed but final agreement "
+            "was not reached; review the feedback above before shipping",
+            total_elapsed / 60,
+        )
     run_stats.log_summary()
