@@ -8,7 +8,7 @@ from pathlib import Path
 
 from deep_architect.models.contract import SprintContract
 from deep_architect.models.feedback import CriticResult
-from deep_architect.models.progress import HarnessProgress
+from deep_architect.models.progress import HarnessProgress, SprintStatus
 from deep_architect.sprints import SprintDefinition
 
 _HARNESS_ARTIFACT_FILES = frozenset({
@@ -39,7 +39,10 @@ def load_contract(output_dir: Path, sprint_number: int) -> SprintContract:
 
 
 def save_feedback(
-    output_dir: Path, sprint_number: int, round_num: int, result: CriticResult
+    output_dir: Path,
+    sprint_number: int,
+    round_num: int,
+    result: CriticResult,
 ) -> Path:
     path = output_dir / "feedback" / f"sprint-{sprint_number}-round-{round_num}.json"
     path.write_text(result.model_dump_json(indent=2))
@@ -342,3 +345,257 @@ def clean_run_artifacts(output_dir: Path, checkpoint_dir: Path) -> list[Path]:
             artifact.unlink()
             deleted.append(artifact)
     return deleted
+
+
+def generate_sprint_documentation(
+    output_dir: Path,
+    sprint_number: int,
+    sprint_name: str,
+    progress: HarnessProgress,
+    sprint_status: SprintStatus,
+    generator_history: str = "",
+    critic_history: str = ""
+) -> Path:
+    """Generate sprint documentation by filling template with actual sprint data.
+
+    Args:
+        output_dir: Directory to save the completed sprint document
+        sprint_number: Sprint number (1-7)
+        sprint_name: Name of the sprint
+        progress: Overall harness progress
+        sprint_status: Status of this specific sprint
+        generator_history: Content from generator-history.md (optional)
+        critic_history: Content from critic-history.md (optional)
+
+    Returns:
+        Path to the generated sprint documentation file
+    """
+    # Read the appropriate sprint template
+    sprint_name_formatted = sprint_name.lower().replace(' ', '-').replace('/', '-')
+    template_path = Path(
+        f"/home/gerald/repos/deep-architect/knowledge/architecture/sprints/"
+        f"sprint-{sprint_number:02d}-{sprint_name_formatted}.md"
+    )
+
+    if not template_path.exists():
+        # Fallback to a basic template if specific one not found
+        template_content = f"""# Sprint {sprint_number}: {sprint_name}
+
+## Overview
+[To be filled during sprint execution]
+
+## Agreements
+[To be filled during sprint execution]
+
+## Strengths
+[To be filled during sprint execution]
+
+## Concerns
+[To be filled during sprint execution]
+
+## Unresolved Critic Concerns
+[To be filled during sprint execution - specific criteria where Critic remained concerned]
+
+### Exit Status
+- [ ] Completed via quality criteria 
+  (avg score ≥ 9.0/10, zero Critical/High for 2 consecutive rounds)
+- [ ] Completed via max rounds fallback (with warnings)
+- [ ] Failed to produce usable output
+
+### Notes on Exit Mechanism
+[Documentation of what output was produced and why the sprint exited the way it did]
+"""
+    else:
+        template_content = template_path.read_text()
+
+    # Extract sprint-specific data from history and progress
+    agreements = _extract_agreements(generator_history, critic_history)
+    strengths = _extract_strengths(generator_history, critic_history)
+    concerns = _extract_concerns(generator_history, critic_history)
+    unresolved_concerns = _extract_unresolved_concerns(critic_history)
+
+    # Determine exit status based on sprint_status
+    exit_quality = (
+        sprint_status.status == "passed" 
+        and sprint_status.final_score is not None 
+        and sprint_status.final_score >= 9.0
+    )
+    exit_max_rounds = sprint_status.status == "accepted"
+    exit_failed = sprint_status.status == "failed"
+
+    # Format exit status checkboxes
+    exit_status_lines = []
+    
+    if exit_quality:
+        quality_criteria = "- [x] Completed via quality criteria "
+        quality_criteria += "(avg score ≥ 9.0/10, zero Critical/High for 2 consecutive rounds)"
+    else:
+        quality_criteria = "- [ ] Completed via quality criteria "
+        quality_criteria += "(avg score ≥ 9.0/10, zero Critical/High for 2 consecutive rounds)"
+         
+    if exit_max_rounds:
+        max_rounds = "- [x] Completed via max rounds fallback (with warnings)"
+    else:
+        max_rounds = "- [ ] Completed via max rounds fallback (with warnings)"
+        
+    if exit_failed:
+        failed_output = "- [x] Failed to produce usable output"
+    else:
+        failed_output = "- [ ] Failed to produce usable output"
+        
+    exit_status_lines.append(quality_criteria)
+    exit_status_lines.append(max_rounds)
+    exit_status_lines.append(failed_output)
+
+    # Generate notes on exit mechanism
+    exit_notes = _generate_exit_notes(sprint_status, progress)
+
+    # Replace placeholders in template
+    placeholder1 = "[To be filled during sprint execution]"
+    placeholder2 = (
+        "[To be filled during sprint execution - specific criteria where Critic remained concerned]"
+    )
+    
+    filled_content = template_content.replace(placeholder1, agreements, 1)
+    filled_content = filled_content.replace(placeholder1, strengths, 1)
+    filled_content = filled_content.replace(placeholder1, concerns, 1)
+    filled_content = filled_content.replace(placeholder2, unresolved_concerns, 1)
+    exit_status_text = (
+        "- [ ] Completed via quality criteria \n"
+        "  (avg score ≥ 9.0/10, zero Critical/High for 2 consecutive rounds)\n"
+        "- [ ] Completed via max rounds fallback (with warnings)\n"
+        "- [ ] Failed to produce usable output"
+    )
+    filled_content = filled_content.replace(
+        exit_status_text,
+        "\n".join(exit_status_lines),
+        1
+    )
+    filled_content = filled_content.replace(
+        "[Documentation of what output was produced and why the sprint exited the way it did]",
+        exit_notes,
+        1
+    )
+
+    # Save the completed documentation
+    doc_path = output_dir / f"sprint-{sprint_number:02d}-documentation.md"
+    doc_path.write_text(filled_content)
+
+    return doc_path
+
+
+def _extract_agreements(generator_history: str, critic_history: str) -> str:
+    """Extract agreements from history files."""
+    # Simple implementation - in practice would parse history for consensus points
+    if not generator_history and not critic_history:
+        return "Agreements extracted from Generator and Critic interaction history"
+
+    # Look for agreement indicators in history
+    agreements = []
+    # Check for explicit agreement (not disagreement)
+    gen_lower = generator_history.lower()
+    crit_lower = critic_history.lower()
+    if (" agree " in gen_lower or gen_lower.startswith("agree ") or 
+        gen_lower.endswith(" agree") or " agreed " in gen_lower or
+        " agree" in gen_lower.replace("disagree", "")) or \
+       (" agree " in crit_lower or crit_lower.startswith("agree ") or 
+        crit_lower.endswith(" agree") or " agreed " in crit_lower or
+        " agree" in crit_lower.replace("disagree", "")):
+        agreements.append("- Consensus reached on core architectural decisions")
+    if "approved" in critic_history.lower():
+        agreements.append("- Generator proposals approved by Critic")
+
+    if agreements:
+        return "\n".join(agreements)
+    else:
+        return "- Agreements to be extracted from sprint history"
+
+
+def _extract_strengths(generator_history: str, critic_history: str) -> str:
+    """Extract strengths from history files."""
+    if not generator_history and not critic_history:
+        return "Strengths identified during sprint execution"
+        
+    strengths = []
+    if "improved" in generator_history.lower() or "strength" in generator_history.lower():
+        strengths.append("- Design improvements identified during generation")
+    if "strength" in critic_history.lower() or "well" in critic_history.lower():
+        strengths.append("- Positive aspects noted by Critic")
+        
+    if strengths:
+        return "\n".join(strengths)
+    else:
+        return "- Strengths to be extracted from sprint history"
+
+
+def _extract_concerns(generator_history: str, critic_history: str) -> str:
+    """Extract concerns from history files."""
+    if not critic_history:
+        return "Concerns identified during sprint execution"
+
+    concerns = []
+    # Extract concerns from critic history (look for concern patterns)
+    lines = critic_history.split('\n')
+    for line in lines:
+        if '[Critical]' in line or '[High]' in line or '[Medium]' in line:
+            concerns.append(line.strip())
+
+    if concerns:
+        return "\n".join(concerns)
+    else:
+        return "- Concerns to be extracted from critic history"
+
+
+def _extract_unresolved_concerns(critic_history: str) -> str:
+    """Extract unresolved Critic concerns from history."""
+    if not critic_history:
+        return "Unresolved Critic concerns for later human evaluation"
+
+    unresolved = []
+    # Look for concerns that weren't addressed in subsequent rounds
+    # This is a simplified version - full implementation would track concern resolution
+    lines = critic_history.split('\n')
+    for line in lines:
+        if ('[Critical]' in line or '[High]' in line) and 'resolved' not in line.lower():
+            unresolved.append(line.strip())
+
+    if unresolved:
+        return "\n".join(unresolved)
+    else:
+        return "- No unresolved concerns identified"
+
+
+def _generate_exit_notes(sprint_status: SprintStatus, progress: HarnessProgress) -> str:
+    """Generate notes on exit mechanism based on sprint status."""
+    notes = []
+
+    if sprint_status.status == "passed":
+        notes.append(
+            f"Sprint completed via quality criteria with final score of "
+            f"{sprint_status.final_score:.1f}/10"
+        )
+        notes.append(
+            f"Achieved {sprint_status.consecutive_passes} consecutive passing rounds"
+        )
+    elif sprint_status.status == "accepted":
+        notes.append("Sprint completed via max rounds fallback (best-effort acceptance)")
+        notes.append(
+            f"Best score achieved: {sprint_status.final_score:.1f}/10"
+        )
+        notes.append(
+            f"Completed after {sprint_status.rounds_completed} rounds"
+        )
+    elif sprint_status.status == "failed":
+        notes.append(
+            f"Sprint failed to meet exit criteria after "
+            f"{sprint_status.rounds_completed} rounds"
+        )
+        notes.append(
+            f"Best score achieved: {sprint_status.final_score or 0:.1f}/10"
+        )
+    else:
+        notes.append(f"Sprint status: {sprint_status.status}")
+
+    notes.append(f"Sprint {sprint_status.sprint_number} of {progress.total_sprints} total sprints")
+
+    return "\n".join(notes)

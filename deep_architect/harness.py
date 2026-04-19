@@ -7,15 +7,15 @@ from typing import Any
 
 from rich.console import Console
 
+from deep_architect.agents.circuit_breaker import (
+    CircuitBreakerState,
+    ModelCommunicationError,
+)
 from deep_architect.agents.client import (
     TurnLimitError,
     init_run_stats,
     make_agent_options,
     run_agent_text,
-)
-from deep_architect.agents.circuit_breaker import (
-    CircuitBreakerState,
-    ModelCommunicationError,
 )
 from deep_architect.agents.critic import check_ping_pong, review_contract, run_critic
 from deep_architect.agents.generator import GeneratorRoundResult, propose_contract, run_generator
@@ -37,6 +37,7 @@ from deep_architect.io.files import (
     append_critic_history,
     append_generator_history,
     append_rollback_event,
+    generate_sprint_documentation,
     init_workspace,
     load_contract,
     load_feedback,
@@ -880,6 +881,31 @@ async def run_harness(
             f"Sprint {sprint.number} complete: {sprint.name}",
             written,
         )
+
+        # Generate and save sprint documentation
+        try:
+            # Read history files for documentation generation
+            generator_history = ""
+            critic_history = ""
+            gen_history_path = output_dir / "generator-history.md"
+            crit_history_path = output_dir / "critic-history.md"
+            if gen_history_path.exists():
+                generator_history = gen_history_path.read_text()
+            if crit_history_path.exists():
+                critic_history = crit_history_path.read_text()
+            
+            sprint_doc_path = generate_sprint_documentation(
+                output_dir=output_dir,
+                sprint_number=sprint.number,
+                sprint_name=sprint.name,
+                progress=progress,
+                sprint_status=sprint_status,
+                generator_history=generator_history,
+                critic_history=critic_history,
+            )
+            logger.info(f"[Sprint {sprint.number}] Documentation generated: {sprint_doc_path.name}")
+        except Exception as e:
+            logger.warning(f"[Sprint {sprint.number}] Failed to generate sprint documentation: {e}")
 
     # Final mutual agreement round
     gen_ready, critic_ready = await run_final_agreement(
