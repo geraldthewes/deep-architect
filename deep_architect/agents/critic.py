@@ -45,6 +45,10 @@ async def run_critic(
     round_num: int,
     *,
     cli_path: str | None = None,
+    circuit_breaker_state: CircuitBreakerState | None = None,
+    failure_threshold: int = 5,
+    base_backoff: float = 1.0,
+    max_backoff: float = 60.0,
 ) -> CriticResult:
     """Run the Critic against the current architecture files."""
     files_list = "\n".join(f"- {f}" for f in contract.files_to_produce)
@@ -83,6 +87,10 @@ async def run_critic(
             max_retries=config.max_agent_retries,
             context_window=config.context_window,
             timeout_seconds=config.agent_timeout_seconds,
+            circuit_breaker_state=circuit_breaker_state,
+            failure_threshold=failure_threshold,
+            base_backoff=base_backoff,
+            max_backoff=max_backoff,
         )
         result = CriticResult.model_validate(raw)
     except (ValueError, json.JSONDecodeError) as exc:
@@ -108,6 +116,10 @@ async def _critic_rescue(
     round_num: int,
     system_prompt: str,
     label: str,
+    circuit_breaker_state: CircuitBreakerState | None = None,
+    failure_threshold: int = 5,
+    base_backoff: float = 1.0,
+    max_backoff: float = 60.0,
 ) -> CriticResult:
     """Rescue path: read architecture files via Python I/O and make a single structured API call.
 
@@ -137,7 +149,11 @@ async def _critic_rescue(
     )
     _log.info("[%s] rescue: evaluating %d file(s) via direct API call", label, len(file_sections))
     return await run_simple_structured(
-        config, system_prompt, rescue_prompt, CriticResult, label=f"{label}-rescue"
+        config, system_prompt, rescue_prompt, CriticResult, label=f"{label}-rescue",
+        circuit_breaker_state=circuit_breaker_state,
+        failure_threshold=failure_threshold,
+        base_backoff=base_backoff,
+        max_backoff=max_backoff,
     )
 
 

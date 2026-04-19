@@ -13,6 +13,10 @@ from deep_architect.agents.client import (
     make_agent_options,
     run_agent_text,
 )
+from deep_architect.agents.circuit_breaker import (
+    CircuitBreakerState,
+    ModelCommunicationError,
+)
 from deep_architect.agents.critic import check_ping_pong, review_contract, run_critic
 from deep_architect.agents.generator import GeneratorRoundResult, propose_contract, run_generator
 from deep_architect.config import AgentConfig, HarnessConfig
@@ -344,6 +348,16 @@ async def run_harness(
     start_time = time.time()
     t = config.thresholds
 
+    # Create circuit breaker states for Generator and Critic
+    gen_circuit_state = CircuitBreakerState(
+        agent_role="Generator",
+        model=config.generator.model,
+    )
+    critic_circuit_state = CircuitBreakerState(
+        agent_role="Critic",
+        model=config.critic.model,
+    )
+
     for sprint in SPRINTS[start_sprint_idx:]:
         logger.info("=" * 60)
         logger.info(f"SPRINT {sprint.number}/{len(SPRINTS)}: {sprint.name}")
@@ -414,6 +428,10 @@ async def run_harness(
         best_result: CriticResult | None = None
         best_commit_sha: str | None = None
         last_known_gen_input_tokens: int = 0
+        
+        # Reset circuit breaker states at the start of each sprint
+        gen_circuit_state.reset()
+        critic_circuit_state.reset()
 
         # On mid-sprint resume: restore round state from checkpoint
         start_round = sprint_status.rounds_completed + 1
@@ -489,17 +507,21 @@ async def run_harness(
                     save_progress(checkpoint_dir, progress)
                     t0 = time.monotonic()
                     gen_round: GeneratorRoundResult = await run_generator(
-                        config.generator,
-                        sprint,
-                        contract,
-                        prd_content,
-                        last_result,
-                        output_dir,
-                        round_num,
-                        cli_path=cli_path,
-                        supplementary_context=supplementary_context,
-                        last_known_input_tokens=last_known_gen_input_tokens,
-                    )
+                         config.generator,
+                         sprint,
+                         contract,
+                         prd_content,
+                         last_result,
+                         output_dir,
+                         round_num,
+                         cli_path=cli_path,
+                         supplementary_context=supplementary_context,
+                         last_known_input_tokens=last_known_gen_input_tokens,
+                         circuit_breaker_state=gen_circuit_state,
+                         failure_threshold=t.model_comm_failure_threshold,
+                         base_backoff=t.model_comm_base_backoff,
+                         max_backoff=t.model_comm_max_backoff,
+                     )
                     logger.info(
                         "[Sprint %d] Generator round %d completed in %.1fs",
                         sprint.number, round_num, time.monotonic() - t0,
@@ -525,19 +547,23 @@ async def run_harness(
                     )
                     append_generator_history(
                         output_dir,
-                        sprint.number,
-                        round_num,
-                        previous_feedback=last_result,
-                        modified_files=written,
-                        input_tokens=gen_round.input_tokens,
-                    )
+                         sprint.number,
+                         round_num,
+                         previous_feedback=last_result,
+                         modified_files=written,
+                         input_tokens=gen_round.input_tokens,
+                     )
 
-                    # Critic evaluates — reads files via tool use
+                    # Critic evaluates - reads files via tool use
                     sprint_status.status = "evaluating"
                     save_progress(checkpoint_dir, progress)
                     t0 = time.monotonic()
                     result = await run_critic(
-                        config.critic, contract, output_dir, round_num, cli_path=cli_path
+                        config.critic, contract, output_dir, round_num, cli_path=cli_path,
+                        circuit_breaker_state=critic_circuit_state,
+                        failure_threshold=t.model_comm_failure_threshold,
+                        base_backoff=t.model_comm_base_backoff,
+                        max_backoff=t.model_comm_max_backoff,
                     )
                     logger.info(
                         "[Sprint %d] Critic round %d completed in %.1fs",
@@ -579,21 +605,34 @@ async def run_harness(
                     turn_limited = True
                     break  # exits inner retry loop; round_ok stays False
 
+                except ModelCommunicationError as exc:
+                      logger.critical(
+                          "Circuit breaker opened: %s\n"
+                          "Failures: %d consecutive between %s and %s\n"
+                          "Recommendation: Check network connectivity and provider status. "
+                          "Run will not continue.",
+                          exc.agent_role, exc.failures,
+                          exc.timestamps[0] if exc.timestamps else "unknown",
+                          exc.timestamps[-1] if exc.timestamps else "unknown",
+                      )
+                      progress.status = "failed"
+                      save_progress(checkpoint_dir, progress)
+                      return
                 except Exception as exc:
-                    logger.error(
-                        "[Sprint %d] Round %d attempt %d/%d FAILED: %s",
-                        sprint.number, round_num, round_attempt, t.max_round_retries + 1, exc,
-                    )
-                    if round_attempt <= t.max_round_retries:
-                        logger.info(
-                            "[Sprint %d] Retrying round %d with fresh generator session...",
-                            sprint.number, round_num,
-                        )
-                    else:
-                        logger.error(
-                            "[Sprint %d] Round %d exhausted all %d attempts",
-                            sprint.number, round_num, t.max_round_retries + 1,
-                        )
+                      logger.error(
+                          "[Sprint %d] Round %d attempt %d/%d FAILED: %s",
+                          sprint.number, round_num, round_attempt, t.max_round_retries + 1, exc,
+                      )
+                      if round_attempt <= t.max_round_retries:
+                          logger.info(
+                              "[Sprint %d] Retrying round %d with fresh generator session...",
+                              sprint.number, round_num,
+                          )
+                      else:
+                          logger.error(
+                              "[Sprint %d] Round %d exhausted all %d attempts",
+                              sprint.number, round_num, t.max_round_retries + 1,
+                          )
 
             if turn_limited:
                 stall_count += 1

@@ -38,3 +38,7 @@ max_round_retries              = 2   # Retry a generator+critic round up to N ti
 rollback_regression_threshold  = 0.05  # Roll back to best commit if score drops more than this below the best
 early_accept_score             = 9.5   # Accept sprint early if best score >= this AND stall_count >= early_accept_stalls
 early_accept_stalls            = 3     # Turn-limit events + non-improving rounds before early accept (requires best >= early_accept_score)
+# Circuit breaker for transient model failures
+model_comm_failure_threshold = 5    # Open circuit after 5 consecutive failures
+model_comm_base_backoff      = 1.0  # Start at 1s, double each retry
+model_comm_max_backoff       = 60.0 # Maximum backoff (1 minute)

@@ -33,3 +33,21 @@ Keep this managed block so `ocr init` can refresh the instructions.
 - **Git**: Tool auto-commits after each generator pass; work in a git repository
 - **Config**: Optional `~/.deep-architect.toml` for harness configuration (see `.deep-architect.toml.template`)
 - **Architecture**: Runs 7 fixed sprints with Generator (Winston) and Critic (Boris) agents in adversarial loop
+
+## Circuit Breaker Pattern
+
+The system implements a circuit breaker pattern with exponential backoff to handle transient failures in LLM provider communication:
+
+- **Purpose**: Prevents repeated failed requests during temporary outages, rate limiting, or network issues
+- **Configuration**: Adjustable via `~/.deep-architect.toml`:
+  - `model_comm_failure_threshold`: Consecutive failures before opening circuit (default: 3)
+  - `model_comm_base_backoff`: Initial backoff delay in seconds (default: 1.0)
+  - `model_comm_max_backoff`: Maximum backoff delay in seconds (default: 60.0)
+- **Behavior**:
+  - Tracks consecutive failures for Generator and Critic separately
+  - Implements exponential backoff with jitter for retry delays
+  - Opens circuit after threshold failures, preventing further attempts
+  - Automatically resets after successful requests
+  - Handles transient errors (network issues, rate limits) vs permanent errors (invalid requests)
+  - Logs detailed information when circuit breaker opens
+  - Maintains backward compatibility when circuit breaker state is not provided

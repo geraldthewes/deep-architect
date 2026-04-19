@@ -23,6 +23,11 @@ from claude_agent_sdk import (
 )
 from pydantic import BaseModel
 
+from deep_architect.agents.circuit_breaker import (
+    CircuitBreakerState,
+    ModelCommunicationError,
+    execute_with_circuit_breaker,
+)
 from deep_architect.config import AgentConfig
 from deep_architect.logger import get_logger
 
@@ -142,6 +147,10 @@ async def run_simple_structured(  # noqa: UP047
     prompt: str,
     output_type: type[_T],
     label: str = "Agent",
+    circuit_breaker_state: CircuitBreakerState | None = None,
+    failure_threshold: int = 5,
+    base_backoff: float = 1.0,
+    max_backoff: float = 60.0,
 ) -> _T:
     """Single structured-output call via direct Anthropic API (no tool use).
 
@@ -149,6 +158,9 @@ async def run_simple_structured(  # noqa: UP047
     system prompt, then extracts and validates with Pydantic.  Uses the anthropic
     SDK directly rather than pydantic-ai's tool_choice mechanism, which can fail
     on litellm proxies that don't properly honour tool_choice for all models.
+    
+    Supports circuit breaker pattern for transient failures when circuit_breaker_state
+    is provided.
     """
     api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY", "")
     base_url = os.environ.get("ANTHROPIC_BASE_URL")
@@ -165,8 +177,10 @@ async def run_simple_structured(  # noqa: UP047
 
     client = _anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url)
     last_exc: Exception | None = None
+    max_retries = 2  # 3 attempts total
 
-    for attempt in range(1, 4):
+    # Factory for the coroutine
+    async def _execute_call() -> _T:
         t0 = time.monotonic()
         response = await client.messages.create(
             model=model_id,
@@ -181,19 +195,17 @@ async def run_simple_structured(  # noqa: UP047
         try:
             result = output_type.model_validate_json(_extract_json(text))
         except Exception as exc:
-            last_exc = exc
             _log.warning(
-                "[%s] attempt %d/3 JSON parse failed (%s) — raw: %.200s",
-                label, attempt, exc, text,
+                "[%s] JSON parse failed (%s) — raw: %.200s",
+                label, exc, text,
             )
-            continue
+            raise RuntimeError(f"JSON parse failed: {exc}") from exc
 
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
-        model_id = resolve_model_id(config.model)
         _log.info(
-            "[%s] done: duration=%.1fs input=%d output=%d requests=%d model=%s",
-            label, elapsed, input_tokens, output_tokens, attempt, model_id,
+            "[%s] done: duration=%.1fs input=%d output=%d model=%s",
+            label, elapsed, input_tokens, output_tokens, model_id,
         )
 
         stats = _run_stats.get()
@@ -206,6 +218,32 @@ async def run_simple_structured(  # noqa: UP047
             ms.output_tokens += output_tokens
 
         return result
+
+    # Execute with circuit breaker if state provided
+    if circuit_breaker_state is not None:
+        return await execute_with_circuit_breaker(
+            _execute_call,
+            circuit_breaker_state,
+            max_retries,
+            failure_threshold,
+            base_backoff,
+            max_backoff,
+            label,
+        )
+    
+    # Legacy mode: no circuit breaker
+    for attempt in range(1, max_retries + 2):
+        try:
+            return await _execute_call()
+        except Exception as exc:
+            last_exc = exc
+            if attempt <= max_retries:
+                _log.warning(
+                    "[%s] attempt %d/3 failed (%s) — retrying",
+                    label, attempt, exc,
+                )
+                continue
+            break
 
     raise RuntimeError(
         f"[{label}] structured output failed after 3 attempts"
@@ -542,6 +580,10 @@ async def run_agent(
     context_window: int | None = None,
     last_known_input_tokens: int = 0,
     timeout_seconds: float | None = None,
+    circuit_breaker_state: CircuitBreakerState | None = None,
+    failure_threshold: int = 5,
+    base_backoff: float = 1.0,
+    max_backoff: float = 60.0,
 ) -> ResultMessage:
     """Run a query and return the ResultMessage.
 
@@ -561,6 +603,10 @@ async def run_agent(
     after laptop hibernation).  A busy agent producing output every few seconds
     will never be interrupted regardless of total run time.
     A timed-out attempt is retried like any other failure (with a fresh session).
+    
+    If *circuit_breaker_state* is provided, transient failures are tracked and
+    the circuit opens after *failure_threshold* consecutive failures, raising
+    ModelCommunicationError. Exponential backoff is applied between retries.
     """
     last_exc: Exception | None = None
     stderr_lines: list[str] = []
@@ -580,15 +626,78 @@ async def run_agent(
 
     options = replace(options, stderr=_buffered_stderr)
 
-    for attempt in range(1, max_retries + 2):
+    # Factory for the coroutine that executes the query
+    async def _execute_query() -> ResultMessage:
+        nonlocal options
         stderr_lines.clear()
-        try:
-            result, turn_count, tool_count, text_block_count = await _consume_query(
-                prompt, options, label, context_window, last_known_input_tokens,
-                inactivity_seconds=timeout_seconds,
-                event_buffer=last_events,
+        
+        result, turn_count, tool_count, text_block_count = await _consume_query(
+            prompt, options, label, context_window, last_known_input_tokens,
+            inactivity_seconds=timeout_seconds,
+            event_buffer=last_events,
+        )
+
+        # Turn-level summary
+        _log.info(
+            "[%s] summary: turns=%d (sdk=%d) tool_calls=%d text_blocks=%d",
+            label, turn_count, result.num_turns, tool_count, text_block_count,
+        )
+
+        # Per-call usage
+        cost = f"${result.total_cost_usd:.4f}" if result.total_cost_usd is not None else "n/a"
+        _log.info(
+            "[%s] done: duration=%.1fs cost=%s",
+            label,
+            result.duration_ms / 1000,
+            cost,
+        )
+        model_usage: dict[str, Any] = result.model_usage or {}
+        if model_usage:
+            for model_name, usage in sorted(model_usage.items()):
+                _log.info(
+                    "[%s]   model=%s input=%s output=%s cache_read=%s cache_write=%s",
+                    label,
+                    model_name,
+                    usage.get("input_tokens", "?"),
+                    usage.get("output_tokens", "?"),
+                    usage.get("cache_read_input_tokens", 0),
+                    usage.get("cache_creation_input_tokens", 0),
+                )
+        else:
+            usage = result.usage or {}
+            _log.info(
+                "[%s]   model=%s input=%s output=%s cache_read=%s cache_write=%s",
+                label,
+                options.model,
+                usage.get("input_tokens", "?"),
+                usage.get("output_tokens", "?"),
+                usage.get("cache_read_input_tokens", 0),
+                usage.get("cache_creation_input_tokens", 0),
             )
 
+        # Accumulate into run totals if a stats context is active
+        stats = _run_stats.get()
+        if stats is not None:
+            stats.accumulate(result)
+
+        return result
+
+    # Execute with circuit breaker if state provided, otherwise legacy retry
+    if circuit_breaker_state is not None:
+        return await execute_with_circuit_breaker(
+            _execute_query,
+            circuit_breaker_state,
+            max_retries,
+            failure_threshold,
+            base_backoff,
+            max_backoff,
+            label,
+        )
+    
+    # Legacy mode: no circuit breaker
+    for attempt in range(1, max_retries + 2):
+        try:
+            return await _execute_query()
         except TurnLimitError as exc:
             # Log context then re-raise immediately — retrying with a fresh
             # session won't help; the task simply needs more turns.
@@ -653,51 +762,6 @@ async def run_agent(
                 options = replace(options, resume=None)
                 continue
             raise
-
-        # Turn-level summary
-        _log.info(
-            "[%s] summary: turns=%d (sdk=%d) tool_calls=%d text_blocks=%d",
-            label, turn_count, result.num_turns, tool_count, text_block_count,
-        )
-
-        # Per-call usage
-        cost = f"${result.total_cost_usd:.4f}" if result.total_cost_usd is not None else "n/a"
-        _log.info(
-            "[%s] done: duration=%.1fs cost=%s",
-            label,
-            result.duration_ms / 1000,
-            cost,
-        )
-        model_usage: dict[str, Any] = result.model_usage or {}
-        if model_usage:
-            for model_name, usage in sorted(model_usage.items()):
-                _log.info(
-                    "[%s]   model=%s input=%s output=%s cache_read=%s cache_write=%s",
-                    label,
-                    model_name,
-                    usage.get("input_tokens", "?"),
-                    usage.get("output_tokens", "?"),
-                    usage.get("cache_read_input_tokens", 0),
-                    usage.get("cache_creation_input_tokens", 0),
-                )
-        else:
-            usage = result.usage or {}
-            _log.info(
-                "[%s]   model=%s input=%s output=%s cache_read=%s cache_write=%s",
-                label,
-                options.model,
-                usage.get("input_tokens", "?"),
-                usage.get("output_tokens", "?"),
-                usage.get("cache_read_input_tokens", 0),
-                usage.get("cache_creation_input_tokens", 0),
-            )
-
-        # Accumulate into run totals if a stats context is active
-        stats = _run_stats.get()
-        if stats is not None:
-            stats.accumulate(result)
-
-        return result
 
     # Unreachable: the loop always either returns or re-raises, but satisfies mypy.
     assert last_exc is not None

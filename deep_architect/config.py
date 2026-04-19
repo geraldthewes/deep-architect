@@ -25,6 +25,9 @@ class ThresholdConfig(BaseModel):
     rollback_regression_threshold: float = 0.05
     early_accept_score: float = 9.5   # min best-score to trigger early accept
     early_accept_stalls: int = 3       # stall rounds needed to trigger early accept
+    model_comm_failure_threshold: int = 5  # Circuit breaker opens after N consecutive failures
+    model_comm_base_backoff: float = 1.0   # Starting backoff in seconds
+    model_comm_max_backoff: float = 60.0   # Cap backoff at 60s
 
 
 def _default_generator() -> AgentConfig:
