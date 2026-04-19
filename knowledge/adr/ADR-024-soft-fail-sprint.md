@@ -4,7 +4,7 @@
 **Date:** 2026-04-12  
 **Deciders:** Project design  
 **Supersedes:** —  
-**Related:** ADR-023 (keep-best rollback), ADR-006 (exit criteria)
+**Related:** ADR-023 (keep-best rollback), ADR-006 (exit criteria), PROJ-0008 (sprint documentation generation)
 
 ---
 
@@ -35,12 +35,13 @@ On `--resume`, sprints with status `"accepted"` are skipped (same as `"passed"`)
 
 ## Consequences
 
-**Positive:**
+### Positive:
 - Runs always produce a complete set of architecture documents across all sprints, even when some sprints do not fully converge. The accepted sprint's best-scoring version is preserved in git history.
 - Combines naturally with keep-best rollback: the best-effort file state is guaranteed to be at least as good as the best round seen in the sprint.
+- Combined with sprint documentation generation (PROJ-0008), ensures clear documentation of what output was produced and why for every sprint exit path.
 - Users who need strict quality gates can opt in with `--strict`.
 
-**Negative:**
+### Negative:
 - The default no longer guarantees that all sprints meet exit criteria. The `"accepted"` status in `progress.json` makes this visible.
 - Downstream consumers of `progress.json` must handle the new `"accepted"` status value.
 
