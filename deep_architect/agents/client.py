@@ -452,11 +452,28 @@ async def _consume_query(
     gen = query(prompt=prompt, options=options).__aiter__()
     while True:
         try:
-            message = (
-                await asyncio.wait_for(gen.__anext__(), timeout=inactivity_seconds)
-                if inactivity_seconds is not None
-                else await gen.__anext__()
-            )
+            if inactivity_seconds is not None:
+                try:
+                    message = await asyncio.wait_for(
+                        gen.__anext__(), timeout=inactivity_seconds
+                    )
+                except asyncio.CancelledError:
+                    # asyncio.wait_for should convert its own timeout cancellation
+                    # to TimeoutError, but the claude-agent-sdk's query.close()
+                    # cleanup calls anyio's checkpoint_if_cancelled, which raises a
+                    # fresh CancelledError from an anyio cancel scope — a different
+                    # cancel_id that wait_for cannot recognise and uncancel.  If the
+                    # outer task is not being externally cancelled (e.g. Ctrl+C or
+                    # SIGTERM), this escape must be our own inactivity timeout.
+                    task = asyncio.current_task()
+                    if task is None or task.cancelling() == 0:
+                        raise TimeoutError(
+                            f"Inactivity timeout: no SDK message for "
+                            f"{inactivity_seconds}s (CancelledError from SDK cleanup)"
+                        ) from None
+                    raise
+            else:
+                message = await gen.__anext__()
         except StopAsyncIteration:
             break
         except TimeoutError:

@@ -207,3 +207,90 @@ def test_default_critic_timeout_is_30_minutes() -> None:
     from deep_architect.config import HarnessConfig
     cfg = HarnessConfig()
     assert cfg.critic.agent_timeout_seconds == 1800.0
+
+
+# ---------------------------------------------------------------------------
+# CancelledError from SDK cleanup converted to TimeoutError (regression tests)
+#
+# The claude-agent-sdk's query.close() cleanup acquires an anyio lock via
+# checkpoint_if_cancelled, which raises a fresh CancelledError from anyio's
+# own cancel scope.  That CancelledError has a different cancel_id than the
+# one asyncio.wait_for registered, so wait_for does NOT convert it to
+# TimeoutError — it escapes.  CancelledError is a BaseException, not
+# Exception, so neither of _consume_query's except clauses catches it.
+# The fix: explicitly catch CancelledError inside the wait_for block and
+# convert to TimeoutError when the outer task has no pending external cancels.
+# ---------------------------------------------------------------------------
+
+
+async def _hangs_then_raises_cancelled_on_cleanup(**_kwargs: object) -> AsyncIterator[object]:
+    """Generator that hangs, then raises a fresh CancelledError in cleanup.
+
+    This mimics the claude-agent-sdk's query.close() path: anyio's
+    checkpoint_if_cancelled re-raises with a new "cancel scope" message,
+    bypassing asyncio.wait_for's TimeoutError conversion.
+    """
+    try:
+        await asyncio.sleep(9999)
+        yield  # never reached
+    except asyncio.CancelledError:
+        raise asyncio.CancelledError("Cancelled by cancel scope 0xdeadbeef") from None
+
+
+async def test_sdk_cleanup_cancelled_error_is_retried() -> None:
+    """CancelledError from SDK cleanup on timeout is converted to TimeoutError, enabling retry."""
+    config = AgentConfig(model="test-model", max_turns=5)
+    opts = make_agent_options(config, "system", allowed_tools=[], cli_path=_FAKE_CLI)
+    call_count = 0
+
+    async def _bad_cleanup_then_succeed(**_kwargs: object) -> AsyncIterator[object]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            async for msg in _hangs_then_raises_cancelled_on_cleanup():
+                yield msg
+        else:
+            yield _fake_result()
+
+    with patch("deep_architect.agents.client.query", side_effect=_bad_cleanup_then_succeed):
+        result = await run_agent(
+            opts, "prompt", label="test", max_retries=1, timeout_seconds=0.01
+        )
+
+    assert call_count == 2
+    assert result.session_id == "sess-test"
+
+
+async def test_sdk_cleanup_cancelled_error_exhausted_raises_timeout_error() -> None:
+    """When all retries see cleanup CancelledError, TimeoutError (not CancelledError) is raised."""
+    config = AgentConfig(model="test-model", max_turns=5)
+    opts = make_agent_options(config, "system", allowed_tools=[], cli_path=_FAKE_CLI)
+
+    with patch(
+        "deep_architect.agents.client.query",
+        side_effect=_hangs_then_raises_cancelled_on_cleanup,
+    ):
+        with pytest.raises(TimeoutError):
+            await run_agent(
+                opts, "prompt", label="test", max_retries=1, timeout_seconds=0.01
+            )
+
+
+async def test_external_cancellation_not_misclassified_as_timeout() -> None:
+    """An external Task.cancel() must propagate CancelledError, not be swallowed as TimeoutError."""
+    config = AgentConfig(model="test-model", max_turns=5)
+    opts = make_agent_options(config, "system", allowed_tools=[], cli_path=_FAKE_CLI)
+
+    async def _run() -> object:
+        with patch("deep_architect.agents.client.query", side_effect=_hanging_query):
+            return await run_agent(
+                opts, "prompt", label="test", timeout_seconds=9999
+            )
+
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(_run())
+    # Cancel the outer task immediately — simulates SIGTERM / KeyboardInterrupt.
+    loop.call_soon(task.cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
