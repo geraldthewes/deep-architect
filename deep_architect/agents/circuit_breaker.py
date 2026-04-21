@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import anthropic
@@ -26,9 +26,9 @@ class CircuitBreakerState:
     def record_failure(self, error: Exception) -> None:
         """Record a failure and update state."""
         self.consecutive_failures += 1
-        self.failure_timestamps.append(datetime.now(timezone.utc))
+        self.failure_timestamps.append(datetime.now(UTC))
         self.last_error = error
-        self.last_attempt = datetime.now(timezone.utc)
+        self.last_attempt = datetime.now(UTC)
     
     def reset(self) -> None:
         """Reset on success."""
@@ -112,7 +112,7 @@ def calculate_backoff(
         Backoff delay in seconds
     """
     # Exponential: 1, 2, 4, 8, 16, 32, 60, 60...
-    backoff = min(base_seconds * (2 ** (attempt - 1)), max_seconds)
+    backoff = min(base_seconds * (2.0 ** (attempt - 1)), max_seconds)
     
     if jitter:
         # Add up to 10% jitter
@@ -152,7 +152,7 @@ async def execute_with_circuit_breaker(
     last_exc: Exception | None = None
     
     for attempt in range(1, max_retries + 2):
-        circuit_state.last_attempt = datetime.now(timezone.utc)
+        circuit_state.last_attempt = datetime.now(UTC)
          
         try:
             result = await coro_factory()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from deep_architect.agents.circuit_breaker import CircuitBreakerState
 from deep_architect.agents.client import (
     json_schema_format,
     make_agent_options,

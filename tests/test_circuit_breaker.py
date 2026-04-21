@@ -1,17 +1,17 @@
 import asyncio
+from unittest.mock import MagicMock
+
+import anthropic
 import pytest
-from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from anthropic import APIError
 
 from deep_architect.agents.circuit_breaker import (
     CircuitBreakerState,
     ModelCommunicationError,
-    classify_error,
     calculate_backoff,
+    classify_error,
     execute_with_circuit_breaker,
 )
-import anthropic
-from anthropic import APIError
 
 
 def test_circuit_breaker_state_initialization():
@@ -77,7 +77,7 @@ def test_classify_error_transient():
     """Test classification of transient errors."""
     # Timeout errors
     assert classify_error(TimeoutError()) == ("transient", True)
-    assert classify_error(asyncio.TimeoutError()) == ("transient", True)
+    assert classify_error(TimeoutError()) == ("transient", True)
     
     # Rate limit errors - create mock with required attributes
     rate_limit_error = MagicMock()
@@ -179,7 +179,8 @@ def test_calculate_backoff_custom_params():
     assert calculate_backoff(4, base_seconds=0.5, max_seconds=10.0, jitter=False) == 4.0
     assert calculate_backoff(5, base_seconds=0.5, max_seconds=10.0, jitter=False) == 8.0
     assert calculate_backoff(6, base_seconds=0.5, max_seconds=10.0, jitter=False) == 10.0  # Capped
-    assert calculate_backoff(7, base_seconds=0.5, max_seconds=10.0, jitter=False) == 10.0  # Still capped
+    # Still capped
+    assert calculate_backoff(7, base_seconds=0.5, max_seconds=10.0, jitter=False) == 10.0
 
 
 @pytest.mark.asyncio
@@ -221,7 +222,7 @@ async def test_execute_with_circuit_breaker_transient_then_success():
         nonlocal attempt_count
         attempt_count += 1
         if attempt_count < 3:
-            raise asyncio.TimeoutError("Timeout")
+            raise TimeoutError("Timeout")
         return "success"
     
     start_time = asyncio.get_event_loop().time()
@@ -251,7 +252,7 @@ async def test_execute_with_circuit_breaker_opens_circuit():
     state = CircuitBreakerState(agent_role="Test", model="test-model")
     
     async def always_fails():
-        raise asyncio.TimeoutError("Always fails")
+        raise TimeoutError("Always fails")
     
     with pytest.raises(ModelCommunicationError) as exc_info:
         await execute_with_circuit_breaker(
@@ -318,7 +319,7 @@ async def test_execute_with_circuit_breaker_legacy_mode():
         nonlocal attempt_count
         attempt_count += 1
         if attempt_count < 2:
-            raise asyncio.TimeoutError("Timeout")
+            raise TimeoutError("Timeout")
         return "success"
     
     # With circuit_breaker_state=None, should use legacy retry logic

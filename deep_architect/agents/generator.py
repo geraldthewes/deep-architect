@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from deep_architect.agents.circuit_breaker import CircuitBreakerState
 from deep_architect.agents.client import (
     extract_input_tokens,
     make_agent_options,
@@ -42,6 +43,10 @@ async def run_generator(
     cli_path: str | None = None,
     supplementary_context: str = "",
     last_known_input_tokens: int = 0,
+    circuit_breaker_state: CircuitBreakerState | None = None,
+    failure_threshold: int = 5,
+    base_backoff: float = 1.0,
+    max_backoff: float = 60.0,
 ) -> GeneratorRoundResult:
     """Run the Generator for one round."""
     _log.info("[Generator sprint=%d round=%d] Starting new session", sprint.number, round_num)
@@ -127,6 +132,10 @@ async def run_generator(
         context_window=config.context_window,
         last_known_input_tokens=last_known_input_tokens,
         timeout_seconds=config.agent_timeout_seconds,
+        circuit_breaker_state=circuit_breaker_state,
+        failure_threshold=failure_threshold,
+        base_backoff=base_backoff,
+        max_backoff=max_backoff,
     )
     return GeneratorRoundResult(
         session_id=result.session_id,

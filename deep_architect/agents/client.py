@@ -9,7 +9,7 @@ import shutil
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import anthropic as _anthropic
 from claude_agent_sdk import (
@@ -25,7 +25,6 @@ from pydantic import BaseModel
 
 from deep_architect.agents.circuit_breaker import (
     CircuitBreakerState,
-    ModelCommunicationError,
     execute_with_circuit_breaker,
 )
 from deep_architect.config import AgentConfig
@@ -184,7 +183,7 @@ async def run_simple_structured(  # noqa: UP047
         t0 = time.monotonic()
         response = await client.messages.create(
             model=model_id,
-            max_tokens=4096,
+            max_tokens=16384,
             system=json_system,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -221,7 +220,7 @@ async def run_simple_structured(  # noqa: UP047
 
     # Execute with circuit breaker if state provided
     if circuit_breaker_state is not None:
-        return await execute_with_circuit_breaker(
+        return cast(_T, await execute_with_circuit_breaker(
             _execute_call,
             circuit_breaker_state,
             max_retries,
@@ -229,8 +228,8 @@ async def run_simple_structured(  # noqa: UP047
             base_backoff,
             max_backoff,
             label,
-        )
-    
+        ))
+
     # Legacy mode: no circuit breaker
     for attempt in range(1, max_retries + 2):
         try:
@@ -684,7 +683,7 @@ async def run_agent(
 
     # Execute with circuit breaker if state provided, otherwise legacy retry
     if circuit_breaker_state is not None:
-        return await execute_with_circuit_breaker(
+        return cast(ResultMessage, await execute_with_circuit_breaker(
             _execute_query,
             circuit_breaker_state,
             max_retries,
@@ -692,7 +691,7 @@ async def run_agent(
             base_backoff,
             max_backoff,
             label,
-        )
+        ))
     
     # Legacy mode: no circuit breaker
     for attempt in range(1, max_retries + 2):
@@ -794,12 +793,20 @@ async def run_agent_structured(
     context_window: int | None = None,
     last_known_input_tokens: int = 0,
     timeout_seconds: float | None = None,
+    circuit_breaker_state: CircuitBreakerState | None = None,
+    failure_threshold: int = 5,
+    base_backoff: float = 1.0,
+    max_backoff: float = 60.0,
 ) -> dict[str, Any]:
     """Run a query with output_format and return parsed structured output."""
     result = await run_agent(
         options, prompt, label=label, max_retries=max_retries,
         context_window=context_window, last_known_input_tokens=last_known_input_tokens,
         timeout_seconds=timeout_seconds,
+        circuit_breaker_state=circuit_breaker_state,
+        failure_threshold=failure_threshold,
+        base_backoff=base_backoff,
+        max_backoff=max_backoff,
     )
     if result.structured_output is not None:
         output: dict[str, Any] = result.structured_output

@@ -3,13 +3,14 @@
 
 import tempfile
 from pathlib import Path
+
 from deep_architect.io.files import (
-    generate_sprint_documentation,
     _extract_agreements,
-    _extract_strengths,
     _extract_concerns,
+    _extract_strengths,
     _extract_unresolved_concerns,
     _generate_exit_notes,
+    generate_sprint_documentation,
 )
 from deep_architect.models.progress import HarnessProgress, SprintStatus
 
@@ -63,7 +64,10 @@ def test_generate_sprint_documentation():
         assert "Strengths identified during sprint execution" in content
         assert "Concerns identified during sprint execution" in content
         assert "Unresolved Critic concerns for later human evaluation" in content
-        assert "Completed via quality criteria (avg score ≥ 9.0/10, zero Critical/High for 2 consecutive rounds)" in content
+        assert (
+            "Completed via quality criteria (avg score ≥ 9.0/10, zero Critical/High"
+            " for 2 consecutive rounds)"
+        ) in content
         assert "Sprint completed via quality criteria with final score of 9.5/10" in content
         assert "Achieved 2 consecutive passing rounds" in content
 
@@ -130,7 +134,8 @@ def test_extract_concerns():
     assert "- [Critical] Database performance: 3.0/10: Too slow" in result
     assert "- [High] API design: 6.0/10: Needs improvement" in result
     assert "- [Medium] Documentation: 5.0/10: Could be better" in result
-    assert "- [Low] Naming: 2.0/10: Minor issue" not in result  # Low severity should not be included
+    # Low severity should not be included
+    assert "- [Low] Naming: 2.0/10: Minor issue" not in result
     
     # History without concerns
     critic_history = """## Some Round
@@ -157,7 +162,8 @@ def test_extract_unresolved_concerns():
     
     result = _extract_unresolved_concerns(critic_history)
     assert "- [High] API design: 6.0/10: Needs improvement - still pending" in result
-    assert "- [Critical] Database performance: 3.0/10: Too slow - resolved" not in result  # Resolved should not be included
+    # Resolved should not be included
+    assert "- [Critical] Database performance: 3.0/10: Too slow - resolved" not in result
     
     # History with no unresolved critical/high concerns
     critic_history = """## Round 1
