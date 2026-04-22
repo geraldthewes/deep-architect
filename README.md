@@ -111,8 +111,10 @@ cli_path = "/home/your-user/.local/bin/claude"
 From inside a BMAD repo that has a PRD:
 
 ```bash
-uv run adversarial-architect --prd knowledge/prd.md --output knowledge/architecture
+adversarial-architect --prd knowledge/prd.md --output knowledge/architecture
 ```
+
+> **Note:** Do not use `uv run adversarial-architect` when inside another project that has its own `pyproject.toml` — uv will try to build that project first and fail. Run the binary directly instead.
 
 That's it. The tool runs unattended. When it finishes, `knowledge/architecture/` contains your architecture.
 
@@ -133,7 +135,7 @@ That's it. The tool runs unattended. When it finishes, `knowledge/architecture/`
 ### Overriding Models Per-Run
 
 ```bash
-uv run adversarial-architect \
+adversarial-architect \
   --prd knowledge/prd.md \
   --output knowledge/architecture \
   --model-generator opus \
@@ -145,7 +147,7 @@ uv run adversarial-architect \
 Pass one or more `--context` files to inject additional material (e.g. an existing tech-stack doc, a security policy, or a prior architecture) into every generator prompt:
 
 ```bash
-uv run adversarial-architect \
+adversarial-architect \
   --prd knowledge/prd.md \
   --output knowledge/architecture \
   --context knowledge/tech-stack.md \
@@ -157,7 +159,7 @@ uv run adversarial-architect \
 By default, when a sprint exhausts its maximum rounds without fully meeting exit criteria, the harness accepts the best-effort result and moves on. Use `--strict` to halt instead:
 
 ```bash
-uv run adversarial-architect \
+adversarial-architect \
   --prd knowledge/prd.md \
   --output knowledge/architecture \
   --strict
@@ -260,7 +262,7 @@ Answering **Y** resumes seamlessly. Answering **N** prompts you to confirm a cle
 You can also pass `--resume` explicitly to skip the prompt and always resume:
 
 ```bash
-uv run adversarial-architect \
+adversarial-architect \
   --prd knowledge/prd.md \
   --output knowledge/architecture \
   --resume
@@ -273,7 +275,7 @@ Already-committed architecture files are left untouched.
 To re-run a single sprint without discarding the rest of the run, use `--reset-sprint N`:
 
 ```bash
-uv run adversarial-architect \
+adversarial-architect \
   --prd knowledge/prd.md \
   --output knowledge/architecture \
   --reset-sprint 3

@@ -35,7 +35,7 @@ def main(
     output: Path = typer.Option(..., help="Output directory for architecture files"),
     resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run"),
     config_file: Path | None = typer.Option(
-        None, "--config", help="Config file path (default: ~/.deep-researcher.toml)"
+        None, "--config", help="Config file path (default: ~/.deep-architect.toml)"
     ),
     model_generator: str | None = typer.Option(
         None, "--model-generator", help="Override generator model name"
