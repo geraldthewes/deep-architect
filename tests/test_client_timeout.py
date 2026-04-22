@@ -276,6 +276,51 @@ async def test_sdk_cleanup_cancelled_error_exhausted_raises_timeout_error() -> N
             )
 
 
+async def _double_cancel_on_cleanup(**_kwargs: object) -> AsyncIterator[object]:
+    """Generator that raises a CancelledError with anyio's cancel-scope message.
+
+    Mimics anyio.open_process teardown inside _check_claude_version: anyio
+    cancel scopes call Task.cancel("Cancelled by cancel scope <id>"), adding
+    a second cancel on top of asyncio.timeout's own cancel and leaving
+    task.cancelling() > 0 after asyncio.timeout.__aexit__ uncancels once.
+    The escaped CancelledError carries anyio's "cancel scope" message.
+    """
+    try:
+        await asyncio.sleep(9999)
+        yield  # never reached
+    except asyncio.CancelledError:
+        # Re-cancel with anyio's characteristic message format to simulate
+        # the extra cancel anyio's subprocess cleanup adds.
+        task = asyncio.current_task()
+        if task is not None:
+            task.cancel("Cancelled by cancel scope 0xdeadbeef")
+        raise asyncio.CancelledError("Cancelled by cancel scope 0xdeadbeef") from None
+
+
+async def test_double_cancel_subprocess_spawn_converted_to_timeout() -> None:
+    """CancelledError from double-cancel subprocess teardown is converted to TimeoutError."""
+    config = AgentConfig(model="test-model", max_turns=5)
+    opts = make_agent_options(config, "system", allowed_tools=[], cli_path=_FAKE_CLI)
+    call_count = 0
+
+    async def _double_then_succeed(**_kwargs: object) -> AsyncIterator[object]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            async for msg in _double_cancel_on_cleanup():
+                yield msg
+        else:
+            yield _fake_result()
+
+    with patch("deep_architect.agents.client.query", side_effect=_double_then_succeed):
+        result = await run_agent(
+            opts, "prompt", label="test", max_retries=1, timeout_seconds=0.01
+        )
+
+    assert call_count == 2
+    assert result.session_id == "sess-test"
+
+
 async def test_external_cancellation_not_misclassified_as_timeout() -> None:
     """An external Task.cancel() must propagate CancelledError, not be swallowed as TimeoutError."""
     config = AgentConfig(model="test-model", max_turns=5)

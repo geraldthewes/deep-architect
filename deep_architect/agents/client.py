@@ -457,16 +457,29 @@ async def _consume_query(
                     message = await asyncio.wait_for(
                         gen.__anext__(), timeout=inactivity_seconds
                     )
-                except asyncio.CancelledError:
+                except asyncio.CancelledError as _ce:
                     # asyncio.wait_for should convert its own timeout cancellation
-                    # to TimeoutError, but the claude-agent-sdk's query.close()
-                    # cleanup calls anyio's checkpoint_if_cancelled, which raises a
-                    # fresh CancelledError from an anyio cancel scope — a different
-                    # cancel_id that wait_for cannot recognise and uncancel.  If the
-                    # outer task is not being externally cancelled (e.g. Ctrl+C or
-                    # SIGTERM), this escape must be our own inactivity timeout.
+                    # to TimeoutError, but the claude-agent-sdk's subprocess-spawn
+                    # path (e.g. _check_claude_version → anyio.open_process) can
+                    # trigger two Task.cancel() calls during teardown, leaving
+                    # task.cancelling() > 0 even after asyncio.timeout.__aexit__
+                    # calls uncancel() once.  We distinguish genuine external
+                    # cancellation (SIGINT / task.cancel() with no message) from
+                    # anyio-internal cleanup (anyio always embeds "cancel scope"
+                    # in the cancel message) so we can convert the latter to
+                    # TimeoutError and let the retry path handle it.
                     task = asyncio.current_task()
                     if task is None or task.cancelling() == 0:
+                        raise TimeoutError(
+                            f"Inactivity timeout: no SDK message for "
+                            f"{inactivity_seconds}s (CancelledError from SDK cleanup)"
+                        ) from None
+                    _msg = _ce.args[0] if _ce.args else None
+                    if isinstance(_msg, str) and "cancel scope" in _msg:
+                        # anyio added an extra Task.cancel() during teardown;
+                        # absorb it so the retry starts with a clean cancel state.
+                        if task is not None:
+                            task.uncancel()
                         raise TimeoutError(
                             f"Inactivity timeout: no SDK message for "
                             f"{inactivity_seconds}s (CancelledError from SDK cleanup)"
