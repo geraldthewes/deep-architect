@@ -321,6 +321,53 @@ async def test_double_cancel_subprocess_spawn_converted_to_timeout() -> None:
     assert result.session_id == "sess-test"
 
 
+async def _triple_cancel_on_cleanup(**_kwargs: object) -> AsyncIterator[object]:
+    """Generator that latches TWO extra cancels during cleanup, then raises CancelledError.
+
+    Mimics the SDK subprocess transport closing 3 anyio cancel scopes in sequence:
+    stderr task group + two anyio.fail_after() wrappers around process.wait().
+    With asyncio.timeout absorbing one cancel, two remain on the task after
+    wait_for exits.  The old fix (single task.uncancel()) left one still pending,
+    which then detonated the circuit-breaker's asyncio.sleep(backoff).
+    """
+    try:
+        await asyncio.sleep(9999)
+        yield  # never reached
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None:
+            task.cancel("Cancelled by cancel scope 0xdead0001")
+            task.cancel("Cancelled by cancel scope 0xdead0002")
+        raise asyncio.CancelledError("Cancelled by cancel scope 0xdead0001") from None
+
+
+async def test_triple_cancel_subprocess_teardown_converted_to_timeout() -> None:
+    """CancelledError from triple-cancel SDK teardown is converted to TimeoutError on retry."""
+    config = AgentConfig(model="test-model", max_turns=5)
+    opts = make_agent_options(config, "system", allowed_tools=[], cli_path=_FAKE_CLI)
+    call_count = 0
+
+    async def _triple_then_succeed(**_kwargs: object) -> AsyncIterator[object]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            async for msg in _triple_cancel_on_cleanup():
+                yield msg
+        else:
+            yield _fake_result()
+
+    with patch("deep_architect.agents.client.query", side_effect=_triple_then_succeed):
+        result = await run_agent(
+            opts, "prompt", label="test", max_retries=1, timeout_seconds=0.01
+        )
+
+    assert call_count == 2
+    assert result.session_id == "sess-test"
+    task = asyncio.current_task()
+    if task is not None:
+        assert task.cancelling() == 0
+
+
 async def test_external_cancellation_not_misclassified_as_timeout() -> None:
     """An external Task.cancel() must propagate CancelledError, not be swallowed as TimeoutError."""
     config = AgentConfig(model="test-model", max_turns=5)

@@ -476,10 +476,12 @@ async def _consume_query(
                         ) from None
                     _msg = _ce.args[0] if _ce.args else None
                     if isinstance(_msg, str) and "cancel scope" in _msg:
-                        # anyio added an extra Task.cancel() during teardown;
-                        # absorb it so the retry starts with a clean cancel state.
+                        # Drain ALL pending anyio cancel-scope cancels, not just one.
+                        # SDK teardown (stderr task group + fail_after x2) can latch 2+
+                        # Task.cancel() calls; absorb them all so the retry starts clean.
                         if task is not None:
-                            task.uncancel()
+                            while task.cancelling() > 0:
+                                task.uncancel()
                         raise TimeoutError(
                             f"Inactivity timeout: no SDK message for "
                             f"{inactivity_seconds}s (CancelledError from SDK cleanup)"

@@ -203,6 +203,12 @@ async def execute_with_circuit_breaker(
                 backoff,
             )
              
+            # Defense-in-depth: drain any anyio cancel-scope cancels that leaked
+            # from the previous attempt so they don't detonate this sleep.
+            _task = asyncio.current_task()
+            if _task is not None:
+                while _task.cancelling() > 0:
+                    _task.uncancel()
             await asyncio.sleep(backoff)
      
     # Should be unreachable (either returns or raises), but satisfy type checker

@@ -310,6 +310,44 @@ async def test_execute_with_circuit_breaker_permanent_error_no_retry():
 
 
 @pytest.mark.asyncio
+async def test_circuit_breaker_drains_stale_cancel_before_backoff_sleep() -> None:
+    """Stale anyio cancel latched during teardown must not detonate the backoff sleep.
+
+    Regression for the failure where coro_factory raised TimeoutError but left a
+    pending Task.cancel() (from anyio cleanup) on the task.  The backoff sleep
+    then immediately raised CancelledError, bypassing the retry loop.
+    """
+    state = CircuitBreakerState(agent_role="Test", model="test-model")
+    attempt_count = 0
+
+    async def cancel_then_timeout() -> str:
+        nonlocal attempt_count
+        attempt_count += 1
+        if attempt_count == 1:
+            task = asyncio.current_task()
+            if task is not None:
+                task.cancel("Cancelled by cancel scope 0xdeadbeef")
+            raise TimeoutError("Simulated inactivity timeout with stale cancel")
+        return "success"
+
+    result = await execute_with_circuit_breaker(
+        cancel_then_timeout,
+        state,
+        max_retries=3,
+        failure_threshold=5,
+        base_backoff=0.001,
+        max_backoff=0.01,
+        label="Test",
+    )
+
+    assert result == "success"
+    assert attempt_count == 2
+    task = asyncio.current_task()
+    if task is not None:
+        assert task.cancelling() == 0
+
+
+@pytest.mark.asyncio
 async def test_execute_with_circuit_breaker_legacy_mode():
     """Test that None circuit breaker state uses legacy retry behavior."""
     # This test ensures backward compatibility when no circuit breaker state is provided
