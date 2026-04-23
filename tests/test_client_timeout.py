@@ -386,3 +386,113 @@ async def test_external_cancellation_not_misclassified_as_timeout() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# ---------------------------------------------------------------------------
+# Generator aclose regression: Task-46 async_generator_athrow
+#
+# When _consume_query abandons the SDK async generator on timeout, CPython's
+# GC schedules async_generator_athrow on a background task. That finaliser
+# runs inside anyio's cancel scope and calls Task.cancel("cancel scope ...")
+# on the current task — which may be sleeping in the circuit-breaker backoff.
+# The fix: _consume_query now closes the generator in a try/finally, so no
+# orphaned generator is ever left for GC to finalize.
+# ---------------------------------------------------------------------------
+
+
+async def test_gen_aclose_cancel_does_not_escape_to_circuit_breaker_sleep() -> None:
+    """CancelledError from gen.aclose() during cleanup must not escape to the caller.
+
+    Regression: without the try/finally aclose in _consume_query, the GC-scheduled
+    async_generator_athrow for the abandoned generator fires during the circuit-breaker
+    backoff sleep and kills the CLI with an unhandled CancelledError.
+    """
+    config = AgentConfig(model="test-model", max_turns=5)
+    opts = make_agent_options(config, "system", allowed_tools=[], cli_path=_FAKE_CLI)
+    call_count = 0
+
+    class _BadGen:
+        """Hangs on __anext__, then fires a cancel-scope cancel in aclose."""
+        def __init__(self) -> None:
+            self._caller_task: asyncio.Task[object] | None = None
+
+        def __aiter__(self) -> _BadGen:
+            return self
+
+        async def __anext__(self) -> object:
+            self._caller_task = asyncio.current_task()
+            await asyncio.sleep(9999)
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            if self._caller_task is not None:
+                self._caller_task.cancel("Cancelled by cancel scope 0xTask46")
+            raise asyncio.CancelledError("Cancelled by cancel scope 0xTask46")
+
+    class _GoodGen:
+        """Immediately yields a ResultMessage, then is done."""
+        def __init__(self) -> None:
+            self._done = False
+
+        def __aiter__(self) -> _GoodGen:
+            return self
+
+        async def __anext__(self) -> object:
+            if not self._done:
+                self._done = True
+                return _fake_result()
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            pass
+
+    def _side_effect(**_kwargs: object) -> object:
+        nonlocal call_count
+        call_count += 1
+        return _BadGen() if call_count == 1 else _GoodGen()
+
+    with patch("deep_architect.agents.client.query", side_effect=_side_effect):
+        result = await run_agent(
+            opts, "prompt", label="test", max_retries=1, timeout_seconds=0.01
+        )
+
+    assert call_count == 2
+    assert result.session_id == "sess-test"
+    task = asyncio.current_task()
+    if task is not None:
+        assert task.cancelling() == 0
+
+
+async def test_gen_aclose_called_on_success_path() -> None:
+    """gen.aclose() must be called even when the query succeeds.
+
+    The SDK's query() generator does not necessarily terminate after yielding
+    ResultMessage. Without the finally-based aclose, the generator would be
+    abandoned after a successful run and could fire a GC cancel later.
+    """
+    aclose_called = False
+
+    class _SuccessGen:
+        def __init__(self) -> None:
+            self._done = False
+
+        def __aiter__(self) -> _SuccessGen:
+            return self
+
+        async def __anext__(self) -> object:
+            if not self._done:
+                self._done = True
+                return _fake_result()
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            nonlocal aclose_called
+            aclose_called = True
+
+    config = AgentConfig(model="test-model", max_turns=5)
+    opts = make_agent_options(config, "system", allowed_tools=[], cli_path=_FAKE_CLI)
+
+    with patch("deep_architect.agents.client.query", return_value=_SuccessGen()):
+        await run_agent(opts, "prompt", label="test")
+
+    assert aclose_called, "gen.aclose() must be called on the success path"

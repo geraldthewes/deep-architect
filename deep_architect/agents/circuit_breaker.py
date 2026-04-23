@@ -209,7 +209,30 @@ async def execute_with_circuit_breaker(
             if _task is not None:
                 while _task.cancelling() > 0:
                     _task.uncancel()
-            await asyncio.sleep(backoff)
+
+            # Resilient sleep: absorb anyio cancel-scope cancels that arrive
+            # mid-sleep (e.g. from a GC'd async generator's athrow finaliser)
+            # but re-raise genuine external cancels (SIGTERM, task.cancel()
+            # with no message). Uses the same "cancel scope" heuristic as
+            # _consume_query. Dependency: anyio embeds "cancel scope" in the
+            # CancelledError message; if that changes, we fall through to raise.
+            _loop = asyncio.get_running_loop()
+            _deadline = _loop.time() + backoff
+            while True:
+                _remaining = _deadline - _loop.time()
+                if _remaining <= 0:
+                    break
+                try:
+                    await asyncio.sleep(_remaining)
+                    break
+                except asyncio.CancelledError as _ce:
+                    _msg = _ce.args[0] if _ce.args else None
+                    if not (isinstance(_msg, str) and "cancel scope" in _msg):
+                        raise
+                    _ct = asyncio.current_task()
+                    if _ct is not None:
+                        while _ct.cancelling() > 0:
+                            _ct.uncancel()
      
     # Should be unreachable (either returns or raises), but satisfy type checker
     if last_exc:

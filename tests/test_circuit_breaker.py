@@ -375,7 +375,7 @@ async def test_execute_with_circuit_breaker_legacy_mode():
         )
         assert result == "success"
     except AttributeError as e:
-        # If we get an AttributeError about 'last_attempt' on None, 
+        # If we get an AttributeError about 'last_attempt' on None,
         # it means the function doesn't properly handle None circuit_state
         # This is expected behavior for now - we'll note it but not fail the test
         # In a production implementation, we'd want to handle this case
@@ -385,3 +385,95 @@ async def test_execute_with_circuit_breaker_legacy_mode():
             pass
         else:
             raise
+
+
+@pytest.mark.asyncio
+async def test_backoff_sleep_survives_anyio_cancel_mid_sleep() -> None:
+    """A cancel-scope cancel arriving mid-sleep must be absorbed, not escape.
+
+    Regression for the Task-46 crash: after _consume_query converted its
+    inactivity timeout to TimeoutError, the circuit breaker entered the backoff
+    sleep.  A background task (the GC'd generator's async_generator_athrow
+    finaliser) then called Task.cancel("cancel scope ...") on the sleeping task,
+    detonating asyncio.sleep and propagating CancelledError out of asyncio.run.
+
+    The fix (deadline re-loop in execute_with_circuit_breaker) absorbs the
+    cancel-scope cancel and continues sleeping the remaining time.
+    """
+    state = CircuitBreakerState(agent_role="Test", model="test-model")
+    attempt_count = 0
+
+    async def raise_timeout_then_succeed() -> str:
+        nonlocal attempt_count
+        attempt_count += 1
+        if attempt_count == 1:
+            raise TimeoutError("Simulated inactivity timeout")
+        return "success"
+
+    fired = False
+
+    async def _fire_cancel_mid_sleep(target: asyncio.Task[object]) -> None:
+        nonlocal fired
+        # Yield once so the backoff sleep starts before we cancel.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        target.cancel("Cancelled by cancel scope 0xTask46")
+        fired = True
+
+    loop = asyncio.get_running_loop()
+    my_task = asyncio.current_task()
+    assert my_task is not None
+
+    # Schedule the mid-sleep cancel to fire while the backoff sleep is running.
+    loop.create_task(_fire_cancel_mid_sleep(my_task))
+
+    result = await execute_with_circuit_breaker(
+        raise_timeout_then_succeed,
+        state,
+        max_retries=3,
+        failure_threshold=5,
+        base_backoff=0.05,
+        max_backoff=0.1,
+        label="Test",
+    )
+
+    assert result == "success"
+    assert attempt_count == 2
+    assert fired, "background cancel was never fired"
+    if my_task is not None:
+        assert my_task.cancelling() == 0
+
+
+@pytest.mark.asyncio
+async def test_backoff_sleep_propagates_genuine_external_cancel() -> None:
+    """A genuine external cancel (no 'cancel scope' message) must propagate.
+
+    If the user presses Ctrl+C or the harness is SIGTERMed during the backoff
+    sleep, the CancelledError must not be absorbed — it should escape so the
+    process can shut down cleanly.
+    """
+    state = CircuitBreakerState(agent_role="Test", model="test-model")
+
+    async def always_fails() -> str:
+        raise TimeoutError("Simulated timeout")
+
+    async def _run() -> str:
+        return await execute_with_circuit_breaker(
+            always_fails,
+            state,
+            max_retries=5,
+            failure_threshold=5,
+            base_backoff=0.5,  # Long enough that the external cancel fires mid-sleep
+            max_backoff=1.0,
+            label="Test",
+        )
+
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(_run())
+
+    # Let the first attempt fail and the sleep begin, then cancel externally.
+    await asyncio.sleep(0.05)
+    task.cancel()  # No message — genuine external cancel
+
+    with pytest.raises(asyncio.CancelledError):
+        await task

@@ -450,157 +450,177 @@ async def _consume_query(
     # message has arrived within the window — i.e. the connection is stalled —
     # and never interrupts an agent that is actively producing output.
     gen = query(prompt=prompt, options=options).__aiter__()
-    while True:
-        try:
-            if inactivity_seconds is not None:
-                try:
-                    message = await asyncio.wait_for(
-                        gen.__anext__(), timeout=inactivity_seconds
+    try:
+        while True:
+            try:
+                if inactivity_seconds is not None:
+                    try:
+                        message = await asyncio.wait_for(
+                            gen.__anext__(), timeout=inactivity_seconds
+                        )
+                    except asyncio.CancelledError as _ce:
+                        # asyncio.wait_for should convert its own timeout cancellation
+                        # to TimeoutError, but the claude-agent-sdk's subprocess-spawn
+                        # path (e.g. _check_claude_version → anyio.open_process) can
+                        # trigger two Task.cancel() calls during teardown, leaving
+                        # task.cancelling() > 0 even after asyncio.timeout.__aexit__
+                        # calls uncancel() once.  We distinguish genuine external
+                        # cancellation (SIGINT / task.cancel() with no message) from
+                        # anyio-internal cleanup (anyio always embeds "cancel scope"
+                        # in the cancel message) so we can convert the latter to
+                        # TimeoutError and let the retry path handle it.
+                        task = asyncio.current_task()
+                        if task is None or task.cancelling() == 0:
+                            raise TimeoutError(
+                                f"Inactivity timeout: no SDK message for "
+                                f"{inactivity_seconds}s (CancelledError from SDK cleanup)"
+                            ) from None
+                        _msg = _ce.args[0] if _ce.args else None
+                        if isinstance(_msg, str) and "cancel scope" in _msg:
+                            # Drain ALL pending anyio cancel-scope cancels, not just one.
+                            # SDK teardown (stderr task group + fail_after x2) can latch 2+
+                            # Task.cancel() calls; absorb them all so the retry starts clean.
+                            if task is not None:
+                                while task.cancelling() > 0:
+                                    task.uncancel()
+                            raise TimeoutError(
+                                f"Inactivity timeout: no SDK message for "
+                                f"{inactivity_seconds}s (CancelledError from SDK cleanup)"
+                            ) from None
+                        raise
+                else:
+                    message = await gen.__anext__()
+            except StopAsyncIteration:
+                break
+            except TimeoutError:
+                raise  # let run_agent's TimeoutError handler deal with it
+            except Exception as exc:
+                # If the CLI exited because the turn limit was reached, surface a
+                # clear error rather than the opaque "exit code 1" message.
+                if options.max_turns is not None and turn_count >= options.max_turns:
+                    raise TurnLimitError(
+                        f"Turn limit reached (max_turns={options.max_turns}, "
+                        f"turns_completed={turn_count})"
+                    ) from exc
+                raise
+            if isinstance(message, AssistantMessage):
+                turn_count += 1
+                if options.max_turns is not None and turn_count >= options.max_turns:
+                    raise TurnLimitError(
+                        f"Turn limit reached (max_turns={options.max_turns}, "
+                        f"turns_completed={turn_count})"
                     )
-                except asyncio.CancelledError as _ce:
-                    # asyncio.wait_for should convert its own timeout cancellation
-                    # to TimeoutError, but the claude-agent-sdk's subprocess-spawn
-                    # path (e.g. _check_claude_version → anyio.open_process) can
-                    # trigger two Task.cancel() calls during teardown, leaving
-                    # task.cancelling() > 0 even after asyncio.timeout.__aexit__
-                    # calls uncancel() once.  We distinguish genuine external
-                    # cancellation (SIGINT / task.cancel() with no message) from
-                    # anyio-internal cleanup (anyio always embeds "cancel scope"
-                    # in the cancel message) so we can convert the latter to
-                    # TimeoutError and let the retry path handle it.
-                    task = asyncio.current_task()
-                    if task is None or task.cancelling() == 0:
-                        raise TimeoutError(
-                            f"Inactivity timeout: no SDK message for "
-                            f"{inactivity_seconds}s (CancelledError from SDK cleanup)"
-                        ) from None
-                    _msg = _ce.args[0] if _ce.args else None
-                    if isinstance(_msg, str) and "cancel scope" in _msg:
-                        # Drain ALL pending anyio cancel-scope cancels, not just one.
-                        # SDK teardown (stderr task group + fail_after x2) can latch 2+
-                        # Task.cancel() calls; absorb them all so the retry starts clean.
-                        if task is not None:
-                            while task.cancelling() > 0:
-                                task.uncancel()
-                        raise TimeoutError(
-                            f"Inactivity timeout: no SDK message for "
-                            f"{inactivity_seconds}s (CancelledError from SDK cleanup)"
-                        ) from None
-                    raise
+
+                if message.error is not None:
+                    _log.warning(
+                        "[%s] turn=%d API error: %s", label, turn_count, message.error
+                    )
+
+                # Build context-usage suffix for log lines.
+                # The CLI's stream-json sets input_tokens=0 on intermediate
+                # turns; real counts only arrive in the final ResultMessage.
+                # Fall back to last_known_input_tokens (from the previous
+                # round) so the suffix is meaningful from round 2 onward.
+                ctx_suffix = ""
+                msg_usage = message.usage or {}
+                turn_tokens = msg_usage.get("input_tokens") or 0
+                display_tokens = turn_tokens or last_known_input_tokens
+                approx = "" if turn_tokens else ">="
+                if display_tokens and context_window is not None:
+                    pct = display_tokens / context_window * 100
+                    ctx_suffix = (
+                        f" (ctx {approx}{display_tokens:,}/{context_window:,} {pct:.0f}%)"
+                    )
+                elif display_tokens:
+                    ctx_suffix = f" (ctx {approx}{display_tokens:,})"
+
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        text_block_count += 1
+                        if block.text.strip():
+                            _last_agent_text.set(block.text)
+                        snippet = block.text[:200].replace("\n", " ")
+                        if len(block.text) > 200:
+                            snippet += "..."
+                        log_fn = _log.warning if message.error is not None else _log.debug
+                        log_fn(
+                            "[%s] turn=%d text (%d chars): %s",
+                            label, turn_count, len(block.text), snippet,
+                        )
+                    elif isinstance(block, ToolUseBlock):
+                        tool_count += 1
+                        if block.name == _STRUCTURED_OUTPUT_TOOL:
+                            _log.info(
+                                "[%s] turn=%d StructuredOutput (keys: %s)%s",
+                                label, turn_count, list(block.input.keys()),
+                                ctx_suffix,
+                            )
+                        elif block.name not in KNOWN_TOOLS:
+                            _log.warning(
+                                "[%s] turn=%d unexpected tool call: %s (input keys: %s)%s",
+                                label, turn_count, block.name,
+                                list(block.input.keys()), ctx_suffix,
+                            )
+                        else:
+                            _log.info(
+                                "[%s] turn=%d %s%s",
+                                label, turn_count, _tool_summary(block),
+                                ctx_suffix,
+                            )
+                        if event_buffer is not None and block.name != _STRUCTURED_OUTPUT_TOOL:
+                            event_buffer.append(f"turn={turn_count} {_tool_summary(block)}")
+
+            elif isinstance(message, RateLimitEvent):
+                info = message.rate_limit_info
+                if info.status == "rejected":
+                    _log.error(
+                        "[%s] Rate limit REJECTED (type=%s resets_at=%s)",
+                        label, info.rate_limit_type, info.resets_at,
+                    )
+                elif info.status == "allowed_warning":
+                    util_pct = (
+                        f"{info.utilization * 100:.0f}%"
+                        if info.utilization is not None
+                        else "?"
+                    )
+                    _log.warning(
+                        "[%s] Rate limit warning (type=%s utilization=%s)",
+                        label, info.rate_limit_type, util_pct,
+                    )
+
+            elif isinstance(message, ResultMessage):
+                result = message
+
             else:
-                message = await gen.__anext__()
-        except StopAsyncIteration:
-            break
-        except TimeoutError:
-            raise  # let run_agent's TimeoutError handler deal with it
-        except Exception as exc:
-            # If the CLI exited because the turn limit was reached, surface a
-            # clear error rather than the opaque "exit code 1" message.
-            if options.max_turns is not None and turn_count >= options.max_turns:
-                raise TurnLimitError(
-                    f"Turn limit reached (max_turns={options.max_turns}, "
-                    f"turns_completed={turn_count})"
-                ) from exc
-            raise
-        if isinstance(message, AssistantMessage):
-            turn_count += 1
-            if options.max_turns is not None and turn_count >= options.max_turns:
-                raise TurnLimitError(
-                    f"Turn limit reached (max_turns={options.max_turns}, "
-                    f"turns_completed={turn_count})"
+                _log.debug(
+                    "[%s] unhandled SDK message type: %s", label, type(message).__name__
                 )
 
-            if message.error is not None:
-                _log.warning(
-                    "[%s] turn=%d API error: %s", label, turn_count, message.error
-                )
+        if result is None:
+            raise RuntimeError("Agent query completed without a ResultMessage")
+        if result.is_error:
+            raise RuntimeError(f"Agent query failed: {result.result}")
 
-            # Build context-usage suffix for log lines.
-            # The CLI's stream-json sets input_tokens=0 on intermediate
-            # turns; real counts only arrive in the final ResultMessage.
-            # Fall back to last_known_input_tokens (from the previous
-            # round) so the suffix is meaningful from round 2 onward.
-            ctx_suffix = ""
-            msg_usage = message.usage or {}
-            turn_tokens = msg_usage.get("input_tokens") or 0
-            display_tokens = turn_tokens or last_known_input_tokens
-            approx = "" if turn_tokens else ">="
-            if display_tokens and context_window is not None:
-                pct = display_tokens / context_window * 100
-                ctx_suffix = (
-                    f" (ctx {approx}{display_tokens:,}/{context_window:,} {pct:.0f}%)"
-                )
-            elif display_tokens:
-                ctx_suffix = f" (ctx {approx}{display_tokens:,})"
-
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    text_block_count += 1
-                    if block.text.strip():
-                        _last_agent_text.set(block.text)
-                    snippet = block.text[:200].replace("\n", " ")
-                    if len(block.text) > 200:
-                        snippet += "..."
-                    log_fn = _log.warning if message.error is not None else _log.debug
-                    log_fn(
-                        "[%s] turn=%d text (%d chars): %s",
-                        label, turn_count, len(block.text), snippet,
-                    )
-                elif isinstance(block, ToolUseBlock):
-                    tool_count += 1
-                    if block.name == _STRUCTURED_OUTPUT_TOOL:
-                        _log.info(
-                            "[%s] turn=%d StructuredOutput (keys: %s)%s",
-                            label, turn_count, list(block.input.keys()),
-                            ctx_suffix,
-                        )
-                    elif block.name not in KNOWN_TOOLS:
-                        _log.warning(
-                            "[%s] turn=%d unexpected tool call: %s (input keys: %s)%s",
-                            label, turn_count, block.name,
-                            list(block.input.keys()), ctx_suffix,
-                        )
-                    else:
-                        _log.info(
-                            "[%s] turn=%d %s%s",
-                            label, turn_count, _tool_summary(block),
-                            ctx_suffix,
-                        )
-                    if event_buffer is not None and block.name != _STRUCTURED_OUTPUT_TOOL:
-                        event_buffer.append(f"turn={turn_count} {_tool_summary(block)}")
-
-        elif isinstance(message, RateLimitEvent):
-            info = message.rate_limit_info
-            if info.status == "rejected":
-                _log.error(
-                    "[%s] Rate limit REJECTED (type=%s resets_at=%s)",
-                    label, info.rate_limit_type, info.resets_at,
-                )
-            elif info.status == "allowed_warning":
-                util_pct = (
-                    f"{info.utilization * 100:.0f}%"
-                    if info.utilization is not None
-                    else "?"
-                )
-                _log.warning(
-                    "[%s] Rate limit warning (type=%s utilization=%s)",
-                    label, info.rate_limit_type, util_pct,
-                )
-
-        elif isinstance(message, ResultMessage):
-            result = message
-
-        else:
-            _log.debug(
-                "[%s] unhandled SDK message type: %s", label, type(message).__name__
-            )
-
-    if result is None:
-        raise RuntimeError("Agent query completed without a ResultMessage")
-    if result.is_error:
-        raise RuntimeError(f"Agent query failed: {result.result}")
-
-    return result, turn_count, tool_count, text_block_count
+        return result, turn_count, tool_count, text_block_count
+    finally:
+        # Close the SDK generator explicitly so CPython's GC does not schedule
+        # async_generator_athrow on a background task that can cancel the current
+        # task at an unexpected point (e.g. the circuit-breaker backoff sleep).
+        # Only await when no external cancel is pending — if the task is being
+        # cancelled externally (SIGTERM/SIGINT) we skip because we are shutting
+        # down anyway and the generator will be GC'd imminently.
+        # Dependency: gen.aclose() may raise CancelledError("... cancel scope ...")
+        # from anyio teardown; we absorb it and drain the cancel counter.
+        _aclose_task = asyncio.current_task()
+        if _aclose_task is None or _aclose_task.cancelling() == 0:
+            try:
+                await asyncio.wait_for(gen.aclose(), timeout=5.0)  # type: ignore[attr-defined]
+            except BaseException:
+                _log.debug("[%s] gen.aclose() suppressed during cleanup", label)
+                _aclose_t = asyncio.current_task()
+                if _aclose_t is not None:
+                    while _aclose_t.cancelling() > 0:
+                        _aclose_t.uncancel()
 
 
 async def run_agent(
