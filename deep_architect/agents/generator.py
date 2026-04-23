@@ -35,11 +35,12 @@ async def run_generator(
     config: AgentConfig,
     sprint: SprintDefinition,
     contract: SprintContract,
-    prd_content: str,
+    prd_content: str | None,
     previous_feedback: CriticResult | None,
     output_dir: Path,
     round_num: int,
     *,
+    codebase_path: str | None = None,
     cli_path: str | None = None,
     supplementary_context: str = "",
     last_known_input_tokens: int = 0,
@@ -97,10 +98,20 @@ async def run_generator(
             f"or filename. Do NOT write to this file.\n"
         )
 
+    if prd_content is not None:
+        source_section = f"## PRD\n{prd_content}\n\n"
+    else:
+        source_section = (
+            f"## Target Codebase\n{codebase_path}\n\n"
+            "Use Read, Glob, Grep, and Bash to survey the repository. "
+            "Read key files (e.g. README, package manifests, entry points, IaC configs) "
+            "to understand the system before producing architecture docs.\n\n"
+        )
+
     prompt = (
-        f"## PRD\n{prd_content}\n\n"
-        f"{context_section}"
-        f"## Sprint Contract\n{contract.model_dump_json(indent=2)}\n\n"
+        source_section
+        + f"{context_section}"
+        + f"## Sprint Contract\n{contract.model_dump_json(indent=2)}\n\n"
         f"## Working Directory\n{output_dir}\n\n"
         f"## Files to Produce\n"
         + "\n".join(f"- {f}" for f in contract.files_to_produce)
@@ -146,20 +157,31 @@ async def run_generator(
 async def propose_contract(
     config: AgentConfig,
     sprint: SprintDefinition,
-    prd_content: str,
+    prd_content: str | None,
     *,
+    codebase_path: str | None = None,
     cli_path: str | None = None,  # unused; kept for API compatibility
     supplementary_context: str = "",
 ) -> SprintContract:
     """Generator proposes a sprint contract via pydantic-ai (no agentic loop)."""
-    prompt = load_prompt(
-        "contract_proposal",
-        prd=prd_content,
-        sprint_number=str(sprint.number),
-        sprint_name=sprint.name,
-        sprint_description=sprint.description,
-        primary_files=str(sprint.primary_files),
-    )
+    if prd_content is not None:
+        prompt = load_prompt(
+            "contract_proposal",
+            prd=prd_content,
+            sprint_number=str(sprint.number),
+            sprint_name=sprint.name,
+            sprint_description=sprint.description,
+            primary_files=str(sprint.primary_files),
+        )
+    else:
+        prompt = load_prompt(
+            "contract_proposal_re",
+            codebase_path=codebase_path or "",
+            sprint_number=str(sprint.number),
+            sprint_name=sprint.name,
+            sprint_description=sprint.description,
+            primary_files=str(sprint.primary_files),
+        )
     if supplementary_context:
         prompt += f"\n\n## Supplementary Context\n{supplementary_context}\n"
     system_prompt = load_prompt("contract_system")

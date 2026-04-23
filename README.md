@@ -108,11 +108,23 @@ cli_path = "/home/your-user/.local/bin/claude"
 
 ## Running
 
-From inside a BMAD repo that has a PRD:
+**Greenfield mode** — from inside a BMAD repo that has a PRD:
 
 ```bash
 adversarial-architect --prd knowledge/prd.md --output knowledge/architecture
 ```
+
+**Reverse-engineer mode** — from an existing git repository (no PRD needed):
+
+```bash
+# Output defaults to <repo>/knowledge/architecture/
+adversarial-architect --codebase /path/to/existing-repo
+
+# Explicit output override
+adversarial-architect --codebase /path/to/existing-repo --output /custom/output/dir
+```
+
+> **Note:** `--prd` and `--codebase` are mutually exclusive. Both modes require the output directory to be inside a git repository (used for commit tracking).
 
 > **Note:** Do not use `uv run adversarial-architect` when inside another project that has its own `pyproject.toml` — uv will try to build that project first and fail. Run the binary directly instead.
 
@@ -122,8 +134,9 @@ That's it. The tool runs unattended. When it finishes, `knowledge/architecture/`
 
 | Flag | Description |
 |------|-------------|
-| `--prd PATH` | Path to the PRD Markdown file **(required)** |
-| `--output PATH` | Output directory for architecture files **(required)** |
+| `--prd PATH` | Path to the PRD Markdown file (greenfield mode) |
+| `--codebase PATH` | Path to the git repository to analyze (reverse-engineer mode) |
+| `--output PATH` | Output directory (default: `<codebase>/knowledge/architecture/` in RE mode) |
 | `--resume` | Resume an interrupted run from the last completed sprint |
 | `--config PATH` | Config file path (default: `~/.deep-architect.toml`) |
 | `--model-generator TEXT` | Override the generator model alias for this run |

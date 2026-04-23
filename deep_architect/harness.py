@@ -80,9 +80,10 @@ async def negotiate_contract(
     generator_config: AgentConfig,
     critic_config: AgentConfig,
     sprint: SprintDefinition,
-    prd_content: str,
+    prd_content: str | None,
     output_dir: Path,
     *,
+    codebase_path: str | None = None,
     cli_path: str | None = None,
     supplementary_context: str = "",
 ) -> SprintContract:
@@ -96,6 +97,7 @@ async def negotiate_contract(
     logger.info(f"[Sprint {sprint.number}] Generator proposing contract...")
     contract = await propose_contract(
         generator_config, sprint, prd_content,
+        codebase_path=codebase_path,
         cli_path=cli_path, supplementary_context=supplementary_context,
     )
     save_contract(output_dir, contract)
@@ -158,6 +160,7 @@ async def run_final_agreement(
     critic_config: AgentConfig,
     output_dir: Path,
     *,
+    codebase_path: str | None = None,
     cli_path: str | None = None,
 ) -> tuple[bool, bool]:
     """Both agents must independently output READY_TO_SHIP.
@@ -167,7 +170,8 @@ async def run_final_agreement(
     """
     logger.info("Running final mutual agreement round...")
 
-    final_prompt = load_prompt("final_agreement", output_dir=str(output_dir))
+    prompt_name = "final_agreement_re" if codebase_path is not None else "final_agreement"
+    final_prompt = load_prompt(prompt_name, output_dir=str(output_dir))
 
     gen_options = make_agent_options(
         generator_config,
@@ -265,11 +269,12 @@ def _log_resume_scores(progress: HarnessProgress) -> None:
 
 
 async def run_harness(
-    prd: Path,
+    prd: Path | None,
     output_dir: Path,
     resume: bool,
     config: HarnessConfig,
     context_files: list[Path] | None = None,
+    codebase: Path | None = None,
     *,
     strict: bool = False,
 ) -> None:
@@ -318,7 +323,8 @@ async def run_harness(
             )
 
     init_workspace(output_dir)
-    prd_content = prd.read_text()
+    prd_content: str | None = prd.read_text() if prd is not None else None
+    codebase_path: str | None = str(codebase.resolve()) if codebase is not None else None
     supplementary_context = _build_supplementary_context(context_files)
     if supplementary_context:
         logger.info(
@@ -403,6 +409,7 @@ async def run_harness(
                 )
                 contract = await negotiate_contract(
                     config.generator, config.critic, sprint, prd_content, output_dir,
+                    codebase_path=codebase_path,
                     cli_path=cli_path, supplementary_context=supplementary_context,
                 )
                 logger.info(
@@ -515,6 +522,7 @@ async def run_harness(
                          last_result,
                          output_dir,
                          round_num,
+                         codebase_path=codebase_path,
                          cli_path=cli_path,
                          supplementary_context=supplementary_context,
                          last_known_input_tokens=last_known_gen_input_tokens,
@@ -909,7 +917,9 @@ async def run_harness(
 
     # Final mutual agreement round
     gen_ready, critic_ready = await run_final_agreement(
-        config.generator, config.critic, output_dir, cli_path=cli_path
+        config.generator, config.critic, output_dir,
+        codebase_path=codebase_path,
+        cli_path=cli_path,
     )
     progress.status = "complete"
     save_progress(checkpoint_dir, progress)

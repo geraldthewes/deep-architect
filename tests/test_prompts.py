@@ -20,6 +20,8 @@ EXPECTED_PROMPTS = [
     "mermaid_c4_guide",
     "c4_skill",
     "critic_rescue",
+    "contract_proposal_re",
+    "final_agreement_re",
 ]
 
 
@@ -65,6 +67,25 @@ def test_ping_pong_variable_substitution() -> None:
 def test_final_agreement_variable_substitution() -> None:
     content = load_prompt("final_agreement", output_dir="/tmp/output")
     assert "/tmp/output" in content
+
+
+def test_contract_proposal_re_variable_substitution() -> None:
+    content = load_prompt(
+        "contract_proposal_re",
+        codebase_path="/path/to/repo",
+        sprint_number="1",
+        sprint_name="C1 Context",
+        sprint_description="Generate C1 diagram",
+        primary_files="['c1-context.md']",
+    )
+    assert "/path/to/repo" in content
+    assert "C1 Context" in content
+
+
+def test_final_agreement_re_variable_substitution() -> None:
+    content = load_prompt("final_agreement_re", output_dir="/tmp/output")
+    assert "/tmp/output" in content
+    assert "accurate" in content
 
 
 def test_generator_system_mentions_available_tools() -> None:

@@ -31,8 +31,17 @@ def _find_checkpoint(output_dir: Path) -> Path | None:
 
 @app.command()
 def main(
-    prd: Path = typer.Option(..., help="Path to the PRD Markdown file"),
-    output: Path = typer.Option(..., help="Output directory for architecture files"),
+    prd: Path | None = typer.Option(
+        None, "--prd", help="Path to the PRD Markdown file (greenfield mode)"
+    ),
+    codebase: Path | None = typer.Option(
+        None, "--codebase", help="Path to the git repository to analyze (reverse-engineer mode)"
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        help="Output directory (default: <codebase>/knowledge/architecture/ in RE mode)",
+    ),
     resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run"),
     config_file: Path | None = typer.Option(
         None, "--config", help="Config file path (default: ~/.deep-architect.toml)"
@@ -66,8 +75,29 @@ def main(
     ),
 ) -> None:
     """Run the adversarial C4 architecture harness."""
-    if not prd.exists():
+    if prd is not None and codebase is not None:
+        console.print("[red]Error:[/red] --prd and --codebase are mutually exclusive")
+        raise typer.Exit(1)
+    if prd is None and codebase is None:
+        console.print(
+            "[red]Error:[/red] Either --prd (greenfield) or --codebase (reverse-engineer) "
+            "is required"
+        )
+        raise typer.Exit(1)
+    if prd is not None and not prd.exists():
         console.print(f"[red]Error:[/red] PRD file not found: {prd}")
+        raise typer.Exit(1)
+    if codebase is not None and not codebase.is_dir():
+        console.print(f"[red]Error:[/red] Codebase directory not found: {codebase}")
+        raise typer.Exit(1)
+
+    resolved_output: Path
+    if output is not None:
+        resolved_output = output
+    elif codebase is not None:
+        resolved_output = codebase.resolve() / "knowledge" / "architecture"
+    else:
+        console.print("[red]Error:[/red] --output is required in greenfield mode")
         raise typer.Exit(1)
 
     for ctx_path in context:
@@ -82,14 +112,14 @@ def main(
         cfg.critic.model = model_critic
 
     if reset_sprint is not None:
-        checkpoint = _find_checkpoint(output)
+        checkpoint = _find_checkpoint(resolved_output)
         if checkpoint is None:
             console.print("[red]Error:[/red] No checkpoint found — start a fresh run first.")
             raise typer.Exit(1)
-        repo = validate_git_repo(output)
+        repo = validate_git_repo(resolved_output)
         checkpoint_dir = Path(repo.working_tree_dir) / ".checkpoints"  # type: ignore[arg-type]
         try:
-            _, affected = reset_sprint_artifacts(output, checkpoint_dir, reset_sprint)
+            _, affected = reset_sprint_artifacts(resolved_output, checkpoint_dir, reset_sprint)
         except ValueError as exc:
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(1)
@@ -101,7 +131,7 @@ def main(
 
     # If no --resume flag and a prior checkpoint exists, ask the user what to do.
     if not resume:
-        checkpoint = _find_checkpoint(output)
+        checkpoint = _find_checkpoint(resolved_output)
         if checkpoint is not None:
             try:
                 prior = load_progress(checkpoint.parent)
@@ -125,9 +155,9 @@ def main(
                     default=False,
                 ):
                     raise typer.Exit(0)
-                repo = validate_git_repo(output)
+                repo = validate_git_repo(resolved_output)
                 checkpoint_dir = Path(repo.working_tree_dir) / ".checkpoints"  # type: ignore[arg-type]
-                deleted = clean_run_artifacts(output, checkpoint_dir)
+                deleted = clean_run_artifacts(resolved_output, checkpoint_dir)
                 console.print(f"[green]Cleaned up {len(deleted)} file(s).[/green]\n")
 
     def _sigterm_to_sigint(signum: int, frame: object) -> None:
@@ -139,8 +169,13 @@ def main(
     try:
         asyncio.run(
             run_harness(
-                prd=prd, output_dir=output, resume=resume, config=cfg,
-                context_files=context, strict=strict,
+                prd=prd,
+                codebase=codebase,
+                output_dir=resolved_output,
+                resume=resume,
+                config=cfg,
+                context_files=context,
+                strict=strict,
             )
         )
     except KeyboardInterrupt:
