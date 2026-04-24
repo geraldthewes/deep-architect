@@ -112,17 +112,27 @@ def test_classify_error_transient():
 def test_classify_error_permanent():
     """Test classification of permanent errors."""
     # Test the logic directly - we need to set status_code as an integer, not a MagicMock
-    
+
     # API errors with non-retryable status codes - create mocks with required attributes
     api_error_401 = MagicMock()
     api_error_401.__class__ = anthropic.APIError
     api_error_401.status_code = 401  # Integer, not MagicMock
     assert classify_error(api_error_401) == ("permanent", False)
-    
+
     api_error_403 = MagicMock()
     api_error_403.__class__ = anthropic.APIError
     api_error_403.status_code = 403  # Integer, not MagicMock
     assert classify_error(api_error_403) == ("permanent", False)
+
+
+def test_classify_error_turn_limit_is_permanent():
+    """TurnLimitError must not be retried — it must reach the harness handler."""
+    from deep_architect.agents.client import TurnLimitError
+
+    assert classify_error(TurnLimitError("max_turns=80, turns_completed=80")) == (
+        "permanent",
+        False,
+    )
 
 
 def test_classify_error_default():

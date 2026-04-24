@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -674,6 +675,12 @@ async def run_harness(
                               "[Sprint %d] Retrying round %d with fresh generator session...",
                               sprint.number, round_num,
                           )
+                          # Drain any anyio cancel-scope cancels leaked from the failed
+                          # SDK subprocess before the next attempt starts a fresh query().
+                          _ht = asyncio.current_task()
+                          if _ht is not None:
+                              while _ht.cancelling() > 0:
+                                  _ht.uncancel()
                       else:
                           logger.error(
                               "[Sprint %d] Round %d exhausted all %d attempts",

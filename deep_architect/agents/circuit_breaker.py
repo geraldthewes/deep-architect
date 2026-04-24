@@ -64,10 +64,19 @@ class ModelCommunicationError(Exception):
 
 def classify_error(exc: Exception) -> tuple[str, bool]:
     """Classify error as 'transient' (retryable) or 'permanent'.
-    
+
     Returns:
         (category, is_retryable): 'transient' or 'permanent', and whether to retry
     """
+    # Import here to avoid a circular import (client imports circuit_breaker).
+    from deep_architect.agents.client import TurnLimitError  # noqa: PLC0415
+
+    # Turn-limit exhaustion is permanent for this agent call — the harness
+    # handles it explicitly (commits partial work) and must not see it buried
+    # inside a ModelCommunicationError.
+    if isinstance(exc, TurnLimitError):
+        return ("permanent", False)
+
     # Transient: network, rate limits, timeouts, CLI crashes
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return ("transient", True)

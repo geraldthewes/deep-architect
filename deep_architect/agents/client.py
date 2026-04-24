@@ -454,6 +454,8 @@ async def _consume_query(
         while True:
             try:
                 if inactivity_seconds is not None:
+                    _loop = asyncio.get_running_loop()
+                    _step_started = _loop.time()
                     try:
                         message = await asyncio.wait_for(
                             gen.__anext__(), timeout=inactivity_seconds
@@ -469,11 +471,13 @@ async def _consume_query(
                         # anyio-internal cleanup (anyio always embeds "cancel scope"
                         # in the cancel message) so we can convert the latter to
                         # TimeoutError and let the retry path handle it.
+                        _elapsed = _loop.time() - _step_started
                         task = asyncio.current_task()
                         if task is None or task.cancelling() == 0:
                             raise TimeoutError(
-                                f"Inactivity timeout: no SDK message for "
-                                f"{inactivity_seconds}s (CancelledError from SDK cleanup)"
+                                f"Inactivity timeout after {_elapsed:.1f}s"
+                                f" (configured {inactivity_seconds}s;"
+                                f" CancelledError from SDK cleanup)"
                             ) from None
                         _msg = _ce.args[0] if _ce.args else None
                         if isinstance(_msg, str) and "cancel scope" in _msg:
@@ -484,8 +488,9 @@ async def _consume_query(
                                 while task.cancelling() > 0:
                                     task.uncancel()
                             raise TimeoutError(
-                                f"Inactivity timeout: no SDK message for "
-                                f"{inactivity_seconds}s (CancelledError from SDK cleanup)"
+                                f"Inactivity timeout after {_elapsed:.1f}s"
+                                f" (configured {inactivity_seconds}s;"
+                                f" CancelledError from SDK cleanup)"
                             ) from None
                         raise
                 else:
