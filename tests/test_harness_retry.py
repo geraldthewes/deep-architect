@@ -529,7 +529,9 @@ async def test_resume_mid_sprint_starts_from_correct_round(output_dir: Path) -> 
             return_value=MagicMock(similarity_score=0.0),
         ),
     ):
-        await run_harness(prd=prd, output_dir=output_dir, resume=True, config=_make_config())
+        await run_harness(
+            prd=prd, output_dir=output_dir, resume=True, config=_make_config(), yolo=True
+        )
 
     # Sprint 1 should NOT have re-negotiated (loaded from disk instead)
     assert 1 not in negotiate_calls, (
@@ -611,7 +613,9 @@ async def test_resume_resets_failed_status(output_dir: Path) -> None:
             return_value=MagicMock(similarity_score=0.0),
         ),
     ):
-        await run_harness(prd=prd, output_dir=output_dir, resume=True, config=_make_config())
+        await run_harness(
+            prd=prd, output_dir=output_dir, resume=True, config=_make_config(), yolo=True
+        )
 
     reloaded = load_progress(checkpoint_dir)
     assert reloaded.status == "complete", (
@@ -663,6 +667,7 @@ async def test_harness_creates_sprint_boundary_commit(output_dir: Path) -> None:
             output_dir=output_dir,
             resume=False,
             config=_make_config(),
+            yolo=True,
         )
 
     commit_messages = [c.message for c in repo.iter_commits()]
@@ -814,6 +819,7 @@ async def test_soft_fail_accepts_best_result_and_continues(output_dir: Path) -> 
             resume=False,
             config=_make_config_one_round(),
             strict=False,
+            yolo=True,
         )
 
     from deep_architect.io.files import load_progress

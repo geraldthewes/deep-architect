@@ -73,6 +73,15 @@ def main(
             "accepting the best-effort result and continuing."
         ),
     ),
+    yolo: bool = typer.Option(
+        False,
+        "--yolo",
+        help=(
+            "Run all sprints unattended (no pause between sprints). "
+            "Default: stop after every sprint to let the user review the "
+            "generated files; re-run with --resume to continue."
+        ),
+    ),
 ) -> None:
     """Run the adversarial C4 architecture harness."""
     if prd is not None and codebase is not None:
@@ -176,6 +185,7 @@ def main(
                 config=cfg,
                 context_files=context,
                 strict=strict,
+                yolo=yolo,
             )
         )
     except KeyboardInterrupt:

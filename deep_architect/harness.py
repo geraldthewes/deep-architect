@@ -268,6 +268,42 @@ def _log_resume_scores(progress: HarnessProgress) -> None:
         logger.info("  No scores recorded yet.")
 
 
+def _print_sprint_pause(
+    sprint: SprintDefinition,
+    output_dir: Path,
+    progress: HarnessProgress,
+) -> None:
+    files_label = ", ".join(sprint.primary_files) if sprint.primary_files else "(none)"
+    next_sprint = sprint.number + 1
+    more_to_go = next_sprint <= progress.total_sprints
+    console.print()
+    console.print(
+        f"[green]Sprint {sprint.number}/{progress.total_sprints} complete:[/green] "
+        f"{sprint.name}"
+    )
+    console.print(f"  Review files in [bold]{output_dir}[/bold]:")
+    console.print(f"    {files_label}")
+    if more_to_go:
+        console.print(
+            f"  When ready, re-run your command with [bold]--resume[/bold] "
+            f"to continue with sprint {next_sprint}."
+        )
+        console.print(
+            "  Add [bold]--yolo[/bold] to run the remaining sprints unattended."
+        )
+    else:
+        console.print(
+            "  All 7 sprints complete. Re-run your command with [bold]--resume[/bold] "
+            "to run the final mutual-agreement round."
+        )
+    console.print()
+    logger.info(
+        "[Sprint %d] Paused for human review (non-yolo mode). "
+        "Re-run with --resume to continue.",
+        sprint.number,
+    )
+
+
 async def run_harness(
     prd: Path | None,
     output_dir: Path,
@@ -277,6 +313,7 @@ async def run_harness(
     codebase: Path | None = None,
     *,
     strict: bool = False,
+    yolo: bool = False,
 ) -> None:
     """Run the full adversarial C4 architecture harness."""
     log_dir = output_dir / "logs"
@@ -914,6 +951,10 @@ async def run_harness(
             logger.info(f"[Sprint {sprint.number}] Documentation generated: {sprint_doc_path.name}")
         except Exception as e:
             logger.warning(f"[Sprint {sprint.number}] Failed to generate sprint documentation: {e}")
+
+        if not yolo:
+            _print_sprint_pause(sprint, output_dir, progress)
+            return
 
     # Final mutual agreement round
     gen_ready, critic_ready = await run_final_agreement(

@@ -132,7 +132,7 @@ adversarial-architect --codebase /path/to/existing-repo --output /custom/output/
 
 > **Note:** Do not use `uv run adversarial-architect` when inside another project that has its own `pyproject.toml` — uv will try to build that project first and fail. Run the binary directly instead.
 
-That's it. The tool runs unattended. When it finishes, `knowledge/architecture/` contains your architecture.
+That's it. By default the tool stops after each sprint so you can review the output; pass `--yolo` to run all 7 sprints unattended. When the run finishes, `knowledge/architecture/` contains your architecture.
 
 ### All CLI Options
 
@@ -148,6 +148,7 @@ That's it. The tool runs unattended. When it finishes, `knowledge/architecture/`
 | `--context PATH` | Supplementary context file injected into every generator prompt (repeatable) |
 | `--reset-sprint N` | Reset sprint N to its initial state and resume from it; deletes sprint N's contract, feedback, and history entries |
 | `--strict` | Halt the run when a sprint cannot meet exit criteria, instead of accepting the best-effort result and continuing |
+| `--yolo` | Run all sprints unattended with no pause between sprints (default: stop after every sprint for review) |
 
 ### Overriding Models Per-Run
 
@@ -170,6 +171,22 @@ adversarial-architect \
   --context knowledge/tech-stack.md \
   --context knowledge/security-policy.md
 ```
+
+### Unattended vs sprint-by-sprint mode
+
+By default, `adversarial-architect` stops after each of the 7 sprints, prints the
+files it wrote, and exits so you can review (and optionally edit) the output.
+Re-run the same command with `--resume` to continue with the next sprint.
+
+Pass `--yolo` to skip the pauses and run the whole harness unattended:
+
+```bash
+adversarial-architect --prd knowledge/prd.md --output knowledge/architecture            # default: stop between sprints
+adversarial-architect --prd knowledge/prd.md --output knowledge/architecture --yolo     # unattended
+```
+
+`--yolo` is per-invocation: combining it with `--resume` (`--resume --yolo`) runs
+the remaining sprints unattended starting from the next sprint.
 
 ### Strict Mode
 
