@@ -1,11 +1,15 @@
 # deep-architect
 
-`deep-architect` turns a BMAD Product Requirements Document (PRD) into a complete, peer-reviewed C4 architecture document — automatically, without human intervention.
+`deep-architect` produces a complete, peer-reviewed C4 architecture document — automatically, without human intervention. It works in two modes:
+
+- **Greenfield** (`--prd`): takes a BMAD PRD and designs the architecture from scratch.
+- **Reverse-engineer** (`--codebase`): reads an existing git repository and documents what is actually there.
 
 It runs two Claude Code agents against each other: a **Generator** (Winston, the architect) who writes the architecture using real file tools, and a **Critic** (Boris, a hostile senior architect) who reads and tears it apart. They negotiate acceptance criteria, argue through rounds of feedback, and only stop when the architecture passes a rigorous quality bar. The result lands in `knowledge/architecture/` as a folder of Markdown + Mermaid files, ready for your development agents.
 
 ```
-PRD → adversarial-architect → knowledge/architecture/ (C4 diagrams + ADRs)
+PRD        → adversarial-architect → knowledge/architecture/ (C4 diagrams + ADRs)
+codebase/  → adversarial-architect → codebase/knowledge/architecture/
 ```
 
 The agents are powered by the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) — the generator writes files directly using the `Write` and `Edit` tools, and the critic inspects them using `Read`, `Glob`, and `Grep`. This is not a prompt chain; these are real agentic loops.
@@ -346,6 +350,12 @@ Create `~/.deep-architect.toml` from the template: `cp .deep-architect.toml.temp
 **`Error: PRD file not found`**
 The `--prd` path must point to an existing file. Check the path is correct relative to your current directory.
 
+**`Error: Codebase directory not found`**
+The `--codebase` path must be an existing directory. Pass an absolute path to avoid ambiguity.
+
+**`Either --prd (greenfield) or --codebase (reverse-engineer) is required`**
+One of the two mode flags must be provided. They are mutually exclusive — don't pass both.
+
 **`not inside a git repository`**
 The output directory must be inside a git repo. Initialize one first: `git init`.
 
@@ -371,7 +381,8 @@ timeout_hours = 6.0
 
 - **Use a capable generator model.** The generator needs to produce complete, well-structured Markdown with valid Mermaid syntax in a single agentic loop. `opus` gives the best results; `sonnet` is a good cost/quality balance.
 - **Use a different model for critic and generator** if your setup allows it. The adversarial dynamic works best when the agents have different "opinions."
-- **Make your PRD specific.** The generator reads the PRD for every sprint. Concrete technology choices and user journeys lead to better architecture. Vague PRDs produce vague diagrams.
+- **Make your PRD specific (greenfield).** The generator reads the PRD for every sprint. Concrete technology choices and user journeys lead to better architecture. Vague PRDs produce vague diagrams.
+- **Point at a well-documented repo (reverse-engineer).** The generator discovers the codebase via its tools each round. Repos with a README, clear entry points, and conventional structure (e.g. `pyproject.toml`, `package.json`, IaC configs) yield the most accurate diagrams. If the repo is large, consider adding a `--context` file that describes the top-level layout.
 - **Check Sprint 1 before walking away.** After sprint 1 completes, glance at `c1-context.md`. If the system boundary is wrong, the rest of the architecture will follow the wrong path — better to catch it early.
 - **Raise `max_turns` for complex systems.** If the generator is consistently cutting off before producing all required files, increase `max_turns` in the `[generator]` section.
 
