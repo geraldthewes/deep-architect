@@ -889,3 +889,109 @@ async def test_strict_mode_halts_on_sprint_failure(output_dir: Path) -> None:
     assert '"failed"' in progress_json, "Run should be marked failed in strict mode"
     assert '"complete"' not in progress_json, "Run must not complete in strict mode"
 
+
+async def test_soft_fail_on_resume_without_improvement(output_dir: Path) -> None:
+    """Regression: when resuming and every new round regresses vs the seeded best,
+    best_commit_sha stays None — the harness should still soft-fail (accept) rather
+    than hard-fail."""
+    from deep_architect.io.files import save_feedback, save_progress
+    from deep_architect.models.progress import HarnessProgress, SprintStatus
+    from deep_architect.sprints import SPRINTS
+
+    prd = output_dir / "prd.md"
+    prd.write_text("# Test PRD")
+
+    # Seed sprint-1 round-1 feedback with a score that no new round will beat.
+    seeded_best = CriticResult(
+        scores={"a": 8.4, "b": 8.4, "c": 8.4},
+        feedback=[
+            CriterionScore(criterion="a", score=8.4, severity="Medium", details="decent"),
+            CriterionScore(criterion="b", score=8.4, severity="Medium", details="decent"),
+            CriterionScore(criterion="c", score=8.4, severity="Medium", details="decent"),
+        ],
+        overall_summary="Prior session best",
+    )
+    (output_dir / "feedback").mkdir(parents=True, exist_ok=True)
+    save_feedback(output_dir, sprint_number=1, round_num=1, result=seeded_best)
+
+    # Seed progress: sprint 1 is mid-sprint with round 1 done.
+    checkpoint_dir = output_dir / ".checkpoints"
+    progress = HarnessProgress(
+        total_sprints=len(SPRINTS),
+        sprint_statuses=[SprintStatus(sprint_number=s.number, sprint_name=s.name) for s in SPRINTS],
+    )
+    progress.sprint_statuses[0].rounds_completed = 1
+    progress.sprint_statuses[0].status = "building"
+    progress.current_sprint = 1
+    save_progress(checkpoint_dir, progress)
+
+    mock_repo = _make_mock_repo(output_dir)
+    mock_repo.head.commit.hexsha = "abc123deadbeef"
+
+    # Config: 2 rounds max so round 2 runs and exhausts; threshold unattainable at 9.0.
+    config = HarnessConfig(
+        generator=AgentConfig(model="test-model", max_turns=1, max_agent_retries=0),
+        critic=AgentConfig(model="test-model", max_turns=1, max_agent_retries=0),
+        thresholds=ThresholdConfig(
+            min_score=9.0,
+            consecutive_passing_rounds=2,
+            max_rounds_per_sprint=2,
+            max_total_rounds=30,
+            timeout_hours=1.0,
+            max_round_retries=0,
+        ),
+    )
+
+    with (
+        patch("deep_architect.harness.run_preflight_check", new_callable=AsyncMock),
+        patch(
+            "deep_architect.harness.run_final_agreement",
+            new_callable=AsyncMock,
+            return_value=(True, True),
+        ),
+        patch("deep_architect.harness.validate_git_repo", return_value=mock_repo),
+        patch("deep_architect.harness.get_modified_files", return_value=[]),
+        patch("deep_architect.harness.git_commit"),
+        patch("deep_architect.harness.git_commit_staged"),
+        patch("deep_architect.harness.restore_arch_files_from_commit", return_value=[]),
+        patch("deep_architect.harness.setup_logging", return_value=Path("/tmp/test.log")),
+        patch(
+            "deep_architect.harness.negotiate_contract",
+            new_callable=AsyncMock,
+            return_value=_make_contract(),
+        ),
+        patch(
+            "deep_architect.harness.run_generator",
+            new_callable=AsyncMock,
+            return_value=GeneratorRoundResult(session_id=None, input_tokens=0),
+        ),
+        patch(
+            "deep_architect.harness.run_critic",
+            new_callable=AsyncMock,
+            return_value=_failing_result(),  # 7.0 — never beats seeded 8.4
+        ),
+    ):
+        await run_harness(
+            prd=prd,
+            output_dir=output_dir,
+            resume=True,
+            config=config,
+            strict=False,
+            yolo=True,
+        )
+
+    from deep_architect.io.files import load_progress
+
+    progress_file = output_dir / ".checkpoints" / "progress.json"
+    assert progress_file.exists()
+    progress_json = progress_file.read_text()
+    assert '"accepted"' in progress_json, "Sprint 1 should be accepted despite best_commit_sha=None"
+    assert '"complete"' in progress_json, "Run should complete in soft-fail mode on resume"
+
+    reloaded = load_progress(checkpoint_dir)
+    sprint_1 = reloaded.sprint_statuses[0]
+    assert sprint_1.status == "accepted"
+    assert sprint_1.final_score == pytest.approx(8.4), (
+        f"final_score should be the seeded best 8.4, got {sprint_1.final_score}"
+    )
+

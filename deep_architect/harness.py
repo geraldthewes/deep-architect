@@ -882,7 +882,7 @@ async def run_harness(
         else:
             # Max rounds exhausted without passing
             elapsed_total = time.time() - start_time
-            if not strict and best_result is not None and best_commit_sha is not None:
+            if not strict and best_result is not None:
                 logger.warning(
                     "[Sprint %d] Max rounds exhausted (elapsed=%.1fm, best_score=%.2f < "
                     "threshold=%.2f). Accepting best-effort result (pass --strict to halt "
@@ -890,17 +890,31 @@ async def run_harness(
                     sprint.number, elapsed_total / 60,
                     best_result.average_score, t.min_score,
                 )
-                restored = restore_arch_files_from_commit(repo, best_commit_sha)
-                if restored:
+                if best_commit_sha is not None:
+                    restored = restore_arch_files_from_commit(repo, best_commit_sha)
+                    if restored:
+                        git_commit_staged(
+                            repo,
+                            f"Accept best-effort sprint {sprint.number} "
+                            f"(score {best_result.average_score:.2f} / "
+                            f"threshold {t.min_score:.2f})",
+                        )
+                        logger.info(
+                            "[Sprint %d] Best-effort restore committed: %d file(s)",
+                            sprint.number, len(restored),
+                        )
+                else:
+                    logger.info(
+                        "[Sprint %d] No rollback SHA (best_result was seeded from a prior "
+                        "session and never beaten this session). Accepting current on-disk "
+                        "state at score %.2f.",
+                        sprint.number, best_result.average_score,
+                    )
                     git_commit_staged(
                         repo,
                         f"Accept best-effort sprint {sprint.number} "
-                        f"(score {best_result.average_score:.2f} / "
+                        f"(resumed; score {best_result.average_score:.2f} / "
                         f"threshold {t.min_score:.2f})",
-                    )
-                    logger.info(
-                        "[Sprint %d] Best-effort restore committed: %d file(s)",
-                        sprint.number, len(restored),
                     )
                 sprint_status.status = "accepted"
                 sprint_status.final_score = best_result.average_score

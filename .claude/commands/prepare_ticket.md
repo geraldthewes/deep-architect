@@ -7,9 +7,9 @@ model: sonnet
 
 You are tasked with helping the user prepare a ticket with business requirements and context BEFORE the technical research phase. This is the first step in the workflow:
 
-**Workflow**: `prepare_ticket` → `create_plan` → `implement_plan`
+**Workflow**: `prepare_ticket` → `create_plan_generic` → `implement_plan`
 
-Your goal is to gather high-level requirements, scope, and context that will guide the subsequent research and planning phases. Do NOT perform deep technical analysis here - that's for `create_plan`.
+Your goal is to gather high-level requirements, scope, and context that will guide the subsequent research and planning phases. Do NOT perform deep technical analysis here - that's for `create_plan_generic`.
 
 ## Your Role
 
@@ -39,7 +39,7 @@ When creating a new ticket file, use this exact format:
 id: [TICKET-ID]
 title: [Title]
 status: spec
-ticket_type: task
+ticket_type: feat
 priority: medium
 created_at: [ISO 8601 timestamp]
 updated_at: [ISO 8601 timestamp]
@@ -51,6 +51,24 @@ updated_at: [ISO 8601 timestamp]
 
 [Content sections as gathered during the preparation process]
 ```
+
+## Ticket Type (Conventional Commits)
+
+The `ticket_type` field classifies the type of work using the Conventional Commits taxonomy:
+
+| Type | Description | Auto-infer keywords |
+|------|-------------|---------------------|
+| `feat` | New feature | "add", "create", "implement", "introduce", "new" |
+| `fix` | Bug fix | "fix", "bug", "patch", "resolve", "correct" |
+| `ci` | CI/CD changes | "ci", "pipeline", "deploy", "workflow", "github action" |
+| `docs` | Documentation | "doc", "readme", "guide", "wiki", "comment" |
+| `refactor` | Code refactoring | "refactor", "restructure", "reorganize", "clean up", "simplify" |
+| `test` | Tests | "test", "spec", "coverage", "assert" |
+| `chore` | Maintenance | "chore", "update dep", "bump", "upgrade", "maintenance", "config" |
+
+**Default**: `feat` (when no keyword match from title)
+
+Auto-infer by case-insensitive match of the title against the keywords above. If multiple types match, prefer the first match in table order. Always confirm the inferred type with the user.
 
 ## Initial Response
 
@@ -64,10 +82,12 @@ When this command is invoked:
    - If a summary/description is provided (e.g., `/prepare_ticket Add new feature X`):
      - Extract the summary text after the command
      - Use this as the ticket title
+     - Auto-infer `ticket_type` from the title using the keyword table in the Ticket Type section
      - Automatically determine next ticket number (Step 1a below)
    - If no parameters provided:
      - Automatically determine next ticket number (Step 1a below)
      - Ask the user for the title: "What's the ticket title? (Brief, descriptive summary)"
+     - After receiving the title, auto-infer `ticket_type` from it
 
 1a. **Auto-determine next ticket number**:
    ```bash
@@ -83,20 +103,32 @@ When this command is invoked:
    - If it doesn't exist, create it first
    - Use Bash: `mkdir -p knowledge/tickets`
 
-3. **Confirm ticket creation**:
+3. **Confirm ticket creation and ticket type**:
    ```
    Creating new ticket: [TICKET-ID]
    Title: [summary from prompt or user-provided]
+   Ticket type: [auto-inferred type] ([description from table])
 
-   [If title was auto-extracted from prompt, proceed directly to Step 4]
-   [If no title was provided, wait for user to provide it]
+   Conventional Commits types:
+     feat     - New feature
+     fix      - Bug fix
+     ci       - CI/CD changes
+     docs     - Documentation
+     refactor - Code refactoring
+     test     - Tests
+     chore    - Maintenance
+
+   Is this ticket type correct? (Press Enter to confirm, or type a different type)
    ```
+
+   Wait for user response. If the user provides a different type, use that instead.
 
 4. **Create the ticket file with proper format**:
    - Use Write tool to create the file with YAML frontmatter
    - Set current timestamp for created_at and updated_at
    - Initialize with title and workflow status
    - Set status to `spec` (ready for specification)
+   - Set `ticket_type` to the user-confirmed value from Step 3
 
 5. **Present the preparation checklist**:
 ```
@@ -104,6 +136,7 @@ I'll help you prepare this ticket with requirements and context. This is the FIR
 
 Current ticket: [ticket-id]
 Title: [ticket-title]
+Ticket type: [ticket-type] ([description])
 
 This is a requirements gathering session. I'll collect:
 - Business context and user needs
@@ -111,7 +144,7 @@ This is a requirements gathering session. I'll collect:
 - Reference implementations to study later
 - Success criteria
 
-After this, you'll run `/create_plan` to do the technical research and detailed planning.
+After this, you'll run `/create_plan_generic` to do the technical research and detailed planning.
 
 ## Requirements Checklist
 
@@ -182,7 +215,7 @@ When creating a new ticket from scratch:
    id: [TICKET-ID]
    title: [User-provided title]
    status: spec
-   ticket_type: task
+   ticket_type: [confirmed ticket type]
    priority: medium
    created_at: [timestamp]
    updated_at: [timestamp]
@@ -251,10 +284,10 @@ c) What specific aspects should we mimic from it?
    - Configuration management?
    [Wait for user response]
 
-Note: We'll do detailed analysis of the reference implementation during the `/create_plan` research phase.
+Note: We'll do detailed analysis of the reference implementation during the `/create_plan_generic` research phase.
 ```
 
-**IMPORTANT**: Do NOT analyze the reference implementation deeply here. Just note its location and what aspects to mimic. The deep technical analysis will happen in `create_plan`.
+**IMPORTANT**: Do NOT analyze the reference implementation deeply here. Just note its location and what aspects to mimic. The deep technical analysis will happen in `create_plan_generic`.
 
 ### Step 3: Define Requirements & Scope
 
@@ -334,7 +367,7 @@ Identify what needs to be investigated during planning:
 ```
 ## 6. Research Questions for Planning Phase
 
-What technical questions should we research during `/create_plan`?
+What technical questions should we research during `/create_plan_generic`?
 
 Examples:
 - How does the reference implementation handle [specific functionality]?
@@ -428,7 +461,7 @@ Does this capture everything? Any additions or changes?
 id: [TICKET-ID]
 title: [Title]
 status: spec
-ticket_type: task
+ticket_type: [confirmed ticket type]
 priority: medium
 created_at: [ISO 8601 timestamp]
 updated_at: [ISO 8601 timestamp]
@@ -436,7 +469,7 @@ updated_at: [ISO 8601 timestamp]
 
 # [Title]
 
-> **Workflow Status**: Requirements gathered ✓ → Ready for `/create_plan` to research and plan
+> **Workflow Status**: Requirements gathered ✓ → Ready for `/create_plan_generic` to research and plan
 
 ## Problem Statement & Business Context
 
@@ -500,7 +533,7 @@ updated_at: [ISO 8601 timestamp]
 
 ## Research Questions for Planning Phase
 
-The following should be investigated during `/create_plan`:
+The following should be investigated during `/create_plan_generic`:
 - [Technical question 1]
 - [Technical question 2]
 - [Technical question 3]
@@ -524,7 +557,7 @@ Location: `knowledge/tickets/[TICKET-ID].md`
 
 Next steps:
 1. Review the requirements to ensure completeness
-2. Run `/create_plan knowledge/tickets/[TICKET-ID].md` to start the research and planning phase
+2. Run `/create_plan_generic knowledge/tickets/[TICKET-ID].md` to start the research and planning phase
 3. During planning, the reference implementation will be analyzed and technical decisions will be made
 
 Ready to proceed with planning phase?
@@ -538,6 +571,7 @@ Ready to proceed with planning phase?
    - Automatically determine next ticket number by checking existing tickets
    - Use summary from command prompt as title if provided (e.g., `/prepare_ticket Add feature X`)
    - If no summary provided, ask for title
+   - Auto-infer `ticket_type` from the title and confirm with the user before creating the file
    - Use ISO 8601 timestamp format (e.g., `2026-02-10T15:30:00Z`)
    - Use Write tool for new files, Edit tool for updates
    - Validate YAML frontmatter is properly formatted
@@ -559,7 +593,7 @@ Ready to proceed with planning phase?
    - Do NOT spawn codebase research tasks
    - Do NOT read implementation files
    - Do NOT analyze architecture patterns
-   - Save all technical work for `/create_plan`
+   - Save all technical work for `/create_plan_generic`
 
 4. **Be Specific About Requirements**:
    - Avoid vague requirements
@@ -587,9 +621,15 @@ Ready to proceed with planning phase?
 User: /prepare_ticket Add async task processing system
 
 Agent: [Checks existing tickets, finds PROJ-0040 is latest]
+       [Auto-infers ticket_type from "Add" keyword → feat]
 
 Creating new ticket: PROJ-0041
 Title: Add async task processing system
+Ticket type: feat (New feature)
+
+Is this ticket type correct? (Press Enter to confirm, or type a different type)
+
+[User confirms]
 
 ✓ Created knowledge/tickets/PROJ-0041.md
 
@@ -603,7 +643,7 @@ What problem are we solving?
 [After gathering all info]:
 I've documented the requirements in knowledge/tickets/PROJ-0041.md
 
-Next, run `/create_plan knowledge/tickets/PROJ-0041.md` to analyze the reference
+Next, run `/create_plan_generic knowledge/tickets/PROJ-0041.md` to analyze the reference
 implementation and create a detailed technical plan.
 ```
 
@@ -620,7 +660,15 @@ What's the ticket title? (Brief, descriptive summary)
 
 User: Add async task processing system
 
-Agent: ✓ Created knowledge/tickets/PROJ-0041.md
+Agent: [Auto-infers ticket_type from "Add" keyword → feat]
+
+Ticket type: feat (New feature)
+
+Is this ticket type correct? (Press Enter to confirm, or type a different type)
+
+[User confirms]
+
+✓ Created knowledge/tickets/PROJ-0041.md
 
 Now let's gather the requirements. First, let's understand the business context.
 
@@ -632,7 +680,7 @@ What problem are we solving?
 [After gathering all info]:
 I've documented the requirements in knowledge/tickets/PROJ-0041.md
 
-Next, run `/create_plan knowledge/tickets/PROJ-0041.md` to analyze the reference
+Next, run `/create_plan_generic knowledge/tickets/PROJ-0041.md` to analyze the reference
 implementation and create a detailed technical plan.
 ```
 
@@ -645,6 +693,7 @@ Agent: Reading existing ticket PROJ-0039...
 
 I found the ticket "Tauri tray application for daemon management"
 Current status: triage
+Ticket type: feat (New feature)
 
 Let me help you prepare this ticket with full requirements. Let's start with the business context.
 
@@ -667,7 +716,7 @@ Let's define the must-have features...
 [After gathering all info]:
 I've documented the requirements in knowledge/tickets/PROJ-XXXX.md
 
-Next, run `/create_plan knowledge/tickets/PROJ-XXXX.md` to analyze the reference
+Next, run `/create_plan_generic knowledge/tickets/PROJ-XXXX.md` to analyze the reference
 implementation and create a detailed technical plan.
 ```
 
@@ -675,7 +724,7 @@ implementation and create a detailed technical plan.
 
 After preparation:
 - Update ticket status: `triage` → `spec`
-- Ticket is now ready for `/create_plan` research phase
+- Ticket is now ready for `/create_plan_generic` research phase
 
 ## Common Pitfalls to Avoid
 
@@ -689,6 +738,7 @@ After preparation:
 8. **Don't miss acceptance criteria** - Make success measurable
 9. **Don't ignore research questions** - Document what needs investigation
 10. **Don't assume knowledge** - Ask questions when unclear
+11. **Don't skip ticket type confirmation** - Always confirm the auto-inferred ticket type with the user
 
 ## Success Criteria for This Command
 
@@ -704,6 +754,7 @@ A well-prepared ticket should have:
 - [ ] Optional nice-to-have features
 - [ ] Explicitly defined out-of-scope items
 - [ ] Measurable acceptance criteria
+- [ ] Ticket type identified and confirmed (conventional commits taxonomy)
 
 **Reference & Research**:
 - [ ] Reference implementation location noted (not analyzed)
@@ -717,7 +768,7 @@ A well-prepared ticket should have:
 
 **Ready for Next Phase**:
 - [ ] Ticket status updated to `spec`
-- [ ] Ready for `/create_plan` to begin research and planning
+- [ ] Ready for `/create_plan_generic` to begin research and planning
 - [ ] No deep technical analysis done yet
 
 Remember: This is requirements gathering, not solution design. Keep it fast and focused on business needs.

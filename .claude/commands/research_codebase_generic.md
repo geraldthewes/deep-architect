@@ -53,15 +53,19 @@ Then wait for the user's research query.
    - Answer the user's specific questions with concrete evidence
 
 5. **Gather metadata for the research document:**
-   - generate all relevant metadata
+   - Resolve today's date first:
+     ```bash
+     date -u +"%Y-%m-%d"
+     ```
+     Do NOT emit the literal string `YYYY-MM-DD` in the filename.
    - Filename: `knowledge/research/YYYY-MM-DD-PROJ-XXXX-description.md`
      - Format: `YYYY-MM-DD-PROJ-XXXX-description.md` where:
-       - YYYY-MM-DD is today's date
-       - ENG-XXXX is the ticket number (omit if no ticket)
+       - YYYY-MM-DD is today's date (from the `date` command above)
+       - PROJ-XXXX is the ticket ID from the ticket's YAML `id:` field (omit if no ticket)
        - description is a brief kebab-case description of the research topic
      - Examples:
-       - With ticket: `2025-01-08-PROJ-1478-parent-child-tracking.md`
-       - Without ticket: `2025-01-08-authentication-flow.md`
+       - With ticket: `2026-04-19-PROJ-0007-parent-child-tracking.md`
+       - Without ticket: `2026-04-19-authentication-flow.md`
 
 6. **Generate research document:**
    - Use the metadata gathered in step 4

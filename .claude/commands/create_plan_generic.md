@@ -27,8 +27,8 @@ Please provide:
 
 I'll analyze this information and work with you to create a comprehensive plan.
 
-Tip: You can also invoke this command with a ticket file directly: `/create_plan knowledge/tickets/PROJ-1234.md`
-For deeper analysis, try: `/create_plan think deeply about knowledge/tickets/PROJ-1234.md`
+Tip: You can also invoke this command with a ticket file directly: `/create_plan_generic knowledge/tickets/PROJ-1234.md`
+For deeper analysis, try: `/create_plan_generic think deeply about knowledge/tickets/PROJ-1234.md`
 ```
 
 Then wait for the user's input.
@@ -168,14 +168,20 @@ Once aligned on approach:
 
 After structure approval:
 
+0. **Resolve today's date** — run this once and use the output as the date prefix for the filename:
+   ```bash
+   date -u +"%Y-%m-%d"
+   ```
+   Do NOT emit the literal string `YYYY-MM-DD` in the filename.
+
 1. **Write the plan** to `knowledge/plans/YYYY-MM-DD-PROJ-XXXX-description.md`
-   - Format: `YYYY-MM-DD-ENG-XXXX-description.md` where:
-     - YYYY-MM-DD is today's date
-     - ENG-XXXX is the ticket number (omit if no ticket)
+   - Format: `YYYY-MM-DD-PROJ-XXXX-description.md` where:
+     - YYYY-MM-DD is today's date (from the `date` command above)
+     - PROJ-XXXX is the ticket ID from the ticket's YAML `id:` field (omit if no ticket)
      - description is a brief kebab-case description
    - Examples:
-     - With ticket: `2025-01-08-ENG-1478-parent-child-tracking.md`
-     - Without ticket: `2025-01-08-improve-error-handling.md`
+     - With ticket: `2026-04-19-PROJ-0007-parent-child-tracking.md`
+     - Without ticket: `2026-04-19-improve-error-handling.md`
 2. **Use this template structure**:
 
 ````markdown
@@ -283,7 +289,7 @@ After structure approval:
 2. **Present the draft plan location**:
    ```
    I've created the initial implementation plan at:
-   `knowledge/plans/YYYY-MM-DD-PROJ-XXXX-description.md`
+   `knowledge/plans/<resolved-date>-PROJ-<ticket-id>-<description>.md`
 
    Please review it and let me know:
    - Are the phases properly scoped?

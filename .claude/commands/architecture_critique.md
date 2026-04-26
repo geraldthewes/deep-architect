@@ -319,6 +319,22 @@ Document for each alternative:
                                                                                                     
 ---
 
+## Saving the Report
+
+After completing the review, save the full critique to a file:
+
+1. Derive a short slug from the project name or primary document being reviewed
+   (e.g., "my-prd" → `my-prd`, spaces/special chars → hyphens, all lowercase)
+2. Create the directory if it doesn't exist: `knowledge/reviews/`
+3. Write the complete critique to: `knowledge/reviews/YYYY-MM-DD-{slug}.md`
+   (use today's actual date, e.g., `knowledge/reviews/2026-04-23-my-prd.md`)
+4. Tell the user the saved path so they can pass it directly to `/triage_critique`
+
+**Note**: Save the file *before* printing the review summary so the file exists
+even if the conversation is interrupted.
+
+---
+
 ## Output Format
 
 Provide feedback in a structured, actionable format:
