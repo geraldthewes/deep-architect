@@ -1,7 +1,9 @@
 # Final Agreement Prompt
 <!-- Bootstrap: PRD §5.4 "Mutual Agreement" round -->
 
-Review the complete architecture in {output_dir}.
+Review the complete architecture. Your working directory (`cwd`) is already the architecture
+root. Use `**/*` (or `**/*.md`) to glob all files. Use paths relative to cwd — do NOT prefix
+with `knowledge/architecture/` or any absolute path.
 
 Check:
 1. All 7 sprints have produced their required files

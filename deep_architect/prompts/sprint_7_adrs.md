@@ -51,6 +51,9 @@ Only open individual architecture files when you need additional context for a s
 decision (e.g., to understand consequences or verify a detail). Do NOT Glob and read all
 `.md` files — the manifest exists precisely to make that unnecessary.
 
+Then `Glob decisions/*.md` and read any existing ADR files; pick the next unused sequential
+number — never reuse or skip a number.
+
 ## ADRs to Generate
 
 Generate ADRs for the major decisions made across all sprints, including:

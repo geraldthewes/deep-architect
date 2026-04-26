@@ -1,6 +1,7 @@
 import pytest
 
 from deep_architect.prompts import load_prompt
+from deep_architect.sprints import SPRINTS
 
 EXPECTED_PROMPTS = [
     "generator_system",
@@ -64,9 +65,10 @@ def test_ping_pong_variable_substitution() -> None:
     assert "current feedback" in content
 
 
-def test_final_agreement_variable_substitution() -> None:
-    content = load_prompt("final_agreement", output_dir="/tmp/output")
-    assert "/tmp/output" in content
+def test_final_agreement_no_path_placeholder() -> None:
+    content = load_prompt("final_agreement")
+    assert "cwd" in content
+    assert "{output_dir}" not in content
 
 
 def test_contract_proposal_re_variable_substitution() -> None:
@@ -82,10 +84,18 @@ def test_contract_proposal_re_variable_substitution() -> None:
     assert "C1 Context" in content
 
 
-def test_final_agreement_re_variable_substitution() -> None:
-    content = load_prompt("final_agreement_re", output_dir="/tmp/output")
-    assert "/tmp/output" in content
+def test_final_agreement_re_no_path_placeholder() -> None:
+    content = load_prompt("final_agreement_re")
+    assert "cwd" in content
+    assert "{output_dir}" not in content
     assert "accurate" in content
+
+
+def test_all_sprint_prompt_names_resolve() -> None:
+    for sprint in SPRINTS:
+        assert sprint.prompt_name is not None, f"Sprint {sprint.number} missing prompt_name"
+        content = load_prompt(sprint.prompt_name)
+        assert len(content) > 0, f"Sprint {sprint.number} prompt is empty"
 
 
 def test_generator_system_mentions_available_tools() -> None:

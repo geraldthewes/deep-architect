@@ -15,6 +15,49 @@ _EXCLUDED_FROM_ROLLBACK = frozenset({
 })
 
 
+def reject_unauthorized_files(
+    repo: git.Repo,
+    output_dir: Path,
+    paths: list[Path],
+    allowed_relpaths: set[str],
+    allowed_dir_prefixes: set[str],
+) -> list[Path]:
+    """Delete or revert files that are not in the allowlist.
+
+    Untracked files are deleted from disk. Tracked-but-modified files are
+    reverted to their HEAD state. Empty directories left behind are removed.
+    Returns the list of rejected paths.
+    """
+    untracked = {output_dir / p for p in repo.untracked_files}
+    rejected: list[Path] = []
+
+    for path in paths:
+        try:
+            rel = path.relative_to(output_dir).as_posix()
+        except ValueError:
+            continue
+
+        top = rel.split("/")[0]
+        if rel in allowed_relpaths or top + "/" in allowed_dir_prefixes:
+            continue
+
+        rejected.append(path)
+        if path in untracked:
+            path.unlink(missing_ok=True)
+            # Remove empty parent directories up to output_dir
+            parent = path.parent
+            while parent != output_dir and parent.is_dir():
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+        else:
+            repo.git.checkout("--", str(path.relative_to(Path(repo.working_dir))))
+
+    return rejected
+
+
 def validate_git_repo(path: Path) -> git.Repo:
     """Fail fast with clear error if path is not inside a git repo."""
     try:

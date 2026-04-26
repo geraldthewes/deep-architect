@@ -98,6 +98,10 @@ async def run_generator(
             f"or filename. Do NOT write to this file.\n"
         )
 
+    guidance_section = ""
+    if sprint.prompt_name:
+        guidance_section = f"\n## Sprint Guidance\n{load_prompt(sprint.prompt_name)}\n\n"
+
     if prd_content is not None:
         source_section = f"## PRD\n{prd_content}\n\n"
     else:
@@ -112,11 +116,15 @@ async def run_generator(
         source_section
         + f"{context_section}"
         + f"## Sprint Contract\n{contract.model_dump_json(indent=2)}\n\n"
-        f"## Working Directory\n{output_dir}\n\n"
-        f"## Files to Produce\n"
+        + guidance_section
+        + "## Working Directory\n"
+        "Your `cwd` is the architecture root. Use **relative paths** in all Write/Read/Edit/Glob "
+        "operations (e.g. `frontend/c2-container.md`, not an absolute path). "
+        "Do NOT prefix paths with `knowledge/architecture/` or any parent directory name.\n\n"
+        "## Files to Produce\n"
         + "\n".join(f"- {f}" for f in contract.files_to_produce)
         + f"\n\n{feedback_section}{learnings_section}{history_section}\n"
-        "Use the Write tool to create each file in the working directory using absolute paths. "
+        "Use the Write tool to create each file using paths relative to your working directory. "
         "Use the Edit tool for targeted changes when addressing feedback on existing files. "
         "Each file must be a complete, standalone Markdown document."
     )

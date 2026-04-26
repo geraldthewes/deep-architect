@@ -10,6 +10,7 @@ class SprintDefinition:
     description: str
     primary_files: list[str]
     allow_extra_files: bool = False  # Generator may create area-specific docs
+    prompt_name: str | None = None  # Sprint-specific guidance prompt loaded into generator
 
 
 SPRINTS: list[SprintDefinition] = [
@@ -21,6 +22,7 @@ SPRINTS: list[SprintDefinition] = [
             "Show the system, its users, and external dependencies."
         ),
         primary_files=["c1-context.md"],
+        prompt_name="sprint_1_c1_context",
     ),
     SprintDefinition(
         number=2,
@@ -30,6 +32,7 @@ SPRINTS: list[SprintDefinition] = [
             "Show all major containers and their relationships."
         ),
         primary_files=["c2-container.md"],
+        prompt_name="sprint_2_c2_container",
     ),
     SprintDefinition(
         number=3,
@@ -41,6 +44,7 @@ SPRINTS: list[SprintDefinition] = [
         ),
         primary_files=["frontend/c2-container.md"],
         allow_extra_files=True,
+        prompt_name="sprint_3_frontend",
     ),
     SprintDefinition(
         number=4,
@@ -51,6 +55,7 @@ SPRINTS: list[SprintDefinition] = [
         ),
         primary_files=["backend/c2-container.md"],
         allow_extra_files=True,
+        prompt_name="sprint_4_backend",
     ),
     SprintDefinition(
         number=5,
@@ -61,6 +66,7 @@ SPRINTS: list[SprintDefinition] = [
         ),
         primary_files=["database/c2-container.md"],
         allow_extra_files=True,
+        prompt_name="sprint_5_database",
     ),
     SprintDefinition(
         number=6,
@@ -70,6 +76,7 @@ SPRINTS: list[SprintDefinition] = [
             "auth, scaling, and observability cross-cutting concerns."
         ),
         primary_files=["edge-functions/c2-container.md", "deployment.md"],
+        prompt_name="sprint_6_edge",
     ),
     SprintDefinition(
         number=7,
@@ -80,5 +87,6 @@ SPRINTS: list[SprintDefinition] = [
         ),
         primary_files=["decisions/"],
         allow_extra_files=True,
+        prompt_name="sprint_7_adrs",
     ),
 ]

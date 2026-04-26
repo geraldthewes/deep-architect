@@ -7,6 +7,7 @@ from deep_architect.git_ops import (
     get_modified_files,
     git_commit,
     git_commit_staged,
+    reject_unauthorized_files,
     restore_arch_files_from_commit,
     validate_git_repo,
 )
@@ -226,3 +227,119 @@ def test_git_commit_staged_noop_when_nothing_staged(tmp_path: Path) -> None:
 
     assert result is False
     assert repo.head.commit.hexsha == initial_sha
+
+
+# --- reject_unauthorized_files tests ---
+
+
+def _make_repo_with_file(tmp_path: Path, filename: str, content: str = "# content") -> git.Repo:
+    repo = git.Repo.init(tmp_path)
+    f = tmp_path / filename
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(content)
+    repo.index.add([str(f)])
+    repo.index.commit("init")
+    return repo
+
+
+def test_reject_unauthorized_untracked_file_deleted(tmp_path: Path) -> None:
+    repo = _make_repo_with_file(tmp_path, "c1-context.md")
+    scratch = tmp_path / "frontend" / "debug.md"
+    scratch.parent.mkdir(exist_ok=True)
+    scratch.write_text("# scratch")
+    paths = get_modified_files(repo)
+
+    rejected = reject_unauthorized_files(
+        repo, tmp_path, paths,
+        allowed_relpaths={"c1-context.md"},
+        allowed_dir_prefixes=set(),
+    )
+
+    assert scratch not in rejected or not scratch.exists()
+    assert any("debug.md" in str(r) for r in rejected)
+    assert not scratch.exists()
+
+
+def test_reject_unauthorized_tracked_modified_file_reverted(tmp_path: Path) -> None:
+    repo = _make_repo_with_file(tmp_path, "c1-context.md")
+    extra = tmp_path / "extra.md"
+    extra.write_text("# original")
+    repo.index.add([str(extra)])
+    repo.index.commit("add extra")
+
+    extra.write_text("# modified")
+    paths = get_modified_files(repo)
+
+    reject_unauthorized_files(
+        repo, tmp_path, paths,
+        allowed_relpaths={"c1-context.md"},
+        allowed_dir_prefixes=set(),
+    )
+
+    assert extra.read_text() == "# original"
+
+
+def test_reject_unauthorized_allowed_dir_prefix_kept(tmp_path: Path) -> None:
+    repo = _make_repo_with_file(tmp_path, "c1-context.md")
+    frontend = tmp_path / "frontend" / "c2-container.md"
+    frontend.parent.mkdir(exist_ok=True)
+    frontend.write_text("# frontend")
+    paths = get_modified_files(repo)
+
+    rejected = reject_unauthorized_files(
+        repo, tmp_path, paths,
+        allowed_relpaths={"c1-context.md"},
+        allowed_dir_prefixes={"frontend/"},
+    )
+
+    assert not any("c2-container.md" in str(r) for r in rejected)
+    assert frontend.exists()
+
+
+def test_reject_unauthorized_harness_state_files_kept(tmp_path: Path) -> None:
+    repo = _make_repo_with_file(tmp_path, "c1-context.md")
+    for name in ("generator-history.md", "generator-learnings.md"):
+        (tmp_path / name).write_text("# state")
+    paths = get_modified_files(repo)
+
+    rejected = reject_unauthorized_files(
+        repo, tmp_path, paths,
+        allowed_relpaths={"c1-context.md", "generator-history.md", "generator-learnings.md"},
+        allowed_dir_prefixes=set(),
+    )
+
+    assert not any("generator-history" in str(r) for r in rejected)
+    assert not any("generator-learnings" in str(r) for r in rejected)
+
+
+def test_reject_unauthorized_contracts_dir_kept(tmp_path: Path) -> None:
+    repo = _make_repo_with_file(tmp_path, "c1-context.md")
+    contracts_dir = tmp_path / "contracts"
+    contracts_dir.mkdir()
+    (contracts_dir / "sprint-1.json").write_text("{}")
+    paths = get_modified_files(repo)
+
+    rejected = reject_unauthorized_files(
+        repo, tmp_path, paths,
+        allowed_relpaths={"c1-context.md"},
+        allowed_dir_prefixes={"contracts/"},
+    )
+
+    assert not any("sprint-1.json" in str(r) for r in rejected)
+    assert (contracts_dir / "sprint-1.json").exists()
+
+
+def test_reject_unauthorized_noop_when_all_allowed(tmp_path: Path) -> None:
+    repo = _make_repo_with_file(tmp_path, "c1-context.md")
+    new_file = tmp_path / "c2-container.md"
+    new_file.write_text("# c2")
+    paths = get_modified_files(repo)
+
+    rejected = reject_unauthorized_files(
+        repo, tmp_path, paths,
+        allowed_relpaths={"c1-context.md", "c2-container.md"},
+        allowed_dir_prefixes=set(),
+    )
+
+    assert rejected == []
+    assert new_file.exists()

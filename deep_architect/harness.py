@@ -31,6 +31,7 @@ from deep_architect.git_ops import (
     get_modified_files,
     git_commit,
     git_commit_staged,
+    reject_unauthorized_files,
     restore_arch_files_from_commit,
     validate_git_repo,
 )
@@ -58,6 +59,41 @@ from deep_architect.sprints import SPRINTS, SprintDefinition
 
 logger = get_logger(__name__)
 console = Console()
+
+
+_HARNESS_STATE_FILES = frozenset({
+    "generator-history.md",
+    "generator-learnings.md",
+    "critic-history.md",
+    "INDEX.md",
+    "architecture-decisions.md",
+    "nfr_catalog.json",
+})
+
+_HARNESS_STATE_DIRS = frozenset({
+    "contracts/",
+    "feedback/",
+    "logs/",
+    ".checkpoints/",
+})
+
+
+def _build_file_allowlist(
+    sprint: SprintDefinition,
+    contract: SprintContract,
+) -> tuple[set[str], set[str]]:
+    """Return (allowed_relpaths, allowed_dir_prefixes) for reject_unauthorized_files."""
+    allowed_relpaths: set[str] = set(_HARNESS_STATE_FILES)
+    allowed_relpaths.update(contract.files_to_produce)
+
+    allowed_dir_prefixes: set[str] = set(_HARNESS_STATE_DIRS)
+    if sprint.allow_extra_files:
+        for f in contract.files_to_produce:
+            top = f.split("/")[0]
+            if "/" in f:
+                allowed_dir_prefixes.add(top + "/")
+
+    return allowed_relpaths, allowed_dir_prefixes
 
 
 def _build_supplementary_context(context_files: list[Path] | None) -> str:
@@ -172,7 +208,7 @@ async def run_final_agreement(
     logger.info("Running final mutual agreement round...")
 
     prompt_name = "final_agreement_re" if codebase_path is not None else "final_agreement"
-    final_prompt = load_prompt(prompt_name, output_dir=str(output_dir))
+    final_prompt = load_prompt(prompt_name)
 
     gen_options = make_agent_options(
         generator_config,
@@ -578,6 +614,19 @@ async def run_harness(
 
                     # Detect files written by the generator and auto-commit
                     written = get_modified_files(repo)
+                    allowed_relpaths, allowed_dir_prefixes = _build_file_allowlist(
+                        sprint, contract
+                    )
+                    rejected = reject_unauthorized_files(
+                        repo, output_dir, written, allowed_relpaths, allowed_dir_prefixes
+                    )
+                    if rejected:
+                        logger.warning(
+                            "[Sprint %d] Rejected %d scratch file(s): %s",
+                            sprint.number, len(rejected),
+                            ", ".join(p.name for p in rejected),
+                        )
+                        written = get_modified_files(repo)
                     if written:
                         logger.info(
                             "[Sprint %d] Generator wrote %d files: %s",
@@ -642,6 +691,19 @@ async def run_harness(
                         sprint.number, round_num,
                     )
                     written = get_modified_files(repo)
+                    allowed_relpaths, allowed_dir_prefixes = _build_file_allowlist(
+                        sprint, contract
+                    )
+                    rejected = reject_unauthorized_files(
+                        repo, output_dir, written, allowed_relpaths, allowed_dir_prefixes
+                    )
+                    if rejected:
+                        logger.warning(
+                            "[Sprint %d] Rejected %d scratch file(s): %s",
+                            sprint.number, len(rejected),
+                            ", ".join(p.name for p in rejected),
+                        )
+                        written = get_modified_files(repo)
                     if written:
                         git_commit(
                             repo,
