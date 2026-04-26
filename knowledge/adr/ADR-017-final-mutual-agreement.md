@@ -25,7 +25,7 @@ If either agent does not output `"READY_TO_SHIP"`, the harness logs a warning bu
 ## Consequences
 
 - Adds one extra LLM call (two agents, read-only) at the end of each run — relatively cheap.
-- The `final_agreement.md` prompt instructs both agents to review the full architecture directory.
+- The `final_agreement.md` and `final_agreement_re.md` prompts tell both agents that their `cwd` is already the architecture root. Agents must use relative paths and `**/*` globs — they must not prefix paths with `knowledge/architecture/` or any absolute directory name. The prompts do not embed an `{output_dir}` placeholder; `load_prompt()` is called with no kwargs.
 - A warning in the output log flags when `"READY_TO_SHIP"` is not returned, giving users a clear signal to review.
 
-**Files:** `deep_architect/harness.py:107-151`, `deep_architect/prompts/final_agreement.md`
+**Files:** `deep_architect/harness.py:107-151`, `deep_architect/prompts/final_agreement.md`, `deep_architect/prompts/final_agreement_re.md`

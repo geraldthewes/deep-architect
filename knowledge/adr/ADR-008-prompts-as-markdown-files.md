@@ -8,7 +8,7 @@
 
 ## Context
 
-The harness uses 13+ prompt templates for system prompts, sprint-specific instructions, and contract negotiation. These could be embedded in Python source, stored in a database, or kept as external files.
+The harness uses 19+ prompt templates for system prompts, sprint-specific instructions, and contract negotiation. These could be embedded in Python source, stored in a database, or kept as external files.
 
 ## Decision
 
@@ -25,9 +25,10 @@ The full list must match `EXPECTED_PROMPTS` in `tests/test_prompts.py` — if an
 
 ## Consequences
 
-- All 13 prompt files must exist. A missing file causes `FileNotFoundError` at runtime (and test failure at test time).
-- Variable substitution uses `str.format_map` — prompt files use `{variable_name}` syntax for interpolation.
+- All prompt files must exist. A missing file causes `FileNotFoundError` at runtime (and test failure at test time). The authoritative list is `EXPECTED_PROMPTS` in `tests/test_prompts.py`.
+- Variable substitution uses `str.format_map` — prompt files use `{variable_name}` syntax for interpolation. Not all prompts require substitution; `load_prompt()` skips `format_map` when no kwargs are passed.
+- Each `SprintDefinition` carries a `prompt_name` field. `run_generator()` loads that prompt via `load_prompt(sprint.prompt_name)` and injects it as a `## Sprint Guidance` section into the generator user prompt each round. This is the primary mechanism for delivering per-sprint-specific rules (e.g., ADR naming for sprint 7) to the generator.
 - Users can fork the repo and customize prompts for their domain (e.g., different C4 conventions for embedded systems) without modifying Python.
-- The test `test_prompts.py` acts as a guard against accidentally deleting or renaming a prompt file.
+- The test `test_prompts.py` acts as a guard against accidentally deleting or renaming a prompt file; `test_all_sprint_prompt_names_resolve` additionally verifies every sprint's `prompt_name` resolves correctly.
 
 **Files:** `deep_architect/prompts/__init__.py`, `deep_architect/prompts/*.md`, `tests/test_prompts.py`

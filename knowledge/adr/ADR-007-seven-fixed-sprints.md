@@ -33,8 +33,9 @@ The harness is fixed at **7 sprints**, each producing a specific C4 artifact:
 
 ## Consequences
 
-- Adding a sprint requires: (1) entry in `SPRINTS` list, (2) new prompt `.md` file, (3) update `EXPECTED_PROMPTS` in tests, (4) update progress total.
+- Adding a sprint requires: (1) entry in `SPRINTS` list with `prompt_name` set, (2) new prompt `.md` file matching that name, (3) update `EXPECTED_PROMPTS` in tests, (4) update progress total.
+- Each `SprintDefinition` carries a `prompt_name: str | None` field. `run_generator()` loads the named prompt and injects it as a `## Sprint Guidance` section into the generator's user prompt every round — giving the generator detailed per-sprint instructions (e.g., ADR naming rules for sprint 7) alongside the sprint contract.
 - **Constraint (CLAUDE.md):** "Do not add more than 7 sprints without a strong reason — they are fixed by design."
 - Users cannot add sprints via config; changes require code modification (by design — sprints are not a plugin point).
 
-**Files:** `deep_architect/sprints.py`, `deep_architect/prompts/sprint_*.md`, `deep_architect/harness.py`
+**Files:** `deep_architect/sprints.py`, `deep_architect/prompts/sprint_*.md`, `deep_architect/harness.py`, `deep_architect/agents/generator.py`

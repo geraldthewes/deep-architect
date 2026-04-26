@@ -14,7 +14,8 @@ After the generator writes architecture files, the harness needs to know what wa
 
 After each generator pass, the harness:
 1. Calls `get_modified_files(repo)` which runs `git status` to detect new/modified files
-2. Stages and commits those files with message: `"Generator pass {round} - sprint {N} ({Sprint Name})"`
+2. Calls `reject_unauthorized_files()` to delete (untracked) or revert (tracked-modified) any file not in the allowlist for this sprint; files outside `contract.files_to_produce`, the harness state files, and the permitted subdirectories are silently removed before committing
+3. Stages and commits the surviving files with message: `"Generator pass {round} - sprint {N} ({Sprint Name})"`
 
 The output directory must be inside a git repository (validated at startup by `validate_git_repo()`).
 
@@ -29,6 +30,7 @@ The output directory must be inside a git repository (validated at startup by `v
 
 - The target output directory must be a git repo. `validate_git_repo()` raises `ValueError` if it is not.
 - The harness calls `git_commit()` after every successful generator pass, even in early rounds that the critic might reject.
+- Scratch/debug/test files the generator writes outside the sprint allowlist are deleted or reverted before the commit — they never appear in history. A warning is logged listing the rejected filenames.
 - Commit history faithfully records all iterations including failed ones (critic may score round 1 poorly; that commit still exists).
 - Users can see the full architectural evolution via `git log`.
 - Rollback commits (ADR-023) use a separate `git_commit_staged()` function — the restore operation stages directly to the index, so the working-tree-diff path used by `git_commit()` would not detect the changes.

@@ -20,13 +20,13 @@ Sprints 3-6 (container-level detail sprints) have `allow_extra_files=True`. Spri
 
 - **Natural elaboration:** Container-level sprints (frontend, backend, database) organically produce sub-documents (auth flows, schema definitions, deployment diagrams). Blocking this would require the generator to cram everything into one file.
 - **Sprint 1/2 strictness:** The C1 context and C2 overview are intentionally concise; extra files would dilute the focus.
-- **Sprint 7 strictness:** ADRs have a fixed structure; extra files would create unreviewed artifacts outside the sprint contract.
+- **Sprint 7 permissiveness:** ADRs land in `decisions/` and the sprint may produce multiple files (individual ADR files, cross-cutting concerns doc); `allow_extra_files=True` permits this.
 - **The flag is in the contract:** The generator is informed of this constraint via the sprint contract, so it knows when to elaborate and when to stay focused.
 
 ## Consequences
 
 - The critic does not penalize extra files when `allow_extra_files=True`; it reviews them as part of the sprint's output.
-- `get_modified_files()` returns all changed files; the harness commits them regardless of whether they were in `primary_files`.
-- Sprint-level file contracts (in `SprintContract.files_to_produce`) may be extended by the generator when the flag is set.
+- `reject_unauthorized_files()` enforces the flag at commit time. When `allow_extra_files=False`, any file outside `contract.files_to_produce` and the harness state allowlist is deleted or reverted before the commit. When `allow_extra_files=True`, the top-level subdirectories of the sprint's primary files are added to the allowed directory prefixes (e.g., sprint 3 → `frontend/` is fully open).
+- Sprint-level file contracts (in `SprintContract.files_to_produce`) may be extended by the generator when the flag is set, but only within the permitted subdirectories.
 
 **Files:** `deep_architect/sprints.py:12,43,52,63,82`
