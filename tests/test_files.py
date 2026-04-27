@@ -13,6 +13,7 @@ from deep_architect.io.files import (
     reset_sprint_artifacts,
     save_contract,
     save_feedback,
+    save_final_agreement,
     save_progress,
     save_round_log,
     write_index,
@@ -512,3 +513,20 @@ def test_clean_run_artifacts_removes_history_files(tmp_path: Path) -> None:
     deleted_names = [p.name for p in deleted]
     assert "generator-history.md" in deleted_names
     assert "critic-history.md" in deleted_names
+
+
+def test_save_final_agreement_writes_markdown(tmp_path: Path) -> None:
+    gen_text = "I think this is READY_TO_SHIP because the architecture is solid."
+    critic_text = "I do NOT think this is ready. Many gaps remain."
+
+    path = save_final_agreement(tmp_path, gen_text, critic_text, gen_ready=True, critic_ready=False)
+
+    assert path == tmp_path / "final-agreement.md"
+    content = path.read_text()
+    assert "# Final Mutual Agreement" in content
+    assert "**Generator**: READY" in content
+    assert "**Critic**: NOT READY" in content
+    assert gen_text.strip() in content
+    assert critic_text.strip() in content
+    assert "## Generator Response" in content
+    assert "## Critic Response" in content

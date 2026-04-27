@@ -46,6 +46,7 @@ from deep_architect.io.files import (
     load_progress,
     save_contract,
     save_feedback,
+    save_final_agreement,
     save_progress,
     save_round_log,
     write_index,
@@ -234,6 +235,9 @@ async def run_final_agreement(
 
     gen_ready = "READY_TO_SHIP" in gen_result
     critic_ready = "READY_TO_SHIP" in critic_result
+
+    path = save_final_agreement(output_dir, gen_result, critic_result, gen_ready, critic_ready)
+    logger.info("Final agreement record written: %s", path)
 
     if gen_ready and critic_ready:
         logger.info("Mutual agreement reached: READY_TO_SHIP")

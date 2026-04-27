@@ -54,6 +54,30 @@ def load_feedback(output_dir: Path, sprint_number: int, round_num: int) -> Criti
     return CriticResult.model_validate_json(path.read_text())
 
 
+def save_final_agreement(
+    output_dir: Path,
+    gen_text: str,
+    critic_text: str,
+    gen_ready: bool,
+    critic_ready: bool,
+) -> Path:
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    gen_status = "READY" if gen_ready else "NOT READY"
+    critic_status = "READY" if critic_ready else "NOT READY"
+    content = (
+        f"# Final Mutual Agreement — {timestamp}\n\n"
+        f"**Generator**: {gen_status}\n"
+        f"**Critic**: {critic_status}\n\n"
+        f"## Generator Response\n\n"
+        f"```\n{gen_text.strip()}\n```\n\n"
+        f"## Critic Response\n\n"
+        f"```\n{critic_text.strip()}\n```\n"
+    )
+    path = output_dir / "final-agreement.md"
+    path.write_text(content)
+    return path
+
+
 def append_generator_history(
     output_dir: Path,
     sprint_num: int,
