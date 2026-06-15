@@ -251,6 +251,13 @@ def _parse_opencode_json(raw_stdout: str) -> AnalysisResult:
                 if isinstance(block, dict) and block.get("type") == "text":
                     last_text += block.get("text", "")
 
+        # opencode NDJSON uses {"type": "text", "part": {"type": "text", "text": "..."}}
+        part = event.get("part", {})
+        if isinstance(part, dict) and part.get("type") == "text":
+            text = part.get("text", "")
+            if isinstance(text, str):
+                last_text += text
+
     if not last_text:
         return AnalysisResult(
             verdict=Verdict.BACKLOG,
@@ -294,10 +301,9 @@ def call_opencode_analysis(prompt: str, model: str) -> AnalysisResult:
                 "run",
                 "--model",
                 model,
-                "--command",
-                prompt,
                 "--format",
                 "json",
+                prompt,
             ],
             capture_output=True,
             text=True,
