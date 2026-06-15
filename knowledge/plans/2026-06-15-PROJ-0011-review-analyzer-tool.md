@@ -195,10 +195,10 @@ if __name__ == "__main__":
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `review-analyzer --help` shows all CLI options
-- [ ] Tool processes empty input gracefully
-- [ ] Linting passes: `ruff check .`
-- [ ] Type checking passes: `mypy .`
+- [x] `review-analyzer --help` shows all CLI options
+- [x] Tool processes empty input gracefully
+- [x] Linting passes: `ruff check .`
+- [x] Type checking passes: `mypy .`
 
 #### Manual Verification:
 - [ ] Help text displays correctly
@@ -417,11 +417,11 @@ def process_findings_concurrently(
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `--include` / `--exclude` filters correctly filter paths (basic implementation)
-- [ ] Output files are valid markdown with proper structure
-- [ ] Concurrent processing works without race conditions
-- [ ] Unit tests pass: `pytest`
-- [ ] Tool exits with non-zero code on unrecoverable errors
+- [x] `--include` / `--exclude` filters correctly filter paths (basic implementation)
+- [x] Output files are valid markdown with proper structure
+- [x] Concurrent processing works without race conditions
+- [x] Unit tests pass: `pytest`
+- [x] Tool exits with non-zero code on unrecoverable errors
 
 #### Manual Verification:
 - [ ] LLM analysis produces structured JSON responses
@@ -665,12 +665,12 @@ if __name__ == "__main__":
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] Tool processes empty input gracefully
-- [ ] Output files are valid markdown with proper structure
-- [ ] Summary report is generated at the end
-- [ ] Linting passes: `ruff check .`
-- [ ] Type checking passes: `mypy .`
-- [ ] Unit tests pass: `pytest`
+- [x] Tool processes empty input gracefully
+- [x] Output files are valid markdown with proper structure
+- [x] Summary report is generated at the end
+- [x] Linting passes: `ruff check .`
+- [x] Type checking passes: `mypy .`
+- [x] Unit tests pass: `pytest`
 
 #### Manual Verification:
 - [ ] Run against `plant-tracking/code-review.json` and verify output quality
@@ -860,11 +860,11 @@ def process_findings_concurrently(
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `--include` / `--exclude` filters correctly filter paths
-- [ ] Tool exits with non-zero code on unrecoverable errors
-- [ ] Linting passes: `ruff check .`
-- [ ] Type checking passes: `mypy .`
-- [ ] Unit tests pass: `pytest`
+- [x] `--include` / `--exclude` filters correctly filter paths
+- [x] Tool exits with non-zero code on unrecoverable errors
+- [x] Linting passes: `ruff check .`
+- [x] Type checking passes: `mypy .`
+- [x] Unit tests pass: `pytest`
 
 #### Manual Verification:
 - [ ] Path filtering works correctly with glob patterns
@@ -1188,14 +1188,14 @@ def test_analyze_finding_integration():
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] `--include` / `--exclude` filters correctly filter paths
-- [ ] Output files are valid markdown with proper structure
-- [ ] Summary report is generated at the end
-- [ ] Concurrent processing works without race conditions
-- [ ] Tool exits with non-zero code on unrecoverable errors
-- [ ] Linting passes: `ruff check .`
-- [ ] Type checking passes: `mypy .`
-- [ ] Unit tests pass: `pytest` (target: >90% coverage)
+- [x] `--include` / `--exclude` filters correctly filter paths
+- [x] Output files are valid markdown with proper structure
+- [x] Summary report is generated at the end
+- [x] Concurrent processing works without race conditions
+- [x] Tool exits with non-zero code on unrecoverable errors
+- [x] Linting passes: `ruff check .`
+- [x] Type checking passes: `mypy .`
+- [x] Unit tests pass: `pytest` (target: >90% coverage)
 
 #### Manual Verification:
 - [ ] Run against `plant-tracking/code-review.json` and verify output quality
