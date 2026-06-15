@@ -358,8 +358,15 @@ def process_findings_concurrently(
     findings: list[dict[str, Any]],
     model: str,
     max_workers: int,
+    output_dir: Path | None = None,
 ) -> list[tuple[dict[str, Any], AnalysisResult]]:
-    """Process findings through LLM with controlled concurrency."""
+    """Process findings through LLM with controlled concurrency, writing
+    each result to disk immediately (when *output_dir* is given) so progress
+    is preserved on crash."""
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Writing reports to {output_dir}/")
+
     breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
     results: list[tuple[dict[str, Any], AnalysisResult]] = []
 
@@ -373,18 +380,25 @@ def process_findings_concurrently(
             finding = future_to_finding[future]
             try:
                 analysis = future.result(timeout=180)
-                results.append((finding, analysis))
             except Exception as exc:
-                results.append(
-                    (
-                        finding,
-                        AnalysisResult(
-                            verdict=Verdict.BACKLOG,
-                            analysis=f"Task exception: {exc}",
-                            raw_response="",
-                        ),
-                    )
+                analysis = AnalysisResult(
+                    verdict=Verdict.BACKLOG,
+                    analysis=f"Task exception: {exc}",
+                    raw_response="",
                 )
+
+            results.append((finding, analysis))
+
+            # Write file immediately so progress survives a crash
+            if output_dir is not None:
+                try:
+                    filename = generate_output_filename(finding)
+                    output_path = output_dir / filename
+                    content = generate_markdown_content(finding, analysis)
+                    output_path.write_text(content, encoding="utf-8")
+                except OSError as exc:
+                    log.error("Failed to write %s: %s", output_path, exc)
+                    print(f"Error writing {output_path}: {exc}", file=sys.stderr)
 
             # Progress indicator (every 5 findings)
             if i % 5 == 0:
@@ -470,26 +484,7 @@ def generate_markdown_content(
     return "\n".join(lines) + "\n"
 
 
-def write_analysis_files(
-    results: list[tuple[dict[str, Any], AnalysisResult]],
-    output_dir: Path,
-) -> dict[str, int]:
-    """Write one markdown file per finding. Returns verdict counts."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    counts: dict[str, int] = {v.value: 0 for v in Verdict}
 
-    for finding, analysis in results:
-        filename = generate_output_filename(finding)
-        output_path = output_dir / filename
-        content = generate_markdown_content(finding, analysis)
-        try:
-            output_path.write_text(content, encoding="utf-8")
-            counts[analysis.verdict.value] += 1
-        except OSError as exc:
-            log.error("Failed to write %s: %s", output_path, exc)
-            print(f"Error writing {output_path}: {exc}", file=sys.stderr)
-
-    return counts
 
 
 def generate_summary_report(
@@ -530,27 +525,28 @@ def _run_analysis(
         f"(model={model}, concurrency={concurrency})…"
     )
 
-    results = process_findings_concurrently(findings, model, concurrency)
+    results = process_findings_concurrently(
+        findings, model, concurrency, output_dir if not summary_only else None
+    )
 
-    if summary_only:
-        counts: dict[str, int] = {v.value: 0 for v in Verdict}
-        for _, analysis in results:
-            counts[analysis.verdict.value] += 1
-    else:
-        log.info("Writing analysis files to %s", output_dir)
-        print(f"Writing reports to {output_dir}/")
-        counts = write_analysis_files(results, output_dir)
+    counts: dict[str, int] = {v.value: 0 for v in Verdict}
+    for _, analysis in results:
+        counts[analysis.verdict.value] += 1
+
+    if not summary_only:
+        log.info("Per-finding reports written to %s", output_dir)
 
     summary = generate_summary_report(counts, len(findings))
     print("\n" + summary)
 
-    summary_path = output_dir / "SUMMARY.md"
-    try:
-        summary_path.write_text(summary, encoding="utf-8")
-        print(f"\nSummary written to {summary_path}")
-    except OSError as exc:
-        log.error("Failed to write summary: %s", exc)
-        print(f"Error writing summary: {exc}", file=sys.stderr)
+    if not summary_only:
+        summary_path = output_dir / "SUMMARY.md"
+        try:
+            summary_path.write_text(summary, encoding="utf-8")
+            print(f"\nSummary written to {summary_path}")
+        except OSError as exc:
+            log.error("Failed to write summary: %s", summary_path, exc)
+            print(f"Error writing summary: {exc}", file=sys.stderr)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

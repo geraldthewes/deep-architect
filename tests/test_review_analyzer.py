@@ -23,7 +23,6 @@ from deep_architect.review_analyzer import (
     generate_summary_report,
     get_filepath_hash,
     load_ocr_json,
-    write_analysis_files,
 )
 
 # ---------------------------------------------------------------------------
@@ -472,35 +471,3 @@ class TestGenerateSummaryReport:
 
 
 # ---------------------------------------------------------------------------
-# write_analysis_files
-# ---------------------------------------------------------------------------
-
-
-class TestWriteAnalysisFiles:
-
-    def test_writes_files(self, tmp_path: Path) -> None:
-        finding_a: dict[str, Any] = {
-            "type": "comment",
-            "path": "a.py",
-            "index": 0,
-            "start_line": 1,
-            "end_line": 1,
-            "content": "x",
-        }
-        finding_b: dict[str, Any] = {
-            "type": "comment",
-            "path": "b.py",
-            "index": 1,
-            "start_line": 1,
-            "end_line": 1,
-            "content": "y",
-        }
-        findings = [
-            (finding_a, AnalysisResult(Verdict.VALID, "ok", "")),
-            (finding_b, AnalysisResult(Verdict.REJECTED, "nope", "")),
-        ]
-        counts = write_analysis_files(findings, tmp_path / "out")
-        assert counts["valid"] == 1
-        assert counts["rejected"] == 1
-        md_files = list((tmp_path / "out").glob("*.md"))
-        assert len(md_files) == 2
