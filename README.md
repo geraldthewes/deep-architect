@@ -40,6 +40,7 @@ Verify the install:
 
 ```bash
 uv run adversarial-architect --help
+uv run review-analyzer --help
 ```
 
 ---
@@ -392,6 +393,15 @@ Use `--resume` to continue. If 3 hours is too tight, increase it:
 timeout_hours = 6.0
 ```
 
+**`review-analyzer: command not found`**
+The command is installed inside the project's virtual environment. Use `uv run review-analyzer` or activate the venv first with `source .venv/bin/activate`.
+
+**`opencode binary not found`**
+`review-analyzer` needs `opencode` to make LLM calls. Set the `OPENCODE_BIN` environment variable to the full path of your `opencode` binary:
+```bash
+export OPENCODE_BIN=$(which opencode)
+```
+
 ---
 
 ## Tips for Best Results
@@ -402,6 +412,50 @@ timeout_hours = 6.0
 - **Point at a well-documented repo (reverse-engineer).** The generator discovers the codebase via its tools each round. Repos with a README, clear entry points, and conventional structure (e.g. `pyproject.toml`, `package.json`, IaC configs) yield the most accurate diagrams. If the repo is large, consider adding a `--context` file that describes the top-level layout.
 - **Check Sprint 1 before walking away.** After sprint 1 completes, glance at `c1-context.md`. If the system boundary is wrong, the rest of the architecture will follow the wrong path — better to catch it early.
 - **Raise `max_turns` for complex systems.** If the generator is consistently cutting off before producing all required files, increase `max_turns` in the `[generator]` section.
+
+---
+
+## Review Analyzer
+
+`review-analyzer` takes an OCR (Open Code Review) JSON file and uses an LLM to triage each finding, classifying it as `VALID`, `REJECTED`, or `BACKLOG` with detailed reasoning. This is useful when OCR produces a large volume of findings and you need a second LLM opinion to separate real issues from false positives.
+
+### Usage
+
+```bash
+uv run review-analyzer <ocr-file.json> [options]
+```
+
+### CLI Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--include <glob>` | (none) | Only process findings matching this path pattern (repeatable) |
+| `--exclude <glob>` | (none) | Skip findings matching this path pattern (repeatable) |
+| `--model <name>` | `standard/coder` | LLM model for analysis |
+| `--concurrency <n>` | `5` | Maximum parallel LLM requests |
+| `--output-dir <dir>` | `feedback/` | Directory for per-finding Markdown reports |
+| `--summary-only` | off | Print summary counts without writing individual files |
+
+### Example
+
+```bash
+uv run review-analyzer code-review.json \
+    --exclude '.agents/*' --exclude '.claude/*' \
+    --model standard/coder \
+    --output-dir feedback/
+```
+
+### Output
+
+The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to the output directory, plus a `SUMMARY.md` with verdict counts and percentages.
+
+### Configuration
+
+`review-analyzer` invokes `opencode run` under the hood for its LLM calls. By default it expects the binary at `/home/gerald/.opencode/bin/opencode`. Override with the `OPENCODE_BIN` environment variable:
+
+```bash
+export OPENCODE_BIN=/path/to/your/opencode
+```
 
 ---
 
