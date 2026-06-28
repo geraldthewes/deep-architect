@@ -530,12 +530,15 @@ class TestProcessFindings:
         assert stats["processed"] == 1
         assert stats["committed"] == 1
 
-    def test_parse_error_counts_as_error(self, tmp_path: Path) -> None:
-        """Test that parse errors are counted as errors."""
+    def test_unparseable_valid_finding_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that VALID findings with no code blocks are skipped, not
+        errors.  These are warning-type findings that can't be actioned."""
         output_dir = tmp_path / "feedback"
         output_dir.mkdir()
 
-        # Write a file that looks VALID but has missing sections
+        # Write a file that is VALID but has no code blocks (warning-type)
         broken_md = """# OCR Review Analysis
 
 **Verdict**: VALID
@@ -549,7 +552,7 @@ class TestProcessFindings:
         )
 
         assert stats["processed"] == 1
-        assert stats["errors"] == 1
+        assert stats["skipped"] == 1
 
 
 # ---------------------------------------------------------------------------

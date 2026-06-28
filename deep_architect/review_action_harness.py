@@ -305,11 +305,21 @@ def _process_single_finding(
     """
     finding = parse_markdown_finding(md_file)
     if finding is None:
-        return ("error", False, f"Failed to parse finding: {md_file.name}")
+        # Warning-type findings have no code blocks — skip, don't error
+        return (
+            "skipped",
+            False,
+            f"Cannot parse action from {md_file.name} (no code blocks)",
+        )
 
     logger.info(
         "Processing finding %s for %s", finding.finding_id, finding.file_path
     )
+
+    # Dry-run: skip agent call entirely
+    if dry_run:
+        logger.info("[DRY RUN] Would apply fix for %s", finding.file_path)
+        return ("committed", True, None)
 
     # Apply fix with retries
     success = False
@@ -330,6 +340,8 @@ def _process_single_finding(
                 break
             last_error = "Agent.apply_fix returned False"
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             last_error = str(e)
             logger.warning(
@@ -355,37 +367,32 @@ def _process_single_finding(
         )
 
     # Validate changes
-    if not dry_run:
-        if not run_validation(finding.file_path, validation_config):
-            return (
-                "skipped",
-                False,
-                f"Validation failed for {finding.file_path}, skipping commit",
-            )
+    if not run_validation(finding.file_path, validation_config):
+        return (
+            "skipped",
+            False,
+            f"Validation failed for {finding.file_path}, skipping commit",
+        )
 
     # Commit changes
-    if not dry_run:
-        try:
-            repo = validate_git_repo(Path.cwd())
-            comment_snippet = finding.review_comment[:50]
-            suffix = (
-                "..." if len(finding.review_comment) > 50 else ""
-            )
-            commit_message = (
-                f"fix: {comment_snippet}{suffix} [{finding.finding_id}]"
-            )
-            git_commit(repo, commit_message, [finding.file_path])
-            logger.info("Committed fix for %s", finding.file_path)
-            return ("committed", True, None)
-        except Exception as e:
-            return (
-                "error",
-                False,
-                f"Failed to commit changes for {finding.file_path}: {e}",
-            )
-    else:
-        logger.info("[DRY RUN] Would commit fix for %s", finding.file_path)
+    try:
+        repo = validate_git_repo(Path.cwd())
+        comment_snippet = finding.review_comment[:50]
+        suffix = (
+            "..." if len(finding.review_comment) > 50 else ""
+        )
+        commit_message = (
+            f"fix: {comment_snippet}{suffix} [{finding.finding_id}]"
+        )
+        git_commit(repo, commit_message, [finding.file_path])
+        logger.info("Committed fix for %s", finding.file_path)
         return ("committed", True, None)
+    except Exception as e:
+        return (
+            "error",
+            False,
+            f"Failed to commit changes for {finding.file_path}: {e}",
+        )
 
 
 def process_findings(
