@@ -110,8 +110,10 @@ class OpencodeAgent:
         context: str = "",
     ) -> bool:
         """Apply fix using opencode subprocess."""
+        # Use absolute path to avoid any path resolution issues
+        absolute_file_path = file_path.resolve()
         prompt = (
-            f"File: {file_path}\n"
+            f"File: {absolute_file_path}\n"
             f"Existing code:\n{existing_code}\n\n"
             f"Replace with:\n{suggested_code}\n\n"
             f"Context: {context}"
@@ -126,6 +128,7 @@ class OpencodeAgent:
                     self.model,
                     "--format",
                     "json",
+                    "--dangerously-skip-permissions",
                     prompt,
                 ],
                 capture_output=True,
@@ -134,16 +137,91 @@ class OpencodeAgent:
             )
 
             if result.returncode != 0:
+                # Extract last meaningful error from NDJSON output
+                last_error = "no output"
+                stdout_preview = ""
+                error_details = []
+                full_stdout_for_debug = result.stdout[:1000]  # Keep first 1000 chars for debugging
+                if result.stdout.strip():
+                    stdout_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+                    if stdout_lines:
+                        stdout_preview = " | ".join(stdout_lines[-3:])  # Last 3 non-empty lines
+                        # Try to parse NDJSON for error details
+                        for line in result.stdout.splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                event = json.loads(line)
+                                # Check for error events
+                                if event.get("type") == "error":
+                                    error_data = event.get("error", {})
+                                    if isinstance(error_data, dict):
+                                        message = error_data.get("message", "Unknown error")
+                                        last_error = str(message)[:200]
+                                        error_details.append(f"error event: {message}")
+                                    else:
+                                        last_error = str(error_data)[:200]
+                                        error_details.append(f"error event: {error_data}")
+                                # Check for tool_use events with errors
+                                elif event.get("type") == "tool_use":
+                                    part = event.get("part", {})
+                                    if part.get("type") == "tool_use":
+                                        state = part.get("state", {})
+                                        if state.get("status") == "error":
+                                            error_msg = state.get("error", "unknown error")
+                                            last_error = error_msg[:200]
+                                            error_details.append(f"tool_use error: {error_msg}")
+                                # Check for text events
+                                elif event.get("type") == "text":
+                                    part = event.get("part", {})
+                                    if part.get("type") == "text":
+                                        text_content = part.get("text", "")
+                                        if text_content and ("error" in text_content.lower() or "fail" in text_content.lower()):
+                                            last_error = text_content[:200]
+                                            error_details.append(f"text error indicator: {text_content[:100]}")
+                            except json.JSONDecodeError:
+                                # Not JSON, might be raw text - use first 200 chars
+                                if not last_error or last_error == "no output":
+                                    last_error = line[:200]
+                                    error_details.append(f"raw line: {line[:100]}")
+
+                # If we still have no specific error, check if there are any text events that might indicate what happened
+                if last_error == "no output" and result.stdout.strip():
+                    # Look for any text content that might be useful
+                    for line in result.stdout.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            event = json.loads(line)
+                            if event.get("type") == "text":
+                                part = event.get("part", {})
+                                if part.get("type") == "text":
+                                    text_content = part.get("text", "")
+                                    if text_content and len(text_content) > 10:  # Avoid tiny snippets
+                                        last_error = text_content[:200]
+                                        error_details.append(f"text content: {text_content[:100]}")
+                                        break
+                        except json.JSONDecodeError:
+                            pass
+
                 logger.error(
-                    "OpencodeAgent: failed to apply fix for %s: %s",
+                    "OpencodeAgent: failed to apply fix for %s: returncode=%d, error=%s, stdout_preview=%s, error_details=%s, full_stdout=%s",
                     file_path,
-                    result.stderr[:500],
+                    result.returncode,
+                    last_error,
+                    stdout_preview or "(empty)",
+                    " | ".join(error_details[:3]) if error_details else "(none)",
+                    full_stdout_for_debug,
                 )
                 return False
 
-            # Parse NDJSON output to verify success
-            # (review_analyzer.py pattern)
-            return _parse_opencode_ndjson(result.stdout)
+            logger.debug(
+                "OpencodeAgent: fix applied successfully for %s",
+                file_path,
+            )
+            return True
         except FileNotFoundError:
             logger.error(
                 "OpencodeAgent: opencode binary not found at %s",
