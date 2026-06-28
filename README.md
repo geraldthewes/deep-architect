@@ -459,6 +459,66 @@ export OPENCODE_BIN=/path/to/your/opencode
 
 ---
 
+## Review Action Harness
+
+`review-action` consumes the Markdown output of `review-analyzer` and automatically applies the suggested fixes for `VALID` findings. It processes each finding sequentially through a coding agent, validates the changes, and creates an atomic git commit.
+
+### Usage
+
+```bash
+uv run review-action <output-dir> [options]
+```
+
+Defaults to `feedback/` if no directory is specified.
+
+### CLI Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model <name>` | (from config) | Model for the coding agent |
+| `--provider <name>` | `opencode` | Agent provider (`opencode` or `claude`) |
+| `--dry-run` | off | Show what would be done without making changes |
+| `--verbose` | off | Enable verbose logging |
+| `--config <path>` | `~/.deep-architect.toml` | Configuration file path |
+
+### Example
+
+```bash
+# Apply fixes from review-analyzer output
+uv run review-action feedback/
+
+# Dry run to preview changes
+uv run review-action feedback/ --dry-run
+
+# Use Claude SDK instead of opencode
+uv run review-action feedback/ --provider claude --model sonnet
+```
+
+### Workflow
+
+The typical pipeline is:
+
+```bash
+# 1. Generate OCR findings
+opencode --ocr code-review.json
+
+# 2. Analyze and triage findings
+uv run review-analyzer code-review.json --output-dir feedback/
+
+# 3. Apply VALID fixes automatically
+uv run review-action feedback/
+```
+
+### Output
+
+`review-action` prints a summary report showing items processed, committed, skipped, and errors. Each successful fix is committed atomically with a message like:
+
+```
+fix: Rename variable for clarity... [abc12345-0]
+```
+
+---
+
 ## Development
 
 ```bash
