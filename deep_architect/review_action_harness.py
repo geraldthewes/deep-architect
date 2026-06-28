@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
@@ -123,7 +124,7 @@ class OpencodeAgent:
                     "--model",
                     self.model,
                     "--format",
-                    "default",
+                    "json",
                     prompt,
                 ],
                 capture_output=True,
@@ -135,10 +136,13 @@ class OpencodeAgent:
                 logger.error(
                     "OpencodeAgent: failed to apply fix for %s: %s",
                     file_path,
-                    result.stderr,
+                    result.stderr[:500],
                 )
                 return False
-            return True
+
+            # Parse NDJSON output to verify success
+            # (review_analyzer.py pattern)
+            return _parse_opencode_ndjson(result.stdout)
         except FileNotFoundError:
             logger.error(
                 "OpencodeAgent: opencode binary not found at %s",
@@ -159,9 +163,38 @@ class OpencodeAgent:
             return False
 
 
-# ---------------------------------------------------------------------------
-# Markdown Parsing
-# ---------------------------------------------------------------------------
+def _parse_opencode_ndjson(raw_stdout: str) -> bool:
+    """Parse opencode NDJSON output and return True if the agent completed.
+
+    opencode streams NDJSON events; we check for a ResultMessage-like event
+    that indicates completion without error.
+    """
+    for line in raw_stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        # ResultMessage in NDJSON: {"type": "result", ...}
+        if event.get("type") == "result":
+            is_error = event.get("is_error", False)
+            if is_error:
+                error_detail = event.get("errors", ["Unknown error"])
+                logger.error(
+                    "OpencodeAgent: result error: %s", error_detail
+                )
+                return False
+            return True
+
+    # No result event found — fallback: check stderr for clues
+    if raw_stdout.strip():
+        logger.warning(
+            "OpencodeAgent: no result event in output, assuming partial"
+        )
+    return False
 
 
 def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:

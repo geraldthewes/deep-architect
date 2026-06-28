@@ -254,7 +254,12 @@ class TestOpencodeAgent:
 
     @patch("deep_architect.review_action_harness.subprocess.run")
     async def test_apply_fix_success(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        import json as _json
+
+        ndjson = _json.dumps({"type": "result", "is_error": False, "result": "ok"})
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=ndjson, stderr=""
+        )
 
         agent = OpencodeAgent()
         result = await agent.apply_fix(
