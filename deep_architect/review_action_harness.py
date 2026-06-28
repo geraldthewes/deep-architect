@@ -102,6 +102,35 @@ class OpencodeAgent:
             "OPENCODE_BIN", "/home/gerald/.opencode/bin/opencode"
         )
 
+    def _load_prompt_template(self) -> str:
+        """Load the prompt template from package resources."""
+        try:
+            # Try to load from package resources first
+            import importlib.resources
+            with importlib.resources.files('deep_architect.resources').joinpath('prompt_template.md').open('r') as f:
+                return f.read()
+        except (ImportError, AttributeError, FileNotFoundError):
+            # Fallback to direct file path
+            prompt_path = Path(__file__).parent / 'resources' / 'prompt_template.md'
+            if prompt_path.exists():
+                return prompt_path.read_text(encoding='utf-8')
+            # Last resort: hardcoded template
+            return (
+                "You are a precise coding assistant. Your task is to:\n"
+                "1. Read the feedback file to understand what needs to be fixed\n"
+                "2. Confirm the issue is valid and needs fixing  \n"
+                "3. Apply the exact fix suggested in the feedback\n"
+                "4. Commit the changes with a conventional commit message\n"
+                "5. Briefly summarize what was done\n\n"
+                "The feedback file contains:\n"
+                "- File to modify\n"
+                "- Existing code (what's currently there)\n"
+                "- Suggested code (what it should be changed to)\n"
+                "- Context/explanation of why the change is needed\n\n"
+                "When committing, use the format: `fix: {brief_description} [{file_path}]`\n"
+                "If no changes are needed (already fixed), that's also acceptable."
+            )
+
     async def apply_fix(
         self,
         file_path: Path,
@@ -109,43 +138,114 @@ class OpencodeAgent:
         suggested_code: str,
         context: str = "",
     ) -> bool:
-        """Apply fix using opencode subprocess."""
+        """Apply fix using opencode subprocess with file-based input."""
+        import tempfile
+        import os
+        
         # Use absolute path to avoid any path resolution issues
         absolute_file_path = file_path.resolve()
-        prompt = (
-            f"File: {absolute_file_path}\n"
-            f"Existing code:\n{existing_code}\n\n"
-            f"Replace with:\n{suggested_code}\n\n"
-            f"Context: {context}"
-        )
-
+        
+        # Create temporary files for prompt and feedback
+        prompt_file = None
+        feedback_file = None
+        
         try:
+            # Create prompt file
+            prompt_content = self._load_prompt_template()
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+                f.write(prompt_content)
+                prompt_file = f.name
+            
+            # Create feedback file with the specific finding details
+            feedback_content = (
+                f"**File**: {absolute_file_path}\n\n"
+                f"**Existing Code**:\n```\n{existing_code}\n```\n\n"
+                f"**Suggested Code**:\n```\n{suggested_code}\n```\n\n"
+                f"**Review Comment**: {context}\n"
+            )
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+                f.write(feedback_content)
+                feedback_file = f.name
+            
+            # Run opencode with file-based input
             result = subprocess.run(
                 [
                     self.opencode_bin,
                     "run",
                     "--model",
                     self.model,
-                    "--format",
-                    "json",
-                    "--dangerously-skip-permissions",
-                    prompt,
+                    "Apply the fix based on the review feedback",
+                    "--file",
+                    prompt_file,
+                    "--file",
+                    feedback_file,
                 ],
                 capture_output=True,
                 text=True,
                 timeout=120,
             )
 
-            if result.returncode != 0:
-                # Extract last meaningful error from NDJSON output
-                last_error = "no output"
+            # Check if the fix was applied successfully
+            # Success criteria: opencode exits with code 0 AND file was modified (or already correct)
+            if result.returncode == 0:
+                # Verify the file was actually modified to match suggested code
+                try:
+                    current_content = absolute_file_path.read_text(encoding="utf-8")
+                    # Normalize line endings for comparison
+                    normalized_current = current_content.replace('\r\n', '\n')
+                    normalized_suggested = suggested_code.replace('\r\n', '\n')
+                    
+                    if normalized_current.strip() == normalized_suggested.strip():
+                        logger.debug(
+                            "OpencodeAgent: fix applied successfully for %s (file matches expected)",
+                            file_path,
+                        )
+                        return True
+                    else:
+                        # File wasn't changed to match expected - check if opencode made any changes
+                        original_content = absolute_file_path.read_text(encoding="utf-8")
+                        if normalized_current != original_content.replace('\r\n', '\n'):
+                            logger.debug(
+                                "OpencodeAgent: fix applied for %s (file was modified, checking git)",
+                                file_path,
+                            )
+                            return True
+                        else:
+                            logger.warning(
+                                "OpencodeAgent: no changes made to %s (file unchanged)",
+                                file_path,
+                            )
+                            # This might be OK if the file was already correct
+                            if normalized_current.strip() == normalized_suggested.strip():
+                                logger.debug(
+                                    "OpencodeAgent: file was already correct for %s",
+                                    file_path,
+                                )
+                                return True
+                            else:
+                                logger.error(
+                                    "OpencodeAgent: file not modified and doesn't match expected for %s",
+                                    file_path,
+                                )
+                                return False
+                except Exception as e:
+                    logger.error(
+                        "OpencodeAgent: error verifying fix for %s: %s",
+                        file_path,
+                        e,
+                    )
+                    return False
+            else:
+                # Extract error information from output
+                last_error = "unknown error"
                 stdout_preview = ""
                 error_details = []
-                full_stdout_for_debug = result.stdout[:1000]  # Keep first 1000 chars for debugging
+                full_stdout_for_debug = result.stdout[:1000] if result.stdout else ""
+                
                 if result.stdout.strip():
                     stdout_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
                     if stdout_lines:
-                        stdout_preview = " | ".join(stdout_lines[-3:])  # Last 3 non-empty lines
+                        stdout_preview = " | ".join(stdout_lines[-3:])
                         # Try to parse NDJSON for error details
                         for line in result.stdout.splitlines():
                             line = line.strip()
@@ -187,7 +287,7 @@ class OpencodeAgent:
                                     error_details.append(f"raw line: {line[:100]}")
 
                 # If we still have no specific error, check if there are any text events that might indicate what happened
-                if last_error == "no output" and result.stdout.strip():
+                if last_error == "unknown error" and result.stdout.strip():
                     # Look for any text content that might be useful
                     for line in result.stdout.splitlines():
                         line = line.strip()
@@ -207,15 +307,43 @@ class OpencodeAgent:
                             pass
 
                 logger.error(
-                    "OpencodeAgent: failed to apply fix for %s: returncode=%d, error=%s, stdout_preview=%s, error_details=%s, full_stdout=%s",
+                    "OpencodeAgent: failed to apply fix for %s: returncode=%d, error=%s, stdout_preview=%s, error_details=%s, full_stdout=%s, model=%s",
                     file_path,
                     result.returncode,
                     last_error,
                     stdout_preview or "(empty)",
                     " | ".join(error_details[:3]) if error_details else "(none)",
                     full_stdout_for_debug,
+                    self.model,
                 )
                 return False
+
+        except FileNotFoundError:
+            logger.error(
+                "OpencodeAgent: opencode binary not found at %s",
+                self.opencode_bin,
+            )
+            return False
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "OpencodeAgent: timeout applying fix for %s", file_path
+            )
+            return False
+        except Exception as e:
+            logger.error(
+                "OpencodeAgent: exception applying fix for %s: %s",
+                file_path,
+                e,
+            )
+            return False
+        finally:
+            # Clean up temporary files
+            for temp_file in [prompt_file, feedback_file]:
+                if temp_file and os.path.exists(temp_file):
+                    try:
+                        os.unlink(temp_file)
+                    except OSError:
+                        pass  # Ignore cleanup errors
 
             logger.debug(
                 "OpencodeAgent: fix applied successfully for %s",
