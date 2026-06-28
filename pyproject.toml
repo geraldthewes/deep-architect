@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 adversarial-architect = "deep_architect.cli:app"
+review-action = "deep_architect.review_action_harness:main"
 review-analyzer = "deep_architect.review_analyzer:main"
 
 [tool.hatch.build.targets.wheel]

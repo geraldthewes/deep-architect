@@ -412,14 +412,14 @@ if __name__ == "__main__":
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] Module imports without syntax errors: `python -m deep_architect.review_action --help`
-- [ ] Markdown parsing correctly extracts fields: Unit tests for `parse_markdown_finding`
-- [ ] VALID verdict detection works: Unit tests for `is_valid_finding`
-- [ ] CodingAgent protocol defines required methods: Type checking passes
-- [ ] OpencodeAgent implements CodingAgent protocol: Type checking passes
-- [ ] `ruff check .` passes
-- [ ] `mypy .` passes
-- [ ] `pytest tests/test_review_action.py` passes
+- [x] Module imports without syntax errors: `python -m deep_architect.review_action --help`
+- [x] Markdown parsing correctly extracts fields: Unit tests for `parse_markdown_finding`
+- [x] VALID verdict detection works: Unit tests for `is_valid_finding`
+- [x] CodingAgent protocol defines required methods: Type checking passes
+- [x] OpencodeAgent implements CodingAgent protocol: Type checking passes
+- [x] `ruff check .` passes
+- [x] `mypy .` passes
+- [x] `pytest tests/test_review_action_harness.py` passes
 
 #### Manual Verification:
 - [ ] End-to-end test: run harness on sample review-analyzer output, verify commits are created correctly
@@ -694,14 +694,14 @@ def run_validation_with_config(file_path: Path, config: ValidationConfig) -> boo
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] Configuration loads from `~/.deep-architect.toml` when present
-- [ ] CLI arguments properly override configuration values
-- [ ] Retry logic works for transient failures: Unit tests with mocked agent
-- [ ] Exponential backoff implemented correctly
-- [ ] Validation command configuration is used
-- [ ] `ruff check .` passes
-- [ ] `mypy .` passes
-- [ ] Extended test suite passes
+- [x] Configuration loads from `~/.deep-architect.toml` when present
+- [x] CLI arguments properly override configuration values
+- [x] Retry logic works for transient failures: Unit tests with mocked agent
+- [x] Exponential backoff implemented correctly
+- [x] Validation command configuration is used
+- [x] `ruff check .` passes
+- [x] `mypy .` passes
+- [x] Extended test suite passes
 
 #### Manual Verification:
 - [ ] Test with custom validation commands in config file
@@ -1024,14 +1024,14 @@ def main() -> int:
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] ClaudeSDKAgent class can be instantiated when SDK is available
-- [ ] Agent factory correctly creates OpencodeAgent or ClaudeSDKAgent
-- [ ] Agent protocol is properly implemented by both classes
-- [ ] Model ID resolution follows existing patterns in client.py
-- [ ] CLI option `--provider claude` works when SDK is installed
-- [ ] `ruff check .` passes
-- [ ] `mypy .` passes
-- [ ] Tests for agent factory and selection logic pass
+- [x] ClaudeSDKAgent class can be instantiated when SDK is available
+- [x] Agent factory correctly creates OpencodeAgent or ClaudeSDKAgent
+- [x] Agent protocol is properly implemented by both classes
+- [x] Model ID resolution follows existing patterns in client.py
+- [x] CLI option `--provider claude` works when SDK is installed
+- [x] `ruff check .` passes
+- [x] `mypy .` passes
+- [x] Tests for agent factory and selection logic pass
 
 #### Manual Verification:
 - [ ] Test with `--provider opencode` (default)
@@ -1253,13 +1253,13 @@ level = "INFO"
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] Unit test suite passes: `pytest tests/test_review_action_harness.py`
-- [ ] Test coverage is adequate (>80% for new module)
-- [ ] Edge cases in markdown parsing are handled
-- [ ] Error conditions are properly tested
-- [ ] Agent factory works for both providers
-- [ ] `ruff check .` passes
-- [ ] `mypy .` passes
+- [x] Unit test suite passes: `pytest tests/test_review_action_harness.py`
+- [x] Test coverage is adequate (>80% for new module)
+- [x] Edge cases in markdown parsing are handled
+- [x] Error conditions are properly tested
+- [x] Agent factory works for both providers
+- [x] `ruff check .` passes
+- [x] `mypy .` passes
 
 #### Manual Verification:
 - [ ] Manual test with real review-analyzer output
