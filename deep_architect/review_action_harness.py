@@ -21,6 +21,7 @@ logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+    import types
 
 
 # ---------------------------------------------------------------------------
