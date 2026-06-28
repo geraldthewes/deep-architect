@@ -18,3 +18,9 @@ security:
     uv run bandit -r deep_architect/ -ll
 
 check: lint typecheck test security
+
+review-analyzer:
+    uv run review-analyzer --help
+
+review-action:
+    uv run review-action --help
