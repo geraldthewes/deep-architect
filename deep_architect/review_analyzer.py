@@ -506,6 +506,65 @@ def generate_summary_report(
     return "\n".join(lines) + "\n"
 
 
+def _finding_path(finding: dict[str, Any]) -> str:
+    """Return the file path string for a finding."""
+    if finding["type"] == "comment":
+        return str(finding.get("path", "(unknown)"))
+    return str(finding.get("file", "(unknown)"))
+
+
+def _finding_lines(finding: dict[str, Any]) -> str:
+    """Return the line range string for a comment finding, or empty for warnings."""
+    if finding["type"] == "comment":
+        start = finding.get("start_line")
+        end = finding.get("end_line")
+        if start is not None and end is not None:
+            return f"`:{start}-{end}`"
+    return ""
+
+
+def generate_index_report(
+    results: list[tuple[dict[str, Any], AnalysisResult]],
+) -> str:
+    """Build an INDEX.md listing all findings grouped by verdict."""
+    grouped: dict[str, list[tuple[dict[str, Any], AnalysisResult]]] = {
+        v.value: [] for v in Verdict
+    }
+    for finding, analysis in results:
+        grouped[analysis.verdict.value].append((finding, analysis))
+
+    lines: list[str] = [
+        "# Review Findings Index",
+        "",
+    ]
+
+    for verdict in Verdict:
+        entries = grouped[verdict.value]
+        if not entries:
+            continue
+
+        lines.append(f"## {verdict.value.upper()} ({len(entries)})")
+        lines.append("")
+        lines.append("| # | File | Lines | Report | Analysis Preview |")
+        lines.append("|---|------|-------|--------|------------------|")
+
+        for i, (finding, analysis) in enumerate(entries, 1):
+            path = _finding_path(finding)
+            ln = _finding_lines(finding)
+            report = generate_output_filename(finding)
+            preview = analysis.analysis[:120].replace("|", "\\|").replace("\n", " ")
+            if len(analysis.analysis) > 120:
+                preview += "…"
+            lines.append(
+                f"| {i} | `{path}` | {ln} | "
+                f"[{report}]({report}) | {preview} |"
+            )
+
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
 def _run_analysis(
     findings: list[dict[str, Any]],
     model: str,
@@ -547,6 +606,15 @@ def _run_analysis(
         except OSError as exc:
             log.error("Failed to write summary: %s", summary_path, exc)
             print(f"Error writing summary: {exc}", file=sys.stderr)
+
+        index = generate_index_report(results)
+        index_path = output_dir / "INDEX.md"
+        try:
+            index_path.write_text(index, encoding="utf-8")
+            print(f"Index written to {index_path}")
+        except OSError as exc:
+            log.error("Failed to write index: %s", index_path, exc)
+            print(f"Error writing index: {exc}", file=sys.stderr)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

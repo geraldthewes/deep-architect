@@ -13,11 +13,14 @@ from deep_architect.review_analyzer import (
     AnalysisResult,
     CircuitBreaker,
     Verdict,
+    _finding_lines,
+    _finding_path,
     _parse_opencode_json,
     call_opencode_analysis,
     construct_analysis_prompt,
     extract_findings,
     filter_findings_by_path,
+    generate_index_report,
     generate_markdown_content,
     generate_output_filename,
     generate_summary_report,
@@ -468,6 +471,113 @@ class TestGenerateSummaryReport:
     def test_zero_total(self) -> None:
         report = generate_summary_report({}, 0)
         assert "Total findings processed: 0" in report
+
+
+# ---------------------------------------------------------------------------
+# _finding_path
+# ---------------------------------------------------------------------------
+
+
+class TestFindingPath:
+
+    def test_comment_path(self) -> None:
+        finding: dict[str, Any] = {"type": "comment", "path": "src/foo.py"}
+        assert _finding_path(finding) == "src/foo.py"
+
+    def test_warning_file(self) -> None:
+        finding: dict[str, Any] = {"type": "warning", "file": "src/bar.py"}
+        assert _finding_path(finding) == "src/bar.py"
+
+    def test_missing_path(self) -> None:
+        finding: dict[str, Any] = {"type": "comment"}
+        assert _finding_path(finding) == "(unknown)"
+
+
+# ---------------------------------------------------------------------------
+# _finding_lines
+# ---------------------------------------------------------------------------
+
+
+class TestFindingLines:
+
+    def test_comment_with_lines(self) -> None:
+        finding: dict[str, Any] = {
+            "type": "comment",
+            "start_line": 10,
+            "end_line": 15,
+        }
+        assert _finding_lines(finding) == "`:10-15`"
+
+    def test_comment_without_lines(self) -> None:
+        finding: dict[str, Any] = {"type": "comment"}
+        assert _finding_lines(finding) == ""
+
+    def test_warning(self) -> None:
+        finding: dict[str, Any] = {"type": "warning", "file": "x.py"}
+        assert _finding_lines(finding) == ""
+
+
+# ---------------------------------------------------------------------------
+# generate_index_report
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateIndexReport:
+
+    def test_empty_results(self) -> None:
+        report = generate_index_report([])
+        assert "# Review Findings Index" in report
+
+    def test_grouped_by_verdict(self) -> None:
+        comment: dict[str, Any] = {
+            "type": "comment",
+            "path": "src/foo.py",
+            "content": "fix this",
+            "start_line": 1,
+            "end_line": 5,
+            "index": 0,
+        }
+        results = [
+            (comment, AnalysisResult(Verdict.VALID, "Real issue found", "")),
+            (comment, AnalysisResult(Verdict.REJECTED, "False positive", "")),
+        ]
+        report = generate_index_report(results)
+        assert "## VALID (1)" in report
+        assert "## REJECTED (1)" in report
+        assert "src/foo.py" in report
+        assert "Real issue found" in report
+        assert "False positive" in report
+
+    def test_pipes_escaped_in_preview(self) -> None:
+        comment: dict[str, Any] = {
+            "type": "comment",
+            "path": "src/foo.py",
+            "content": "fix",
+            "start_line": 1,
+            "end_line": 1,
+            "index": 0,
+        }
+        results = [
+            (comment, AnalysisResult(Verdict.VALID, "Has | pipe | chars", "")),
+        ]
+        report = generate_index_report(results)
+        assert "\\|" in report
+
+    def test_preview_truncated(self) -> None:
+        comment: dict[str, Any] = {
+            "type": "comment",
+            "path": "src/foo.py",
+            "content": "fix",
+            "start_line": 1,
+            "end_line": 1,
+            "index": 0,
+        }
+        long_text = "x" * 200
+        results = [
+            (comment, AnalysisResult(Verdict.VALID, long_text, "")),
+        ]
+        report = generate_index_report(results)
+        assert "…" in report
 
 
 # ---------------------------------------------------------------------------
