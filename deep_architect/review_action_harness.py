@@ -123,7 +123,7 @@ class OpencodeAgent:
                     "--model",
                     self.model,
                     "--format",
-                    "text",
+                    "default",
                     prompt,
                 ],
                 capture_output=True,
