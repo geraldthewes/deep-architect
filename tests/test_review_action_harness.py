@@ -9,13 +9,17 @@ import pytest
 
 from deep_architect.review_action_harness import (
     AgentConfig,
+    FindingStatus,
     OpencodeAgent,
     ReviewFinding,
     ValidationConfig,
     create_agent,
+    has_action_taken,
     is_valid_finding,
     parse_markdown_finding,
     process_findings,
+    read_action_taken,
+    write_action_taken,
 )
 
 # ---------------------------------------------------------------------------
@@ -591,3 +595,300 @@ class TestCodingAgentProtocol:
 
         agent: CodingAgent = ClaudeSDKAgent()
         assert hasattr(agent, "apply_fix")
+
+
+# ---------------------------------------------------------------------------
+# Finding Status Persistence
+# ---------------------------------------------------------------------------
+
+
+class TestFindingStatus:
+
+    def test_creation(self) -> None:
+        status = FindingStatus(
+            status="completed",
+            timestamp="2026-01-01T00:00:00+00:00",
+            summary="Fix applied",
+            commit_sha="abc12345",
+        )
+        assert status.status == "completed"
+        assert status.commit_sha == "abc12345"
+        assert status.error_message is None
+
+    def test_error_status(self) -> None:
+        status = FindingStatus(
+            status="error",
+            timestamp="2026-01-01T00:00:00+00:00",
+            summary="Fix failed",
+            error_message="Agent returned False",
+        )
+        assert status.status == "error"
+        assert status.error_message == "Agent returned False"
+        assert status.commit_sha is None
+
+
+class TestWriteAndReadActionTaken:
+
+    def test_write_creates_section(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "test-0.md"
+        md_file.write_text("# Some content\n")
+
+        status = FindingStatus(
+            status="completed",
+            timestamp="2026-01-01T00:00:00+00:00",
+            summary="Fix applied",
+            commit_sha="abc12345",
+        )
+        write_action_taken(md_file, status)
+
+        content = md_file.read_text()
+        assert "## Action Taken" in content
+        assert "Status: completed" in content
+        assert "CommitSha: abc12345" in content
+        assert "Summary: Fix applied" in content
+
+    def test_write_does_not_overwrite_existing(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "test-0.md"
+        md_file.write_text("# Original content\n\n**Verdict**: VALID\n")
+
+        status = FindingStatus(
+            status="completed",
+            timestamp="2026-01-01T00:00:00+00:00",
+            summary="Fix applied",
+            commit_sha="abc12345",
+        )
+        write_action_taken(md_file, status)
+
+        content = md_file.read_text()
+        assert "# Original content" in content
+        assert "**Verdict**: VALID" in content
+        assert "## Action Taken" in content
+
+    def test_read_completed_status(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "test-0.md"
+        md_file.write_text("# Original\n")
+
+        status = FindingStatus(
+            status="completed",
+            timestamp="2026-01-01T00:00:00+00:00",
+            summary="Fix applied",
+            commit_sha="abc12345",
+        )
+        write_action_taken(md_file, status)
+
+        read_status = read_action_taken(md_file)
+        assert read_status is not None
+        assert read_status.status == "completed"
+        assert read_status.commit_sha == "abc12345"
+        assert read_status.summary == "Fix applied"
+
+    def test_read_error_status(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "test-0.md"
+        md_file.write_text("# Original\n")
+
+        status = FindingStatus(
+            status="error",
+            timestamp="2026-01-01T00:00:00+00:00",
+            summary="Fix failed",
+            error_message="Agent returned False",
+        )
+        write_action_taken(md_file, status)
+
+        read_status = read_action_taken(md_file)
+        assert read_status is not None
+        assert read_status.status == "error"
+        assert read_status.error_message == "Agent returned False"
+
+    def test_read_no_section_returns_none(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "test-0.md"
+        md_file.write_text("# Original content\nNo action section\n")
+
+        assert read_action_taken(md_file) is None
+
+    def test_has_action_taken_true(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "test-0.md"
+        md_file.write_text("# Original\n\n## Action Taken\nStatus: completed\n")
+
+        assert has_action_taken(md_file) is True
+
+    def test_has_action_taken_false(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "test-0.md"
+        md_file.write_text("# Original content\nNo action section\n")
+
+        assert has_action_taken(md_file) is False
+
+    def test_roundtrip_all_fields(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "roundtrip-0.md"
+        md_file.write_text("# Finding\n\n**Verdict**: VALID\n")
+
+        original = FindingStatus(
+            status="completed",
+            timestamp="2026-06-15T12:00:00+00:00",
+            summary="Applied fix: removed unused import",
+            commit_sha="deadbeef",
+        )
+        write_action_taken(md_file, original)
+
+        restored = read_action_taken(md_file)
+        assert restored is not None
+        assert restored.status == original.status
+        assert restored.timestamp == original.timestamp
+        assert restored.summary == original.summary
+        assert restored.commit_sha == original.commit_sha
+        assert restored.error_message == original.error_message
+
+
+class TestProcessFindingsPersistence:
+
+    def test_completed_finding_skipped_on_restart(self, tmp_path: Path) -> None:
+        """Test that a finding with completed status is skipped on restart."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        md_file = output_dir / "valid-0.md"
+        md_file.write_text(VALID_COMMENT_MARKDOWN)
+
+        # Simulate that the finding was completed in a prior run
+        write_action_taken(
+            md_file,
+            FindingStatus(
+                status="completed",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="Fix applied",
+                commit_sha="abc12345",
+            ),
+        )
+
+        agent = OpencodeAgent()
+        config = ValidationConfig(commands=[])
+        stats = process_findings(
+            output_dir, agent, config, 0, 0.0
+        )
+
+        assert stats["processed"] == 0
+        assert stats["restored"] == 1
+        assert stats["errors"] == 0
+
+    def test_error_finding_retried_on_restart(self, tmp_path: Path) -> None:
+        """Test that a finding with error status is retried on restart."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        md_file = output_dir / "valid-0.md"
+        md_file.write_text(VALID_COMMENT_MARKDOWN)
+
+        # Simulate that the finding errored in a prior run
+        write_action_taken(
+            md_file,
+            FindingStatus(
+                status="error",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="Fix failed",
+                error_message="Agent returned False",
+            ),
+        )
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        config = ValidationConfig(commands=[])
+
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo"
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit",
+                return_value=True,
+            ),
+        ):
+            stats = process_findings(
+                output_dir, agent, config, 0, 0.0
+            )
+
+        assert stats["processed"] == 1
+        assert stats["committed"] == 1
+
+        # Verify the file was updated with completed status
+        read_status = read_action_taken(md_file)
+        assert read_status is not None
+        assert read_status.status == "completed"
+
+    def test_skip_errors_flag(self, tmp_path: Path) -> None:
+        """Test that --skip-errors skips errored findings."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        md_file = output_dir / "valid-0.md"
+        md_file.write_text(VALID_COMMENT_MARKDOWN)
+
+        # Simulate that the finding errored in a prior run
+        write_action_taken(
+            md_file,
+            FindingStatus(
+                status="error",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="Fix failed",
+                error_message="Agent returned False",
+            ),
+        )
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        config = ValidationConfig(commands=[])
+
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo"
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit",
+                return_value=True,
+            ),
+        ):
+            stats = process_findings(
+                output_dir, agent, config, 0, 0.0,
+                skip_errors=True,
+            )
+
+        assert stats["processed"] == 0
+        assert stats["skipped"] == 1
+
+    def test_force_flag_reruns_completed(self, tmp_path: Path) -> None:
+        """Test that --force re-runs completed findings."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        md_file = output_dir / "valid-0.md"
+        md_file.write_text(VALID_COMMENT_MARKDOWN)
+
+        # Simulate that the finding was completed in a prior run
+        write_action_taken(
+            md_file,
+            FindingStatus(
+                status="completed",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="Fix applied",
+                commit_sha="abc12345",
+            ),
+        )
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        config = ValidationConfig(commands=[])
+
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo"
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit",
+                return_value=True,
+            ),
+        ):
+            stats = process_findings(
+                output_dir, agent, config, 0, 0.0,
+                force=True,
+            )
+
+        assert stats["processed"] == 1
+        assert stats["committed"] == 1
