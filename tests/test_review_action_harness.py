@@ -1,6 +1,7 @@
 """Unit tests for deep_architect.review_action_harness."""
 from __future__ import annotations
 
+import signal
 import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -892,3 +893,5 @@ class TestProcessFindingsPersistence:
 
         assert stats["processed"] == 1
         assert stats["committed"] == 1
+
+

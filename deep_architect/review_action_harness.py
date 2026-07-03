@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -18,6 +19,16 @@ from deep_architect.git_ops import git_commit, validate_git_repo
 from deep_architect.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Global flag for graceful shutdown on SIGINT
+_shutdown_requested = False
+
+
+def _sigint_handler(signum: int, frame: object) -> None:
+    """Signal handler for SIGINT (CTRL-C). Sets shutdown flag and logs."""
+    global _shutdown_requested
+    _shutdown_requested = True
+    logger.info("CTRL-C received, finishing current finding before shutdown...")
 
 
 if TYPE_CHECKING:
@@ -50,7 +61,7 @@ class ReviewFinding:
 class FindingStatus:
     """Persistent status for a finding — written to the .md file after each run."""
 
-    status: str  # "completed" | "error" | "skipped"
+    status: str  # "completed" | "error" | "skipped" | "interrupted"
     timestamp: str
     summary: str = ""
     commit_sha: str | None = None
@@ -712,6 +723,20 @@ def _process_single_finding(
     last_error: str | None = None
 
     for attempt in range(max_retries + 1):
+        # Check for interrupt signal
+        if _shutdown_requested:
+            interrupt_msg = "Interrupted by SIGINT"
+            write_action_taken(
+                md_file,
+                FindingStatus(
+                    status="interrupted",
+                    timestamp=_now_iso(),
+                    summary=interrupt_msg,
+                    error_message=interrupt_msg,
+                ),
+            )
+            return ("interrupted", False, interrupt_msg)
+        
         try:
             success = asyncio.run(
                 agent.apply_fix(
@@ -864,6 +889,8 @@ def process_findings(
         "skipped": 0,
         "errors": 0,
         "restored": 0,
+        "total_findings": 0,
+        "interrupted": False,
     }
 
     if not output_dir.exists():
@@ -877,7 +904,17 @@ def process_findings(
 
     logger.info("Found %d markdown files to process", len(markdown_files))
 
+    # Count eligible findings first
     for md_file in markdown_files:
+        if md_file.name not in ("SUMMARY.md", "INDEX.md"):
+            stats["total_findings"] += 1
+
+    for md_file in markdown_files:
+        # Check for interrupt signal
+        if _shutdown_requested:
+            stats["interrupted"] = True
+            break
+            
         # Skip summary/index files
         if md_file.name in ("SUMMARY.md", "INDEX.md"):
             continue
@@ -1201,19 +1238,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def print_summary(stats: dict[str, int]) -> None:
-    """Print the final processing summary."""
+def print_summary(stats: dict[str, int], output_dir: Path) -> None:
+    """Print the final processing summary and write to file."""
     print("\n=== Review Action Harness Summary ===")
     print(f"Restored:   {stats['restored']}")
     print(f"Processed:  {stats['processed']}")
     print(f"Committed:  {stats['committed']}")
     print(f"Skipped:    {stats['skipped']}")
     print(f"Errors:     {stats['errors']}")
+    
+    # Write summary to file
+    summary_file = output_dir / "review-action_summary.md"
+    with summary_file.open("w", encoding="utf-8") as f:
+        f.write("# Review Action Summary\n\n")
+        f.write(f"Restored:   {stats['restored']}\n")
+        f.write(f"Processed:  {stats['processed']}\n")
+        f.write(f"Committed:  {stats['committed']}\n")
+        f.write(f"Skipped:    {stats['skipped']}\n")
+        f.write(f"Errors:     {stats['errors']}\n")
+        f.write(f"Interrupted: {'yes' if stats['interrupted'] else 'no'}\n")
+        processed = stats['processed']
+        total = stats['total_findings']
+        f.write(f"Progress: {processed} out of {total} findings processed\n")
 
 
 def main(argv: list[str] | None = None) -> int:
     """Main CLI entry point."""
     args = parse_args(argv)
+
+    # Reset shutdown flag and set up signal handler for graceful interrupt
+    global _shutdown_requested
+    _shutdown_requested = False
+    signal.signal(signal.SIGINT, _sigint_handler)
 
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
@@ -1277,9 +1333,9 @@ def main(argv: list[str] | None = None) -> int:
         skip_errors=args.skip_errors,
     )
 
-    print_summary(stats)
+    print_summary(stats, args.output_dir)
 
-    return 0 if stats["errors"] == 0 else 1
+    return 130 if stats["interrupted"] else (0 if stats["errors"] == 0 else 1)
 
 
 if __name__ == "__main__":
