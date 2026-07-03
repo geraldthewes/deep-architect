@@ -80,6 +80,7 @@ class CodingAgent(Protocol):
         existing_code: str,
         suggested_code: str,
         context: str = "",
+        original_content: str | None = None,
     ) -> bool:
         """Apply a fix to a file. Returns True if successful."""
 
@@ -134,11 +135,12 @@ class OpencodeAgent:
         existing_code: str,
         suggested_code: str,
         context: str = "",
+        original_content: str | None = None,
     ) -> bool:
         """Apply fix using opencode subprocess with file-based input."""
         import tempfile
         import os
-        
+
         # Use absolute path to avoid any path resolution issues
         absolute_file_path = file_path.resolve()
         
@@ -185,13 +187,18 @@ class OpencodeAgent:
 
             opencode_success = _parse_opencode_ndjson(result.stdout)
             if opencode_success:
-                # Verify the file was actually modified to match suggested code
+                # Verify the file was actually modified
                 try:
-                    current_content = absolute_file_path.read_text(encoding="utf-8")
-                    # Normalize line endings for comparison
-                    normalized_current = current_content.replace('\r\n', '\n')
-                    normalized_suggested = suggested_code.replace('\r\n', '\n')
-                    
+                    current_content = absolute_file_path.read_text(
+                        encoding="utf-8"
+                    )
+                    normalized_current = current_content.replace(
+                        '\r\n', '\n'
+                    )
+                    normalized_suggested = suggested_code.replace(
+                        '\r\n', '\n'
+                    )
+
                     if normalized_current.strip() == normalized_suggested.strip():
                         logger.debug(
                             "OpencodeAgent: fix applied successfully for %s (file matches expected)",
@@ -199,34 +206,33 @@ class OpencodeAgent:
                         )
                         return True
                     else:
-                        # File wasn't changed to match expected - check if opencode made any changes
-                        original_content = absolute_file_path.read_text(encoding="utf-8")
-                        if normalized_current != original_content.replace('\r\n', '\n'):
-                            logger.debug(
-                                "OpencodeAgent: fix applied for %s (file was modified, checking git)",
-                                file_path,
+                        # File doesn't match expected exactly - check if any
+                        # changes were made by comparing with pre-apply content
+                        if original_content is not None:
+                            normalized_original = original_content.replace(
+                                '\r\n', '\n'
                             )
-                            return True
-                        else:
-                            logger.warning(
-                                "OpencodeAgent: no changes made to %s (file unchanged)",
-                                file_path,
-                            )
-                            # This might be OK if the file was already correct
-                            if normalized_current.strip() == normalized_suggested.strip():
+                            if normalized_current != normalized_original:
                                 logger.debug(
-                                    "OpencodeAgent: file was already correct for %s",
+                                    "OpencodeAgent: file modified for %s (differs from original)",
                                     file_path,
                                 )
                                 return True
                             else:
-                                logger.error(
-                                    "OpencodeAgent: file not modified and doesn't match expected for %s",
+                                logger.warning(
+                                    "OpencodeAgent: no changes made to %s (file unchanged)",
                                     file_path,
                                 )
                                 return False
+                        else:
+                            # No original content provided - fallback to trusting
+                            # opencode's success if the file exists
+                            logger.debug(
+                                "OpencodeAgent: no original content, trusting opencode for %s",
+                                file_path,
+                            )
+                            return True
                 except FileNotFoundError:
-                    # In test environments, the file might not exist - trust opencode's success
                     logger.debug(
                         "OpencodeAgent: file not found for verification (likely test env), trusting opencode success for %s",
                         file_path,
@@ -552,6 +558,16 @@ def _process_single_finding(
         logger.info("[DRY RUN] Would apply fix for %s", finding.file_path)
         return ("committed", True, None)
 
+    # Capture original file content before any changes for verification
+    original_content: str | None = None
+    try:
+        original_content = finding.file_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.debug(
+            "Original file not found for %s, skipping original content capture",
+            finding.file_path,
+        )
+
     # Apply fix with retries
     success = False
     last_error: str | None = None
@@ -564,6 +580,7 @@ def _process_single_finding(
                     finding.existing_code,
                     finding.suggested_code,
                     finding.analysis,
+                    original_content=original_content,
                 )
             )
 
@@ -615,9 +632,18 @@ def _process_single_finding(
         commit_message = (
             f"fix: {comment_snippet}{suffix} [{finding.finding_id}]"
         )
-        git_commit(repo, commit_message, [finding.file_path])
-        logger.info("Committed fix for %s", finding.file_path)
-        return ("committed", True, None)
+        committed = git_commit(
+            repo, commit_message, [finding.file_path]
+        )
+        if committed:
+            logger.info("Committed fix for %s", finding.file_path)
+            return ("committed", True, None)
+        else:
+            logger.info(
+                "No changes to commit for %s (file unchanged)",
+                finding.file_path,
+            )
+            return ("skipped", False, None)
     except Exception as e:
         return (
             "error",
@@ -782,6 +808,7 @@ class ClaudeSDKAgent:
         existing_code: str,
         suggested_code: str,
         context: str = "",
+        original_content: str | None = None,
     ) -> bool:
         """Apply fix using Claude SDK."""
         from claude_agent_sdk import (  # noqa: PLC0415

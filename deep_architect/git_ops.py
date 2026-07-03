@@ -83,24 +83,36 @@ def get_modified_files(repo: git.Repo) -> list[Path]:
     return paths
 
 
-def git_commit(repo: git.Repo, message: str, paths: list[Path]) -> None:
-    """Stage the given paths and create a commit. No-op if nothing changed."""
+def git_commit(
+    repo: git.Repo, message: str, paths: list[Path]
+) -> bool:
+    """Stage the given paths and create a commit.
+
+    Returns True if a commit was created, False if nothing changed.
+    """
     str_paths = [str(p) for p in paths if p.exists()]
     if not str_paths:
-        _log.debug("git_commit: no paths to stage, skipping")
-        return
+        _log.info("git_commit: no paths to stage, skipping")
+        return False
     repo.index.add(str_paths)
     try:
         diff = repo.index.diff("HEAD")
         if diff or repo.untracked_files:
             repo.index.commit(message)
             _log.info("Git commit: %s (%d files)", message, len(str_paths))
+            return True
         else:
-            _log.debug("git_commit: nothing changed after staging, skipping")
+            _log.info(
+                "git_commit: nothing changed after staging, skipping commit"
+            )
+            return False
     except git.BadName:
         # Initial commit (no HEAD yet)
         repo.index.commit(message)
-        _log.info("Git initial commit: %s (%d files)", message, len(str_paths))
+        _log.info(
+            "Git initial commit: %s (%d files)", message, len(str_paths)
+        )
+        return True
 
 
 def restore_arch_files_from_commit(repo: git.Repo, best_commit_sha: str) -> list[str]:

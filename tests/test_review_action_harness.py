@@ -526,7 +526,15 @@ class TestProcessFindings:
         agent.apply_fix = flaky_apply_fix  # type: ignore[method-assign]
         config = ValidationConfig(commands=[])
 
-        with patch("deep_architect.review_action_harness.validate_git_repo"):
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo"
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit",
+                return_value=True,
+            ),
+        ):
             stats = process_findings(
                 output_dir, agent, config, max_retries=3, retry_delay=0.001
             )
