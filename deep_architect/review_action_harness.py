@@ -169,8 +169,6 @@ class OpencodeAgent:
                 [
                     self.opencode_bin,
                     "run",
-                    "--model",
-                    self.model,
                     "--format",
                     "json",
                     "--dangerously-skip-permissions",
