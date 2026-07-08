@@ -409,6 +409,25 @@ The command is installed inside the project's virtual environment. Use `uv run r
 export OPENCODE_BIN=$(which opencode)
 ```
 
+**`review-action` finding stuck in `error` status: "Quality checks failed after N iteration(s)"**
+The coding agent couldn't satisfy the target repo's checks within `check_max_fix_iterations`
+(default 3). Read the `ErrorMessage` in the finding's `## Action Taken` block — it includes the
+capped check output. Common fixes: raise `--max-check-iterations`, use a more capable
+`--model`/`--provider`, or fix the underlying issue manually and re-run without `--force` (the
+finding stays `error` and is retried automatically).
+
+**`review-action` LLM judge call fails or the run hangs on `llm-judge:<file>`**
+The judge calls the Anthropic API directly (not through `opencode`/the `claude` CLI) — it needs
+`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (or `ANTHROPIC_API_KEY`) set, same as
+[Configuration, Step 1](#step-1-set-environment-variables), and reads the model from the
+`[critic]` section of `~/.deep-architect.toml`. If you just want the programmatic checks, pass
+`--skip-llm-checks`.
+
+**`Malformed .quality-checks.toml` / `Invalid .quality-checks.toml`**
+The file exists but failed TOML parsing or Pydantic validation. Compare against
+`.quality-checks.toml.template` — common mistakes: using `[profile]` instead of `[[profile]]`
+(profiles are a list), or a `commands`/`paths` value that isn't an array of strings.
+
 ---
 
 ## Tips for Best Results
@@ -539,6 +558,13 @@ introduced are failing (fail-closed). Two kinds of checks are supported:
   bandit, pytest, ...), declared per glob-scoped profile.
 - **LLM-judged** — style/convention rules that need judgment rather than a CLI tool (e.g. a
   `python-style.md` guide), judged one modified file's diff at a time.
+
+The LLM judge is a separate agent call, not the fix agent — it uses the **`[critic]`**
+model from `~/.deep-architect.toml` (same section `adversarial-architect`'s critic uses) and
+the same `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` environment variables from
+[Configuration, Step 1](#step-1-set-environment-variables) — no separate credential setup is
+needed if you've already configured the tool. If you haven't (or want a cheaper/faster first
+pass), pass `--skip-llm-checks` to run programmatic checks only.
 
 **Declaring checks.** Create `.quality-checks.toml` at the repo root (see
 `.quality-checks.toml.template` for the full format):
