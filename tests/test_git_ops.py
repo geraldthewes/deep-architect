@@ -7,6 +7,7 @@ from deep_architect.git_ops import (
     get_modified_files,
     git_commit,
     git_commit_staged,
+    git_restore_files,
     reject_unauthorized_files,
     restore_arch_files_from_commit,
     validate_git_repo,
@@ -327,6 +328,68 @@ def test_reject_unauthorized_contracts_dir_kept(tmp_path: Path) -> None:
 
     assert not any("sprint-1.json" in str(r) for r in rejected)
     assert (contracts_dir / "sprint-1.json").exists()
+
+
+def test_git_restore_files_reverts_tracked_modified(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("original\n")
+    repo.index.add([str(tracked)])
+    repo.index.commit("init")
+
+    tracked.write_text("broken fix\n")
+
+    restored = git_restore_files(repo, [tracked])
+
+    assert restored == ["tracked.py"]
+    assert tracked.read_text() == "original\n"
+
+
+def test_git_restore_files_deletes_untracked_new_file(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    repo.index.commit("init")
+
+    new_file = tmp_path / "new.py"
+    new_file.write_text("new content\n")
+
+    restored = git_restore_files(repo, [new_file])
+
+    assert restored == ["new.py"]
+    assert not new_file.exists()
+
+
+def test_git_restore_files_mixed_tracked_and_untracked(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("original\n")
+    repo.index.add([str(tracked)])
+    repo.index.commit("init")
+
+    tracked.write_text("broken\n")
+    new_file = tmp_path / "new.py"
+    new_file.write_text("new\n")
+
+    restored = git_restore_files(repo, [tracked, new_file])
+
+    assert set(restored) == {"tracked.py", "new.py"}
+    assert tracked.read_text() == "original\n"
+    assert not new_file.exists()
+
+
+def test_git_restore_files_leaves_working_tree_clean(tmp_path: Path) -> None:
+    repo = git.Repo.init(tmp_path)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("original\n")
+    repo.index.add([str(tracked)])
+    repo.index.commit("init")
+
+    tracked.write_text("broken\n")
+    new_file = tmp_path / "new.py"
+    new_file.write_text("new\n")
+
+    git_restore_files(repo, [tracked, new_file])
+
+    assert get_modified_files(repo) == []
 
 
 def test_reject_unauthorized_noop_when_all_allowed(tmp_path: Path) -> None:

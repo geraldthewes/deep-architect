@@ -28,6 +28,9 @@ class ThresholdConfig(BaseModel):
     model_comm_failure_threshold: int = 5  # Circuit breaker opens after N consecutive failures
     model_comm_base_backoff: float = 1.0   # Starting backoff in seconds
     model_comm_max_backoff: float = 60.0   # Cap backoff at 60s
+    # review-action: post-fix quality-check retry cap (0 = checks report-only)
+    check_max_fix_iterations: int = 3
+    check_command_timeout: int = 120    # review-action: default per-command timeout (seconds)
 
 
 def _default_generator() -> AgentConfig:

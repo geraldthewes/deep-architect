@@ -8,13 +8,16 @@
 
 ```
 deep_architect/
-├── cli.py            # Typer entry point (adversarial-architect)
-├── config.py         # HarnessConfig loaded from ~/.deep-architect.toml
-├── harness.py        # Main orchestration loop (run_harness)
-├── sprints.py        # SPRINTS list — 7 fixed SprintDefinition objects
-├── exit_criteria.py  # sprint_passes(), should_ping_pong_exit()
-├── git_ops.py        # validate_git_repo(), git_commit(), get_modified_files()
-├── logger.py         # setup_logging(), get_logger()
+├── cli.py                    # Typer entry point (adversarial-architect)
+├── config.py                 # HarnessConfig loaded from ~/.deep-architect.toml
+├── harness.py                # Main orchestration loop (run_harness)
+├── sprints.py                # SPRINTS list — 7 fixed SprintDefinition objects
+├── exit_criteria.py          # sprint_passes(), should_ping_pong_exit()
+├── git_ops.py                # validate_git_repo(), git_commit(), get_modified_files(), git_restore_files()
+├── logger.py                 # setup_logging(), get_logger()
+├── review_action_harness.py  # review-action CLI: fix loop + post-fix quality-check loop
+├── quality_checks.py         # .quality-checks.toml loading, auto-detect, run_checks(), baseline diff
+├── llm_judge.py              # LLM-judged style rules: load_llm_rules(), judge_file()
 ├── agents/
 │   ├── client.py     # make_agent_options(), run_agent(), run_agent_text(), run_agent_structured()
 │   ├── generator.py  # run_generator(), propose_contract()
@@ -22,12 +25,13 @@ deep_architect/
 ├── models/
 │   ├── contract.py   # SprintContract, SprintCriterion
 │   ├── feedback.py   # CriticResult, CriterionScore, PingPongResult
-│   └── progress.py   # HarnessProgress, SprintStatus
+│   ├── progress.py   # HarnessProgress, SprintStatus
+│   └── checks.py     # CheckProfile, QualityChecksConfig, StyleViolation, StyleVerdict
 ├── io/
 │   └── files.py      # save/load for contracts, feedback, progress; init_workspace()
 └── prompts/
     ├── __init__.py   # load_prompt(name, **kwargs) — loads .md files at runtime
-    └── *.md          # 13 prompt templates (generator_system, critic_system, sprints 1-7, etc.)
+    └── *.md          # prompt templates (generator_system, critic_system, sprints 1-7, llm_judge_system, etc.)
 ```
 
 ## Development Commands
@@ -102,6 +106,22 @@ Logic lives entirely in `exit_criteria.py`. The thresholds (`min_score`, `ping_p
 ## Config File
 
 Users create `~/.deep-architect.toml` (template: `.deep-architect.toml.template`). The TOML config controls model aliases and thresholds only. Authentication and endpoint are set via environment variables (see above). `load_config()` in `config.py` raises `FileNotFoundError` with a clear message if the file is missing.
+
+## Review Action Harness — Post-Fix Quality Checks
+
+After `review-action` applies a fix, it runs the **target repo's own** quality checks (not
+deep-architect's) before committing — see README.md's "Quality checks" section for the full
+user-facing convention. Implementation:
+
+- `quality_checks.py` — loads `.quality-checks.toml` (or auto-detects from `pyproject.toml`),
+  matches modified files to profiles, runs commands, captures a pre-fix baseline, and diffs
+  post-fix failures against it (`new_failures()` — only failures the fix introduced block).
+- `llm_judge.py` — loads `.opencodereview/rule.json` (or `rules/*.md`) and judges one modified
+  `.py` file's diff at a time via `run_simple_structured()`; MUST/SHOULD violations block.
+- The fix-feedback loop lives in `_process_single_finding()` in `review_action_harness.py`,
+  bounded by `thresholds.check_max_fix_iterations` (config key, never hardcode). On exhaustion
+  the fix is discarded via `git_restore_files()` and the finding is marked `error`.
+- deep-architect dogfoods its own convention via `.quality-checks.toml` at the repo root.
 
 ## Testing Notes
 

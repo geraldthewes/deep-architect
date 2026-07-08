@@ -42,3 +42,6 @@ early_accept_stalls            = 3     # Turn-limit events + non-improving round
 model_comm_failure_threshold = 5    # Open circuit after 5 consecutive failures
 model_comm_base_backoff      = 1.0  # Start at 1s, double each retry
 model_comm_max_backoff       = 60.0 # Maximum backoff (1 minute)
+# review-action: post-fix quality-check loop (see README "Quality checks")
+check_max_fix_iterations     = 3    # Retry cap for the check-fix loop; 0 = run checks but never block/retry
+check_command_timeout        = 120  # Default per-command timeout (seconds) for auto-detected checks

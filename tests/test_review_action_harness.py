@@ -1,21 +1,30 @@
 """Unit tests for deep_architect.review_action_harness."""
 from __future__ import annotations
 
-import signal
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import git
 import pytest
 
+from deep_architect.config import HarnessConfig
+from deep_architect.llm_judge import RuleEntry
+from deep_architect.models.checks import (
+    CheckProfile,
+    QualityChecksConfig,
+    StyleVerdict,
+    StyleViolation,
+)
 from deep_architect.review_action_harness import (
     AgentConfig,
     ClaudeSDKAgent,
     FindingStatus,
     OpencodeAgent,
     ReviewFinding,
-    ValidationConfig,
     _file_reflects_fix,
+    _process_single_finding,
     create_agent,
     has_action_taken,
     is_valid_finding,
@@ -23,6 +32,64 @@ from deep_architect.review_action_harness import (
     process_findings,
     read_action_taken,
     write_action_taken,
+)
+
+# ---------------------------------------------------------------------------
+# Shared test helpers
+# ---------------------------------------------------------------------------
+
+
+def _mock_repo(tmp_path: Path, commit_sha: str = "deadbeef00") -> MagicMock:
+    """A MagicMock git.Repo whose working_dir resolves to a real path.
+
+    Used by tests that don't care about the quality-check loop's behavior —
+    combine with `get_modified_files` patched to `[]` so the loop trivially
+    reports clean (no files, no profiles to run) and falls straight through
+    to commit.
+    """
+    repo = MagicMock()
+    repo.working_dir = str(tmp_path)
+    repo.head.commit.hexsha = commit_sha
+    return repo
+
+
+def _init_repo(tmp_path: Path) -> git.Repo:
+    """A real git repo for tests exercising the quality-check loop for real."""
+    repo = git.Repo.init(tmp_path)
+    (tmp_path / "README.md").write_text("# repo\n")
+    repo.index.add(["README.md"])
+    repo.index.commit("init")
+    return repo
+
+
+def _finding_markdown(
+    file_path: str, existing: str, suggested: str, comment: str = "fix it"
+) -> str:
+    return (
+        "# OCR Review Analysis\n\n"
+        "**Original OCR Finding**:\n\n"
+        f"- **File**: {file_path}\n"
+        "- **Existing Code**:\n"
+        f"```\n{existing}\n```\n"
+        "- **Suggested Code**:\n"
+        f"```\n{suggested}\n```\n"
+        f"- **Review Comment**: {comment}\n\n"
+        "## LLM Analysis\n\n"
+        "**Verdict**: VALID\n\n"
+        "**Analysis**:\nSome analysis.\n"
+    )
+
+
+# A synthetic "quality check" — fails while target.py contains the marker
+# string "BAD", passes otherwise. Deterministic, no real linter dependency.
+# Prints a message mentioning the file on failure so baseline-diff line
+# matching (rule 2's modified-file-line refinement) has something to compare.
+_BAD_MARKER_CHECK = (
+    f'{sys.executable} -c "'
+    "import pathlib, sys; "
+    "c = pathlib.Path('target.py').read_text(); "
+    "sys.exit(0) if 'BAD' not in c else (print('target.py: BAD marker found'), sys.exit(1))"
+    '"'
 )
 
 # ---------------------------------------------------------------------------
@@ -315,6 +382,48 @@ class TestOpencodeAgent:
 
         assert result is False
 
+    @patch("deep_architect.review_action_harness.subprocess.run")
+    async def test_fix_check_failures_success(self, mock_run: MagicMock) -> None:
+        import json as _json
+
+        ndjson = _json.dumps({"type": "result", "is_error": False, "result": "ok"})
+        mock_run.return_value = MagicMock(returncode=0, stdout=ndjson, stderr="")
+
+        agent = OpencodeAgent()
+        result = await agent.fix_check_failures(
+            [Path("test.py")], "## Programmatic check failures\n\nruff: E501", "context"
+        )
+
+        assert result is True
+        mock_run.assert_called_once()
+
+    @patch("deep_architect.review_action_harness.subprocess.run")
+    async def test_fix_check_failures_failure(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
+
+        agent = OpencodeAgent()
+        result = await agent.fix_check_failures([Path("test.py")], "failure report")
+
+        assert result is False
+
+    @patch("deep_architect.review_action_harness.subprocess.run")
+    async def test_fix_check_failures_timeout(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="opencode", timeout=120)
+
+        agent = OpencodeAgent()
+        result = await agent.fix_check_failures([Path("test.py")], "failure report")
+
+        assert result is False
+
+    @patch("deep_architect.review_action_harness.subprocess.run")
+    async def test_fix_check_failures_binary_not_found(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = FileNotFoundError()
+
+        agent = OpencodeAgent(opencode_bin="/nonexistent/bin")
+        result = await agent.fix_check_failures([Path("test.py")], "failure report")
+
+        assert result is False
+
 
 # ---------------------------------------------------------------------------
 # _file_reflects_fix
@@ -432,6 +541,45 @@ class TestClaudeSDKAgent:
 
         assert result is False
 
+    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
+    @patch("deep_architect.agents.client.make_agent_options")
+    async def test_fix_check_failures_success(
+        self,
+        mock_make_options: MagicMock,
+        mock_run_agent: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "example.py"
+        target.write_text("code\n", encoding="utf-8")
+        mock_make_options.return_value = MagicMock()
+        mock_run_agent.return_value = MagicMock(is_error=False)
+
+        agent = ClaudeSDKAgent()
+        result = await agent.fix_check_failures(
+            [target], "## Programmatic check failures\n\nruff: E501", "context"
+        )
+
+        assert result is True
+        mock_run_agent.assert_awaited_once()
+
+    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
+    @patch("deep_architect.agents.client.make_agent_options")
+    async def test_fix_check_failures_agent_error(
+        self,
+        mock_make_options: MagicMock,
+        mock_run_agent: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "example.py"
+        target.write_text("code\n", encoding="utf-8")
+        mock_make_options.return_value = MagicMock()
+        mock_run_agent.side_effect = RuntimeError("Agent query failed: boom")
+
+        agent = ClaudeSDKAgent()
+        result = await agent.fix_check_failures([target], "failure report")
+
+        assert result is False
+
 
 # ---------------------------------------------------------------------------
 # create_agent
@@ -459,25 +607,6 @@ class TestCreateAgent:
         with patch.dict("sys.modules", {"claude_agent_sdk": None}):
             with pytest.raises(ImportError, match="claude-agent-sdk"):
                 create_agent(config)
-
-
-# ---------------------------------------------------------------------------
-# ValidationConfig
-# ---------------------------------------------------------------------------
-
-
-class TestValidationConfig:
-
-    def test_default_values(self) -> None:
-        config = ValidationConfig(commands=[["ruff", "check"]])
-        assert config.commands == [["ruff", "check"]]
-        assert config.timeout == 30
-
-    def test_custom_timeout(self) -> None:
-        config = ValidationConfig(
-            commands=[["ruff", "check"]], timeout=60
-        )
-        assert config.timeout == 60
 
 
 # ---------------------------------------------------------------------------
@@ -530,9 +659,8 @@ class TestProcessFindings:
         output_dir.mkdir()
 
         agent = OpencodeAgent()
-        config = ValidationConfig(commands=[])
         stats = process_findings(
-            output_dir, agent, config, max_retries=0, retry_delay=0.0
+            output_dir, agent, 0, 0.0, HarnessConfig()
         )
 
         assert stats["processed"] == 0
@@ -541,9 +669,8 @@ class TestProcessFindings:
     def test_nonexistent_directory(self) -> None:
         """Test with a non-existent output directory."""
         agent = OpencodeAgent()
-        config = ValidationConfig(commands=[])
         stats = process_findings(
-            Path("/nonexistent/dir"), agent, config, 0, 0.0
+            Path("/nonexistent/dir"), agent, 0, 0.0, HarnessConfig()
         )
 
         assert stats["processed"] == 0
@@ -558,9 +685,8 @@ class TestProcessFindings:
         (output_dir / "backlog-0.md").write_text(BACKLOG_MARKDOWN)
 
         agent = OpencodeAgent()
-        config = ValidationConfig(commands=[])
         stats = process_findings(
-            output_dir, agent, config, 0, 0.0
+            output_dir, agent, 0, 0.0, HarnessConfig()
         )
 
         assert stats["processed"] == 2
@@ -576,9 +702,8 @@ class TestProcessFindings:
         (output_dir / "INDEX.md").write_text("# Index\n")
 
         agent = OpencodeAgent()
-        config = ValidationConfig(commands=[])
         stats = process_findings(
-            output_dir, agent, config, 0, 0.0
+            output_dir, agent, 0, 0.0, HarnessConfig()
         )
 
         # SUMMARY.md and INDEX.md should not be counted
@@ -593,41 +718,18 @@ class TestProcessFindings:
 
         agent = OpencodeAgent()
         agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        config = ValidationConfig(commands=[])
         stats = process_findings(
             output_dir,
             agent,
-            config,
             0,
             0.0,
+            HarnessConfig(),
             dry_run=True,
         )
 
         assert stats["processed"] == 1
         assert stats["committed"] == 1
         assert stats["errors"] == 0
-
-    def test_validation_failure_skips_commit(self, tmp_path: Path) -> None:
-        """Test that validation failure skips commit."""
-        output_dir = tmp_path / "feedback"
-        output_dir.mkdir()
-
-        (output_dir / "valid-0.md").write_text(VALID_COMMENT_MARKDOWN)
-
-        agent = OpencodeAgent()
-        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
-
-        # Use a command that will fail
-        config = ValidationConfig(commands=[["false"]])
-
-        with patch("deep_architect.review_action_harness.validate_git_repo"):
-            stats = process_findings(
-                output_dir, agent, config, 0, 0.0, dry_run=False
-            )
-
-        assert stats["processed"] == 1
-        assert stats["skipped"] == 1
-        assert stats["committed"] == 0
 
     def test_retry_logic(self, tmp_path: Path) -> None:
         """Test that retry logic works for transient failures."""
@@ -648,11 +750,15 @@ class TestProcessFindings:
 
         agent = OpencodeAgent()
         agent.apply_fix = flaky_apply_fix  # type: ignore[method-assign]
-        config = ValidationConfig(commands=[])
 
         with (
             patch(
-                "deep_architect.review_action_harness.validate_git_repo"
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=_mock_repo(tmp_path),
+            ),
+            patch(
+                "deep_architect.review_action_harness.get_modified_files",
+                return_value=[],
             ),
             patch(
                 "deep_architect.review_action_harness.git_commit",
@@ -660,7 +766,7 @@ class TestProcessFindings:
             ),
         ):
             stats = process_findings(
-                output_dir, agent, config, max_retries=3, retry_delay=0.001
+                output_dir, agent, 3, 0.001, HarnessConfig()
             )
 
         assert call_count == 3
@@ -683,9 +789,8 @@ class TestProcessFindings:
         (output_dir / "broken-0.md").write_text(broken_md)
 
         agent = OpencodeAgent()
-        config = ValidationConfig(commands=[])
         stats = process_findings(
-            output_dir, agent, config, 0, 0.0
+            output_dir, agent, 0, 0.0, HarnessConfig()
         )
 
         assert stats["processed"] == 1
@@ -705,6 +810,7 @@ class TestCodingAgentProtocol:
 
         agent: CodingAgent = OpencodeAgent()
         assert hasattr(agent, "apply_fix")
+        assert hasattr(agent, "fix_check_failures")
 
     def test_claude_sdk_agent_implements_protocol(self) -> None:
         """Verify ClaudeSDKAgent satisfies the CodingAgent protocol."""
@@ -715,6 +821,347 @@ class TestCodingAgentProtocol:
 
         agent: CodingAgent = ClaudeSDKAgent()
         assert hasattr(agent, "apply_fix")
+        assert hasattr(agent, "fix_check_failures")
+
+
+# ---------------------------------------------------------------------------
+# Quality-check loop (_process_single_finding)
+# ---------------------------------------------------------------------------
+
+
+class TestQualityCheckLoop:
+    """Loop behavior matrix, exercised directly via _process_single_finding.
+
+    Real git repos + a real (synthetic) check command so run_checks/
+    capture_baseline/new_failures/git_restore_files all run for real; only
+    load_quality_checks (discovery) and the LLM judge are patched.
+    """
+
+    def _setup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[git.Repo, Path]:
+        monkeypatch.chdir(tmp_path)
+        repo = _init_repo(tmp_path)
+        target = tmp_path / "target.py"
+        target.write_text("GOOD\n")
+        repo.index.add(["target.py"])
+        repo.index.commit("add target")
+        return repo, target
+
+    def _checks_cfg(self) -> QualityChecksConfig:
+        return QualityChecksConfig(
+            profiles=[CheckProfile(name="p", paths=["**"], commands=[_BAD_MARKER_CHECK])]
+        )
+
+    def test_clean_first_iteration_commits_without_fix_check_failures(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, target = self._setup(tmp_path, monkeypatch)
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "GOOD2"))
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("GOOD2\n")
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        with (
+            patch("deep_architect.review_action_harness.validate_git_repo", return_value=repo),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=self._checks_cfg(),
+            ),
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, HarnessConfig()
+            )
+
+        assert (status, committed, error) == ("committed", True, None)
+        agent.fix_check_failures.assert_not_called()
+
+    def test_programmatic_failure_then_fix_commits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, target = self._setup(tmp_path, monkeypatch)
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "BAD"))
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("BAD\n")  # introduces the failure
+            return True
+
+        fix_reports: list[str] = []
+
+        async def fix_check_failures(
+            files: list[Path], report: str, context: str = ""
+        ) -> bool:
+            fix_reports.append(report)
+            target.write_text("FIXED\n")
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = fix_check_failures  # type: ignore[method-assign]
+
+        with (
+            patch("deep_architect.review_action_harness.validate_git_repo", return_value=repo),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=self._checks_cfg(),
+            ),
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, HarnessConfig()
+            )
+
+        assert (status, committed, error) == ("committed", True, None)
+        assert len(fix_reports) == 1
+        assert "BAD marker found" in fix_reports[0]
+
+    def test_style_only_failure_judge_invoked_then_retry_commits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, target = self._setup(tmp_path, monkeypatch)
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "GOOD2"))
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("GOOD2\n")  # programmatic check stays clean throughout
+            return True
+
+        fix_calls = 0
+
+        async def fix_check_failures(
+            files: list[Path], report: str, context: str = ""
+        ) -> bool:
+            nonlocal fix_calls
+            fix_calls += 1
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = fix_check_failures  # type: ignore[method-assign]
+
+        violation = StyleViolation(
+            rule_id="PY-STY-001", severity="MUST", description="bad style", line=1
+        )
+        judge_calls = 0
+
+        async def fake_judge_file(*args: object, **kwargs: object) -> StyleVerdict:
+            nonlocal judge_calls
+            judge_calls += 1
+            return StyleVerdict(violations=[violation]) if judge_calls == 1 else StyleVerdict()
+
+        empty_checks_cfg = QualityChecksConfig()  # no programmatic profiles
+
+        with (
+            patch("deep_architect.review_action_harness.validate_git_repo", return_value=repo),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=empty_checks_cfg,
+            ),
+            patch(
+                "deep_architect.review_action_harness.load_llm_rules",
+                return_value=[RuleEntry(path_glob="**/*.py", rule_text="some rule")],
+            ),
+            patch(
+                "deep_architect.review_action_harness.judge_file",
+                side_effect=fake_judge_file,
+            ),
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, HarnessConfig()
+            )
+
+        assert (status, committed, error) == ("committed", True, None)
+        assert fix_calls == 1
+        assert judge_calls == 2
+
+    def test_persistent_failure_reaches_cap_restores_and_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, target = self._setup(tmp_path, monkeypatch)
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "BAD"))
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("BAD\n")
+            return True
+
+        fix_calls = 0
+
+        async def fix_check_failures(
+            files: list[Path], report: str, context: str = ""
+        ) -> bool:
+            nonlocal fix_calls
+            fix_calls += 1
+            return True  # "fixes" it but never actually removes the marker
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = fix_check_failures  # type: ignore[method-assign]
+
+        harness_config = HarnessConfig()
+        harness_config.thresholds.check_max_fix_iterations = 2
+
+        with (
+            patch("deep_architect.review_action_harness.validate_git_repo", return_value=repo),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=self._checks_cfg(),
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit"
+            ) as mock_commit,
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, harness_config
+            )
+
+        assert status == "error"
+        assert committed is False
+        assert error is not None and "2 iteration" in error
+        assert fix_calls == 1  # cap=2 -> 1 fix attempt between the 2 check runs
+        mock_commit.assert_not_called()
+        # fail-closed: working tree restored to the pre-fix baseline
+        assert target.read_text() == "GOOD\n"
+
+    def test_pre_existing_failure_alone_does_not_block(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        repo = _init_repo(tmp_path)
+        target = tmp_path / "target.py"
+        target.write_text("BAD\n")  # already failing at baseline
+        repo.index.add(["target.py"])
+        repo.index.commit("add target with pre-existing failure")
+
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "BAD", "BAD"))
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("BAD\n")  # unrelated no-op touch, still has the marker
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        with (
+            patch("deep_architect.review_action_harness.validate_git_repo", return_value=repo),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=self._checks_cfg(),
+            ),
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, HarnessConfig()
+            )
+
+        assert (status, committed, error) == ("committed", True, None)
+        agent.fix_check_failures.assert_not_called()
+
+    def test_skip_llm_checks_never_invokes_judge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, target = self._setup(tmp_path, monkeypatch)
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "GOOD2"))
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("GOOD2\n")
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        with (
+            patch("deep_architect.review_action_harness.validate_git_repo", return_value=repo),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=QualityChecksConfig(),
+            ),
+            patch(
+                "deep_architect.review_action_harness.load_llm_rules"
+            ) as mock_load_rules,
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, HarnessConfig(), skip_llm_checks=True
+            )
+
+        assert (status, committed, error) == ("committed", True, None)
+        mock_load_rules.assert_not_called()
+
+    def test_check_max_fix_iterations_zero_report_only_never_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, target = self._setup(tmp_path, monkeypatch)
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "BAD"))
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("BAD\n")  # would normally fail the check
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        harness_config = HarnessConfig()
+        harness_config.thresholds.check_max_fix_iterations = 0
+
+        with (
+            patch("deep_architect.review_action_harness.validate_git_repo", return_value=repo),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=self._checks_cfg(),
+            ),
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, harness_config
+            )
+
+        assert (status, committed, error) == ("committed", True, None)
+        agent.fix_check_failures.assert_not_called()
+
+    def test_sigint_during_check_loop_returns_interrupted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deep_architect.review_action_harness as rah
+
+        repo, target = self._setup(tmp_path, monkeypatch)
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "GOOD2"))
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("GOOD2\n")
+            rah._shutdown_requested = True  # simulate CTRL-C right after the fix lands
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        try:
+            with (
+                patch(
+                    "deep_architect.review_action_harness.validate_git_repo", return_value=repo
+                ),
+                patch(
+                    "deep_architect.review_action_harness.load_quality_checks",
+                    return_value=self._checks_cfg(),
+                ),
+            ):
+                status, committed, error = _process_single_finding(
+                    md_file, agent, 0, 0.0, False, HarnessConfig()
+                )
+        finally:
+            rah._shutdown_requested = False
+
+        assert status == "interrupted"
+        assert committed is False
 
 
 # ---------------------------------------------------------------------------
@@ -880,9 +1327,8 @@ class TestProcessFindingsPersistence:
         )
 
         agent = OpencodeAgent()
-        config = ValidationConfig(commands=[])
         stats = process_findings(
-            output_dir, agent, config, 0, 0.0
+            output_dir, agent, 0, 0.0, HarnessConfig()
         )
 
         assert stats["processed"] == 0
@@ -910,11 +1356,15 @@ class TestProcessFindingsPersistence:
 
         agent = OpencodeAgent()
         agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        config = ValidationConfig(commands=[])
 
         with (
             patch(
-                "deep_architect.review_action_harness.validate_git_repo"
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=_mock_repo(tmp_path),
+            ),
+            patch(
+                "deep_architect.review_action_harness.get_modified_files",
+                return_value=[],
             ),
             patch(
                 "deep_architect.review_action_harness.git_commit",
@@ -922,7 +1372,7 @@ class TestProcessFindingsPersistence:
             ),
         ):
             stats = process_findings(
-                output_dir, agent, config, 0, 0.0
+                output_dir, agent, 0, 0.0, HarnessConfig()
             )
 
         assert stats["processed"] == 1
@@ -954,11 +1404,15 @@ class TestProcessFindingsPersistence:
 
         agent = OpencodeAgent()
         agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        config = ValidationConfig(commands=[])
 
         with (
             patch(
-                "deep_architect.review_action_harness.validate_git_repo"
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=_mock_repo(tmp_path),
+            ),
+            patch(
+                "deep_architect.review_action_harness.get_modified_files",
+                return_value=[],
             ),
             patch(
                 "deep_architect.review_action_harness.git_commit",
@@ -966,7 +1420,7 @@ class TestProcessFindingsPersistence:
             ),
         ):
             stats = process_findings(
-                output_dir, agent, config, 0, 0.0,
+                output_dir, agent, 0, 0.0, HarnessConfig(),
                 skip_errors=True,
             )
 
@@ -994,11 +1448,15 @@ class TestProcessFindingsPersistence:
 
         agent = OpencodeAgent()
         agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        config = ValidationConfig(commands=[])
 
         with (
             patch(
-                "deep_architect.review_action_harness.validate_git_repo"
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=_mock_repo(tmp_path),
+            ),
+            patch(
+                "deep_architect.review_action_harness.get_modified_files",
+                return_value=[],
             ),
             patch(
                 "deep_architect.review_action_harness.git_commit",
@@ -1006,7 +1464,7 @@ class TestProcessFindingsPersistence:
             ),
         ):
             stats = process_findings(
-                output_dir, agent, config, 0, 0.0,
+                output_dir, agent, 0, 0.0, HarnessConfig(),
                 force=True,
             )
 

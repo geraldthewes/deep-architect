@@ -1,0 +1,9 @@
+[[profile]]
+name = "deep-architect"
+paths = ["deep_architect/**", "tests/**"]
+commands = [
+  "uv run ruff check deep_architect/ tests/",
+  "uv run mypy deep_architect/",
+  "uv run python -m pytest tests/ -v",
+  "uv run bandit -r deep_architect/ -ll",
+]

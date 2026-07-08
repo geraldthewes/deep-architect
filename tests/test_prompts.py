@@ -23,6 +23,7 @@ EXPECTED_PROMPTS = [
     "critic_rescue",
     "contract_proposal_re",
     "final_agreement_re",
+    "llm_judge_system",
 ]
 
 

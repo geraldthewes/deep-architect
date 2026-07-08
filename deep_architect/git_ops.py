@@ -171,6 +171,35 @@ def restore_arch_files_from_commit(repo: git.Repo, best_commit_sha: str) -> list
     return restored
 
 
+def git_restore_files(repo: git.Repo, files: list[Path]) -> list[str]:
+    """Discard uncommitted changes to files: checkout tracked, delete untracked new files.
+
+    Used to fail-closed a finding whose fix never satisfied quality checks — leaves the
+    working tree clean so it doesn't poison the next finding's baseline/modified-file detection.
+    Returns the list of repo-relative paths restored.
+    """
+    working_dir = Path(repo.working_dir)
+    untracked_rel = set(repo.untracked_files)
+    restored: list[str] = []
+
+    for f in files:
+        try:
+            rel = f.resolve().relative_to(working_dir.resolve())
+        except ValueError:
+            continue
+        rel_str = rel.as_posix()
+
+        if rel_str in untracked_rel:
+            if f.exists():
+                f.unlink()
+        else:
+            repo.git.checkout("--", rel_str)
+        restored.append(rel_str)
+
+    _log.info("git_restore_files: restored %d file(s)", len(restored))
+    return restored
+
+
 def git_commit_staged(repo: git.Repo, message: str) -> bool:
     """Commit whatever is currently staged in the index. Returns True if a commit was made."""
     try:

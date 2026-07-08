@@ -487,6 +487,11 @@ Defaults to `feedback/` if no directory is specified.
 | `--dry-run` | off | Show what would be done without making changes |
 | `--verbose` | off | Enable verbose logging |
 | `--config <path>` | `~/.deep-architect.toml` | Configuration file path |
+| `--force` | off | Re-process findings that were already completed |
+| `--skip-errors` | off | Skip findings that previously failed instead of retrying them |
+| `--max-check-iterations <n>` | (from config) | Post-fix quality-check retry cap; `0` = run checks but never block or retry |
+| `--skip-llm-checks` | off | Run programmatic quality checks only, skip the LLM style-rule judge |
+| `--quality-checks <path>` | (auto-discovered) | Explicit path to a `.quality-checks.toml` file |
 
 ### Example
 
@@ -522,6 +527,77 @@ uv run review-action feedback/
 
 ```
 fix: Rename variable for clarity... [abc12345-0]
+```
+
+### Quality checks
+
+After a coding agent applies a fix, `review-action` runs the **target repo's own quality
+checks** before ever committing — a finding is never marked resolved while checks it
+introduced are failing (fail-closed). Two kinds of checks are supported:
+
+- **Programmatic** — lint/format/type-check/security/test commands (ruff, mypy, black,
+  bandit, pytest, ...), declared per glob-scoped profile.
+- **LLM-judged** — style/convention rules that need judgment rather than a CLI tool (e.g. a
+  `python-style.md` guide), judged one modified file's diff at a time.
+
+**Declaring checks.** Create `.quality-checks.toml` at the repo root (see
+`.quality-checks.toml.template` for the full format):
+
+```toml
+[[profile]]
+name = "backend-api"
+paths = ["backend/fastapi/**"]
+commands = [
+  "ruff check backend/fastapi/src/",
+  "mypy backend/fastapi/src/",
+  "uv run pytest backend/fastapi/tests/ -v",
+]
+
+[llm_rules]
+source = ".opencodereview/rule.json"
+```
+
+A file can match more than one profile; every matching profile's commands run against it.
+Commands run with `shell=False`; a command containing the literal `{files}` placeholder is
+expanded with the space-joined, repo-relative list of modified files matching that profile.
+
+This convention is **agent-agnostic** — any coding agent can read the same file (a repo can
+reference it from its `CLAUDE.md`/`AGENTS.md`), not just `review-action`.
+
+**Auto-detection fallback.** If `.quality-checks.toml` is absent, `review-action` walks the
+repo for `pyproject.toml` files (max depth 3, skipping hidden/`.venv`/`node_modules`/`build`/
+`dist` dirs) and emits one file-scoped profile per directory that declares `[tool.ruff]`,
+`[tool.mypy]`, `[tool.black]`, or `[tool.bandit]` config (or lists them as a dependency).
+**Test commands are never auto-detected** — test scope can't be inferred safely; declare them
+explicitly in `.quality-checks.toml`. If `.opencodereview/rule.json` exists, it's picked up
+automatically even in auto-detect mode.
+
+**LLM rules discovery.** `[llm_rules].source` (default `.opencodereview/rule.json`) is read as
+a JSON list of `{"path": "<glob>", "rule": "<markdown>"}` entries (or `{"rules": [...]}`, the
+shape produced by `opencodereview`'s `generate-rules.py`). If absent, `.opencodereview/rules/
+**/*.md` files are used instead, each scoped to `**/*.py`. If neither exists, LLM checks are
+silently skipped — nothing declared, nothing enforced. The judge is told that **programmatic
+tool config wins on overlap** (e.g. a rule mandating 80-char lines is ignored if ruff/black are
+already configured for 100).
+
+**Baseline-diff semantics.** A pre-fix baseline is captured before the agent touches
+anything; only failures *introduced by the fix* block. A failure that was already present at
+baseline is advisory (logged as a warning) unless the post-fix output has new lines mentioning
+a file the fix modified — then it blocks.
+
+**The fix loop.** On a check failure, the failure report (programmatic output + cited style
+violations) is fed back to the coding agent via a `fix_check_failures` call, and checks rerun.
+This repeats up to `thresholds.check_max_fix_iterations` (default 3; `0` = checks run and are
+logged but never block/retry — a report-only escape hatch). If checks are still failing when
+the cap is hit, the fix's modified files are restored via git (fail-closed) and the finding is
+marked `error` — a later run (without `--skip-errors`) retries it.
+
+Relevant config keys (`~/.deep-architect.toml`, `[thresholds]`) — see
+`.deep-architect.toml.template`:
+
+```toml
+check_max_fix_iterations = 3    # post-fix quality-check retry cap; 0 = report-only
+check_command_timeout    = 120  # default per-command timeout (seconds) for auto-detected checks
 ```
 
 ---

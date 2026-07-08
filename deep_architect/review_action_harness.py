@@ -15,8 +15,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from deep_architect.config import HarnessConfig, load_config
-from deep_architect.git_ops import git_commit, validate_git_repo
+from deep_architect.git_ops import (
+    get_modified_files,
+    git_commit,
+    git_restore_files,
+    validate_git_repo,
+)
+from deep_architect.llm_judge import git_diff_for_file, judge_file, load_llm_rules, rules_for_file
 from deep_architect.logger import get_logger
+from deep_architect.models.checks import StyleViolation
+from deep_architect.quality_checks import (
+    CheckFailure,
+    capture_baseline,
+    load_quality_checks,
+    match_profiles,
+    new_failures,
+    run_checks,
+)
 
 if TYPE_CHECKING:
     from deep_architect.agents.client import RunStats
@@ -67,14 +82,6 @@ class FindingStatus:
 
 
 @dataclass
-class ValidationConfig:
-    """Configuration for validation commands."""
-
-    commands: list[list[str]]
-    timeout: int = 30
-
-
-@dataclass
 class AgentConfig:
     """Configuration for the coding agent."""
 
@@ -105,6 +112,14 @@ class CodingAgent(Protocol):
     ) -> bool:
         """Apply a fix to a file. Returns True if successful."""
 
+    async def fix_check_failures(
+        self,
+        files: list[Path],
+        failure_report: str,
+        context: str = "",
+    ) -> bool:
+        """Address quality-check failures introduced by a prior fix attempt."""
+
 
 # ---------------------------------------------------------------------------
 # OpencodeAgent
@@ -128,7 +143,10 @@ class OpencodeAgent:
         """Load the prompt template from package resources."""
         try:
             import importlib.resources
-            with importlib.resources.files('deep_architect.resources').joinpath('prompt_template.md').open('r') as f:
+            resource = importlib.resources.files('deep_architect.resources').joinpath(
+                'prompt_template.md'
+            )
+            with resource.open('r') as f:
                 return f.read()
         except (ImportError, AttributeError, FileNotFoundError):
             prompt_path = Path(__file__).parent / 'resources' / 'prompt_template.md'
@@ -159,8 +177,8 @@ class OpencodeAgent:
         original_content: str | None = None,
     ) -> bool:
         """Apply fix using opencode subprocess with file-based input."""
-        import tempfile
         import os
+        import tempfile
 
         # Use absolute path to avoid any path resolution issues
         absolute_file_path = file_path.resolve()
@@ -172,10 +190,12 @@ class OpencodeAgent:
         try:
             # Create prompt file
             prompt_content = self._load_prompt_template()
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+            with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.md', delete=False, encoding='utf-8'
+            ) as f:
                 f.write(prompt_content)
                 prompt_file = f.name
-            
+
             # Create feedback file with the specific finding details
             feedback_content = (
                 f"**File**: {absolute_file_path}\n\n"
@@ -183,10 +203,12 @@ class OpencodeAgent:
                 f"**Suggested Code**:\n```\n{suggested_code}\n```\n\n"
                 f"**Review Comment**: {context}\n"
             )
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+            with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.md', delete=False, encoding='utf-8'
+            ) as f:
                 f.write(feedback_content)
                 feedback_file = f.name
-            
+
             # Run opencode with file-based input
             result = subprocess.run(
                 [
@@ -229,7 +251,9 @@ class OpencodeAgent:
                 full_stderr_for_debug = result.stderr[:1000] if result.stderr else ""
 
                 if result.stderr.strip():
-                    stderr_lines = [line.strip() for line in result.stderr.splitlines() if line.strip()]
+                    stderr_lines = [
+                        line.strip() for line in result.stderr.splitlines() if line.strip()
+                    ]
                     if stderr_lines:
                         stderr_preview = " | ".join(stderr_lines[-3:])
                         raw_stderr = result.stderr.strip()
@@ -237,7 +261,9 @@ class OpencodeAgent:
                         error_details.append(f"stderr: {raw_stderr[:100]}")
 
                 if result.stdout.strip():
-                    stdout_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+                    stdout_lines = [
+                        line.strip() for line in result.stdout.splitlines() if line.strip()
+                    ]
                     if stdout_lines:
                         stdout_preview = " | ".join(stdout_lines[-3:])
                         # Try to parse NDJSON for error details
@@ -271,18 +297,23 @@ class OpencodeAgent:
                                     part = event.get("part", {})
                                     if part.get("type") == "text":
                                         text_content = part.get("text", "")
-                                        if text_content and ("error" in text_content.lower() or "fail" in text_content.lower()):
+                                        has_error_indicator = text_content and (
+                                            "error" in text_content.lower()
+                                            or "fail" in text_content.lower()
+                                        )
+                                        if has_error_indicator:
                                             last_error = text_content[:200]
-                                            error_details.append(f"text error indicator: {text_content[:100]}")
+                                            error_details.append(
+                                                f"text error indicator: {text_content[:100]}"
+                                            )
                             except json.JSONDecodeError:
                                 # Not JSON, might be raw text - use first 200 chars
                                 if not last_error or last_error == "no output":
                                     last_error = line[:200]
                                     error_details.append(f"raw line: {line[:100]}")
-                
-                # If we still have no specific error, check if there are any text events that might indicate what happened
+
+                # If still no specific error, check text events for anything useful.
                 if last_error == "unknown error" and result.stdout.strip():
-                    # Look for any text content that might be useful
                     for line in result.stdout.splitlines():
                         line = line.strip()
                         if not line:
@@ -293,15 +324,17 @@ class OpencodeAgent:
                                 part = event.get("part", {})
                                 if part.get("type") == "text":
                                     text_content = part.get("text", "")
-                                    if text_content and len(text_content) > 10:  # Avoid tiny snippets
+                                    if text_content and len(text_content) > 10:  # skip tiny bits
                                         last_error = text_content[:200]
                                         error_details.append(f"text content: {text_content[:100]}")
                                         break
                         except json.JSONDecodeError:
                             pass
-                
+
                 logger.error(
-                    "OpencodeAgent: failed to apply fix for %s: returncode=%d, error=%s, stdout_preview=%s, stderr_preview=%s, error_details=%s, full_stdout=%s, full_stderr=%s, model=%s",
+                    "OpencodeAgent: failed to apply fix for %s: returncode=%d, error=%s, "
+                    "stdout_preview=%s, stderr_preview=%s, error_details=%s, full_stdout=%s, "
+                    "full_stderr=%s, model=%s",
                     file_path,
                     result.returncode,
                     last_error,
@@ -333,6 +366,84 @@ class OpencodeAgent:
             return False
         finally:
             # Clean up temporary files
+            for temp_file in [prompt_file, feedback_file]:
+                if temp_file and os.path.exists(temp_file):
+                    try:
+                        os.unlink(temp_file)
+                    except OSError:
+                        pass  # Ignore cleanup errors
+
+    async def fix_check_failures(
+        self,
+        files: list[Path],
+        failure_report: str,
+        context: str = "",
+    ) -> bool:
+        """Address quality-check failures using opencode subprocess with file-based input.
+
+        Success = agent completed (_parse_opencode_ndjson) — the check rerun in the
+        harness's fix loop is the real verification, so there's no _file_reflects_fix here.
+        """
+        import tempfile
+
+        file_list = "\n".join(f"- {f.resolve()}" for f in files)
+
+        prompt_file = None
+        feedback_file = None
+        try:
+            prompt_content = self._load_prompt_template()
+            with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.md', delete=False, encoding='utf-8'
+            ) as f:
+                f.write(prompt_content)
+                prompt_file = f.name
+
+            feedback_content = (
+                "Your previous fix introduced these quality-check failures — fix them "
+                "without reverting the intent of the original change:\n\n"
+                f"**Modified files**:\n{file_list}\n\n"
+                f"**Original review context**: {context}\n\n"
+                f"{failure_report}\n"
+            )
+            with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.md', delete=False, encoding='utf-8'
+            ) as f:
+                f.write(feedback_content)
+                feedback_file = f.name
+
+            result = subprocess.run(
+                [
+                    self.opencode_bin,
+                    "run",
+                    "--format",
+                    "json",
+                    "--dangerously-skip-permissions",
+                    "Fix the quality-check failures described in the feedback",
+                    "--file",
+                    prompt_file,
+                    "--file",
+                    feedback_file,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            return _parse_opencode_ndjson(result.stdout)
+        except FileNotFoundError:
+            logger.error(
+                "OpencodeAgent: opencode binary not found at %s",
+                self.opencode_bin,
+            )
+            return False
+        except subprocess.TimeoutExpired:
+            logger.error("OpencodeAgent: timeout fixing check failures")
+            return False
+        except Exception as e:
+            logger.error(
+                "OpencodeAgent: exception fixing check failures: %s", e
+            )
+            return False
+        finally:
             for temp_file in [prompt_file, feedback_file]:
                 if temp_file and os.path.exists(temp_file):
                     try:
@@ -624,38 +735,29 @@ def _now_iso() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Validation
+# Quality-check failure reporting
 # ---------------------------------------------------------------------------
 
 
-def run_validation(file_path: Path, config: ValidationConfig) -> bool:
-    """Run validation commands on a file."""
-    for cmd in config.commands:
-        try:
-            full_cmd = cmd + [str(file_path)]
-            result = subprocess.run(
-                full_cmd,
-                capture_output=True,
-                text=True,
-                timeout=config.timeout,
+def _render_failure_report(
+    prog: list[CheckFailure], style: list[tuple[Path, StyleViolation]]
+) -> str:
+    """Render programmatic + LLM-judged failures into a report for the fix agent."""
+    lines: list[str] = []
+    if prog:
+        lines.append("## Programmatic check failures\n")
+        for f in prog:
+            lines.append(f"### `{f.command}` (profile: {f.profile}, exit code {f.returncode})")
+            lines.append(f"```\n{f.output}\n```\n")
+    if style:
+        lines.append("## Style rule violations\n")
+        for file_path, violation in style:
+            loc = f":{violation.line}" if violation.line is not None else ""
+            lines.append(
+                f"- **{file_path}{loc}** [{violation.severity}] {violation.rule_id}: "
+                f"{violation.description}"
             )
-            if result.returncode != 0:
-                logger.warning(
-                    "Validation failed for %s: %s\n%s",
-                    file_path,
-                    " ".join(full_cmd),
-                    result.stderr,
-                )
-                return False
-        except subprocess.TimeoutExpired:
-            logger.error("Validation timeout for %s", file_path)
-            return False
-        except Exception as e:
-            logger.error(
-                "Error running validation on %s: %s", file_path, e
-            )
-            return False
-    return True
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -666,10 +768,12 @@ def run_validation(file_path: Path, config: ValidationConfig) -> bool:
 def _process_single_finding(
     md_file: Path,
     agent: CodingAgent,
-    validation_config: ValidationConfig,
     max_retries: int,
     retry_delay: float,
     dry_run: bool,
+    harness_config: HarnessConfig,
+    skip_llm_checks: bool = False,
+    quality_checks_override: Path | None = None,
 ) -> tuple[str, bool, str | None]:
     """Process a single VALID finding. Returns (status, committed, error).
 
@@ -722,6 +826,42 @@ def _process_single_finding(
         logger.debug(
             "Original file not found for %s, skipping original content capture",
             finding.file_path,
+        )
+
+    # Quality checks: discover the target repo's checks and capture a
+    # pre-fix baseline now, before the fix is applied, so the baseline
+    # reflects the file's state prior to any change (fail-closed diffing
+    # below only blocks on failures *introduced* by the fix).
+    try:
+        repo = validate_git_repo(Path.cwd())
+    except Exception as e:
+        error_msg = f"Failed to access git repo for {finding.file_path}: {e}"
+        write_action_taken(
+            md_file,
+            FindingStatus(
+                status="error",
+                timestamp=_now_iso(),
+                summary="Git repo access failed",
+                error_message=error_msg,
+            ),
+        )
+        return ("error", False, error_msg)
+
+    repo_root = Path(repo.working_dir)
+    checks_cfg = load_quality_checks(
+        repo_root,
+        override=quality_checks_override,
+        default_timeout=harness_config.thresholds.check_command_timeout,
+    )
+    pre_matched = match_profiles(checks_cfg, [finding.file_path], repo_root)
+    baseline = capture_baseline(pre_matched, checks_cfg, repo_root)
+    rules = [] if skip_llm_checks else load_llm_rules(repo_root, checks_cfg)
+    max_iterations = harness_config.thresholds.check_max_fix_iterations
+
+    if not checks_cfg.profiles and not rules:
+        logger.info(
+            "No quality checks discovered for %s — proceeding to commit",
+            finding.finding_id,
         )
 
     # Apply fix with retries
@@ -794,28 +934,104 @@ def _process_single_finding(
             error_msg,
         )
 
-    # Validate changes
-    if not run_validation(finding.file_path, validation_config):
-        skip_msg = (
-            f"Validation failed for {finding.file_path}, skipping commit"
+    # Quality-check fix loop: check → feedback → fix until clean or the
+    # iteration cap is hit. Fail-closed: a finding is never committed while
+    # checks it introduced are failing.
+    modified: list[Path] = []
+    prog_failures: list[CheckFailure] = []
+    style_failures: list[tuple[Path, StyleViolation]] = []
+    checks_clean = False
+
+    report_only = max_iterations == 0
+    iterations_to_run = 1 if report_only else max_iterations
+
+    for iteration in range(1, iterations_to_run + 1):
+        if _shutdown_requested:
+            interrupt_msg = "Interrupted by SIGINT"
+            write_action_taken(
+                md_file,
+                FindingStatus(
+                    status="interrupted",
+                    timestamp=_now_iso(),
+                    summary=interrupt_msg,
+                    error_message=interrupt_msg,
+                ),
+            )
+            return ("interrupted", False, interrupt_msg)
+
+        modified = get_modified_files(repo)
+        matched = match_profiles(checks_cfg, modified, repo_root)
+        prog_failures = new_failures(
+            run_checks(matched, checks_cfg, repo_root), baseline, modified
+        )
+
+        style_failures = []
+        if not prog_failures and rules:
+            for py_file in (m for m in modified if m.suffix == ".py"):
+                diff = git_diff_for_file(repo, py_file)
+                verdict = asyncio.run(
+                    judge_file(
+                        py_file,
+                        diff,
+                        rules_for_file(rules, py_file, repo_root),
+                        harness_config.critic,
+                        repo_root,
+                    )
+                )
+                style_failures.extend((py_file, v) for v in verdict.blocking)
+
+        if not prog_failures and not style_failures:
+            checks_clean = True
+            break
+
+        if report_only:
+            logger.warning(
+                "Quality checks failing for %s but check_max_fix_iterations=0 "
+                "(report-only) — not blocking: %d programmatic, %d style",
+                finding.finding_id, len(prog_failures), len(style_failures),
+            )
+            checks_clean = True
+            break
+
+        logger.info(
+            "Check iteration %d/%d for %s: %d programmatic, %d style failure(s)",
+            iteration, max_iterations, finding.finding_id,
+            len(prog_failures), len(style_failures),
+        )
+
+        if iteration == max_iterations:
+            break
+
+        report = _render_failure_report(prog_failures, style_failures)
+        ok = asyncio.run(
+            agent.fix_check_failures(modified, report, finding.analysis)
+        )
+        if not ok:
+            logger.warning(
+                "fix_check_failures returned False on iteration %d for %s",
+                iteration, finding.finding_id,
+            )
+
+    if not checks_clean:
+        git_restore_files(repo, modified)
+        report = _render_failure_report(prog_failures, style_failures)
+        error_msg = (
+            f"Quality checks failed after {max_iterations} iteration(s) "
+            f"for {finding.file_path}: {report[:2000]}"
         )
         write_action_taken(
             md_file,
             FindingStatus(
-                status="skipped",
+                status="error",
                 timestamp=_now_iso(),
-                summary=skip_msg,
+                summary=f"Quality checks failed after {max_iterations} iteration(s)",
+                error_message=error_msg,
             ),
         )
-        return (
-            "skipped",
-            False,
-            skip_msg,
-        )
+        return ("error", False, error_msg)
 
     # Commit changes
     try:
-        repo = validate_git_repo(Path.cwd())
         comment_snippet = finding.review_comment[:50]
         suffix = (
             "..." if len(finding.review_comment) > 50 else ""
@@ -823,8 +1039,9 @@ def _process_single_finding(
         commit_message = (
             f"fix: {comment_snippet}{suffix} [{finding.finding_id}]"
         )
+        commit_paths = modified if modified else [finding.file_path]
         committed = git_commit(
-            repo, commit_message, [finding.file_path]
+            repo, commit_message, commit_paths
         )
         if committed:
             logger.info("Committed fix for %s", finding.file_path)
@@ -876,12 +1093,14 @@ def _process_single_finding(
 def process_findings(
     output_dir: Path,
     agent: CodingAgent,
-    validation_config: ValidationConfig,
     max_retries: int,
     retry_delay: float,
+    harness_config: HarnessConfig,
     dry_run: bool = False,
     force: bool = False,
     skip_errors: bool = False,
+    skip_llm_checks: bool = False,
+    quality_checks_override: Path | None = None,
 ) -> dict[str, int]:
     """Process all VALID findings in the output directory.
 
@@ -979,10 +1198,12 @@ def process_findings(
         status, committed, error = _process_single_finding(
             md_file,
             agent,
-            validation_config,
             max_retries,
             retry_delay,
             dry_run,
+            harness_config,
+            skip_llm_checks=skip_llm_checks,
+            quality_checks_override=quality_checks_override,
         )
 
         if status == "error":
@@ -1149,6 +1370,68 @@ class ClaudeSDKAgent:
             )
             return False
 
+    async def fix_check_failures(
+        self,
+        files: list[Path],
+        failure_report: str,
+        context: str = "",
+    ) -> bool:
+        """Address quality-check failures using the Claude Agent SDK.
+
+        The check rerun in the harness's fix loop is the real verification —
+        no _file_reflects_fix here, unlike apply_fix.
+        """
+        from deep_architect.agents.client import (  # noqa: PLC0415
+            make_agent_options,
+            run_agent,
+        )
+        from deep_architect.config import (  # noqa: PLC0415
+            AgentConfig as ClientAgentConfig,
+        )
+
+        absolute_files = [f.resolve() for f in files]
+        file_list = "\n".join(f"- {f}" for f in absolute_files)
+
+        system_prompt = (
+            "You are a precise code editing assistant. A previous fix introduced "
+            "quality-check failures (lint/type/security/test or style-rule "
+            "violations). Address them without reverting the intent of the "
+            "original change. Do not run git or commit — that is handled "
+            "separately. Confirm when the failures have been addressed."
+        )
+        prompt = (
+            f"The following files were modified by a previous fix:\n{file_list}\n\n"
+            f"Original review context: {context}\n\n"
+            f"{failure_report}\n\n"
+            "Fix these quality-check failures, then confirm when done."
+        )
+
+        client_config = ClientAgentConfig(model=self.model, max_turns=self.MAX_TURNS)
+
+        try:
+            options = make_agent_options(
+                client_config,
+                system_prompt,
+                allowed_tools=["Read", "Edit", "Write"],
+                cwd=str(Path.cwd()),
+            )
+
+            await run_agent(
+                options,
+                prompt,
+                label="review-action:fix-check-failures",
+                timeout_seconds=self.timeout_seconds,
+                max_retries=0,
+            )
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(
+                "Exception using Claude SDK to fix check failures: %s", e
+            )
+            return False
+
 
 # ---------------------------------------------------------------------------
 # CLI Entry Point
@@ -1207,6 +1490,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--skip-errors",
         action="store_true",
         help="Skip findings that previously failed instead of retrying them",
+    )
+    parser.add_argument(
+        "--max-check-iterations",
+        type=int,
+        default=None,
+        help=(
+            "Post-fix quality-check retry cap (overrides config); "
+            "0 = run checks but never block or retry"
+        ),
+    )
+    parser.add_argument(
+        "--skip-llm-checks",
+        action="store_true",
+        help="Run programmatic quality checks only, skip the LLM style-rule judge",
+    )
+    parser.add_argument(
+        "--quality-checks",
+        type=Path,
+        default=None,
+        help="Explicit path to a .quality-checks.toml file (overrides auto-discovery)",
     )
     return parser.parse_args(argv)
 
@@ -1294,10 +1597,8 @@ def main(argv: list[str] | None = None) -> int:
         permission_mode="bypassPermissions",
     )
 
-    validation_config = ValidationConfig(
-        commands=[["ruff", "check"], ["mypy"]],
-        timeout=30,
-    )
+    if args.max_check_iterations is not None:
+        harness_config.thresholds.check_max_fix_iterations = args.max_check_iterations
 
     # Create agent
     try:
@@ -1314,12 +1615,14 @@ def main(argv: list[str] | None = None) -> int:
     stats = process_findings(
         args.output_dir,
         agent,
-        validation_config,
         agent_config.max_retries,
         agent_config.retry_delay,
+        harness_config,
         args.dry_run,
         force=args.force,
         skip_errors=args.skip_errors,
+        skip_llm_checks=args.skip_llm_checks,
+        quality_checks_override=args.quality_checks,
     )
 
     print_summary(stats, args.output_dir, run_stats)

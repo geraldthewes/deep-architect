@@ -1,0 +1,42 @@
+# .quality-checks.toml — declares a repo's programmatic quality-check commands and
+# (optionally) where its LLM-judged style rules live.
+#
+# Copy this file to <repo-root>/.quality-checks.toml and adjust the profiles below.
+# review-action (and any coding agent that reads this file) uses it to discover and
+# run this repo's real quality gates after a fix is applied — see the "Quality checks"
+# section of README.md for the full convention.
+#
+# If this file is absent, review-action falls back to auto-detecting profiles from
+# pyproject.toml files (ruff/mypy/black/bandit config or dev dependencies only — it
+# never auto-detects test commands, since test scope can't be inferred safely).
+
+# One [[profile]] per glob-scoped group of commands. A file can match more than one
+# profile; every matching profile's commands are run against it.
+[[profile]]
+name = "example-profile"           # free-form label, shown in logs/reports
+paths = ["src/**"]                 # gitwildmatch globs, repo-root-relative
+commands = [
+  # Commands run with shell=False (space-split, no shell expansion). A command
+  # containing the literal "{files}" placeholder is expanded with the
+  # space-joined, repo-relative list of modified files matching this profile;
+  # commands without it run as-is (e.g. a full test suite).
+  "ruff check {files}",
+  "mypy {files}",
+  # "uv run pytest tests/ -v",   # test commands are never auto-detected — declare them here
+]
+# timeout = 120                    # per-command timeout in seconds (default: 120,
+                                    # or thresholds.check_command_timeout from
+                                    # ~/.deep-architect.toml when auto-detected)
+
+# Uncomment and add more [[profile]] blocks for other subprojects/toolchains in
+# this repo (e.g. a separate backend package with its own ruff/mypy config).
+# [[profile]]
+# name = "backend"
+# paths = ["backend/**"]
+# commands = ["ruff check {files}", "mypy {files}"]
+
+# Optional: where LLM-judged style/convention rules live (an .opencodereview
+# rule.json, or rules/*.md files). Omit this section entirely if you have none —
+# review-action then simply skips the LLM judgment step.
+# [llm_rules]
+# source = ".opencodereview/rule.json"
