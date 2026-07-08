@@ -10,10 +10,12 @@ import pytest
 
 from deep_architect.review_action_harness import (
     AgentConfig,
+    ClaudeSDKAgent,
     FindingStatus,
     OpencodeAgent,
     ReviewFinding,
     ValidationConfig,
+    _file_reflects_fix,
     create_agent,
     has_action_taken,
     is_valid_finding,
@@ -309,6 +311,123 @@ class TestOpencodeAgent:
         agent = OpencodeAgent(opencode_bin="/nonexistent/bin")
         result = await agent.apply_fix(
             Path("test.py"), "old code", "new code"
+        )
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _file_reflects_fix
+# ---------------------------------------------------------------------------
+
+
+class TestFileReflectsFix:
+
+    def test_matches_suggested_code(self, tmp_path: Path) -> None:
+        target = tmp_path / "f.py"
+        target.write_text("new code\n", encoding="utf-8")
+        assert _file_reflects_fix(target, "new code\n", "old code\n") is True
+
+    def test_differs_from_original(self, tmp_path: Path) -> None:
+        target = tmp_path / "f.py"
+        target.write_text("something else\n", encoding="utf-8")
+        assert _file_reflects_fix(target, "new code\n", "old code\n") is True
+
+    def test_unchanged_from_original_returns_false(self, tmp_path: Path) -> None:
+        target = tmp_path / "f.py"
+        target.write_text("old code\n", encoding="utf-8")
+        assert _file_reflects_fix(target, "new code\n", "old code\n") is False
+
+    def test_missing_file_trusts_agent(self, tmp_path: Path) -> None:
+        target = tmp_path / "missing.py"
+        assert _file_reflects_fix(target, "new code\n", "old code\n") is True
+
+    def test_no_original_content_trusts_agent_on_mismatch(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "f.py"
+        target.write_text("something unexpected\n", encoding="utf-8")
+        assert _file_reflects_fix(target, "new code\n", None) is True
+
+
+# ---------------------------------------------------------------------------
+# ClaudeSDKAgent
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeSDKAgent:
+
+    def test_default_init(self) -> None:
+        agent = ClaudeSDKAgent()
+        assert agent.model == "sonnet"
+        assert agent.timeout_seconds == 300.0
+
+    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
+    @patch("deep_architect.agents.client.make_agent_options")
+    async def test_apply_fix_success(
+        self,
+        mock_make_options: MagicMock,
+        mock_run_agent: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "example.py"
+        target.write_text("new code\n", encoding="utf-8")
+        mock_make_options.return_value = MagicMock()
+        mock_run_agent.return_value = MagicMock(is_error=False)
+
+        agent = ClaudeSDKAgent()
+        result = await agent.apply_fix(
+            target,
+            "old code",
+            "new code",
+            "context",
+            original_content="old code\n",
+        )
+
+        assert result is True
+        mock_run_agent.assert_awaited_once()
+
+    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
+    @patch("deep_architect.agents.client.make_agent_options")
+    async def test_apply_fix_agent_error(
+        self,
+        mock_make_options: MagicMock,
+        mock_run_agent: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "example.py"
+        target.write_text("old code\n", encoding="utf-8")
+        mock_make_options.return_value = MagicMock()
+        mock_run_agent.side_effect = RuntimeError("Agent query failed: boom")
+
+        agent = ClaudeSDKAgent()
+        result = await agent.apply_fix(
+            target, "old code", "new code", "context"
+        )
+
+        assert result is False
+
+    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
+    @patch("deep_architect.agents.client.make_agent_options")
+    async def test_apply_fix_no_op_returns_false(
+        self,
+        mock_make_options: MagicMock,
+        mock_run_agent: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        # run_agent reports success, but the file on disk was never touched.
+        target = tmp_path / "example.py"
+        target.write_text("old code\n", encoding="utf-8")
+        mock_make_options.return_value = MagicMock()
+        mock_run_agent.return_value = MagicMock(is_error=False)
+
+        agent = ClaudeSDKAgent()
+        result = await agent.apply_fix(
+            target,
+            "old code",
+            "new code",
+            "context",
+            original_content="old code\n",
         )
 
         assert result is False

@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from deep_architect.config import HarnessConfig, load_config
 from deep_architect.git_ops import git_commit, validate_git_repo
@@ -29,11 +29,6 @@ def _sigint_handler(signum: int, frame: object) -> None:
     global _shutdown_requested
     _shutdown_requested = True
     logger.info("CTRL-C received, finishing current finding before shutdown...")
-
-
-if TYPE_CHECKING:
-    from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
-    import types
 
 
 # ---------------------------------------------------------------------------
@@ -210,57 +205,10 @@ class OpencodeAgent:
 
             opencode_success = _parse_opencode_ndjson(result.stdout)
             if opencode_success:
-                # Verify the file was actually modified
                 try:
-                    current_content = absolute_file_path.read_text(
-                        encoding="utf-8"
+                    return _file_reflects_fix(
+                        absolute_file_path, suggested_code, original_content
                     )
-                    normalized_current = current_content.replace(
-                        '\r\n', '\n'
-                    )
-                    normalized_suggested = suggested_code.replace(
-                        '\r\n', '\n'
-                    )
-
-                    if normalized_current.strip() == normalized_suggested.strip():
-                        logger.debug(
-                            "OpencodeAgent: fix applied successfully for %s (file matches expected)",
-                            file_path,
-                        )
-                        return True
-                    else:
-                        # File doesn't match expected exactly - check if any
-                        # changes were made by comparing with pre-apply content
-                        if original_content is not None:
-                            normalized_original = original_content.replace(
-                                '\r\n', '\n'
-                            )
-                            if normalized_current != normalized_original:
-                                logger.debug(
-                                    "OpencodeAgent: file modified for %s (differs from original)",
-                                    file_path,
-                                )
-                                return True
-                            else:
-                                logger.warning(
-                                    "OpencodeAgent: no changes made to %s (file unchanged)",
-                                    file_path,
-                                )
-                                return False
-                        else:
-                            # No original content provided - fallback to trusting
-                            # opencode's success if the file exists
-                            logger.debug(
-                                "OpencodeAgent: no original content, trusting opencode for %s",
-                                file_path,
-                            )
-                            return True
-                except FileNotFoundError:
-                    logger.debug(
-                        "OpencodeAgent: file not found for verification (likely test env), trusting opencode success for %s",
-                        file_path,
-                    )
-                    return True
                 except Exception as e:
                     logger.error(
                         "OpencodeAgent: error verifying fix for %s: %s",
@@ -422,6 +370,61 @@ def _parse_opencode_ndjson(raw_stdout: str) -> bool:
             "OpencodeAgent: no result event in output, assuming partial"
         )
     return False
+
+
+def _file_reflects_fix(
+    file_path: Path,
+    suggested_code: str,
+    original_content: str | None,
+) -> bool:
+    """Check whether file_path's current content shows a fix was applied.
+
+    A coding agent reporting success is not proof it actually edited the
+    file, so both OpencodeAgent and ClaudeSDKAgent verify against the file
+    on disk before trusting the agent's report.
+
+    Returns True if the file now matches suggested_code exactly, or if it
+    differs from original_content (some change was made). Returns False if
+    the file is unreadable while original_content was captured, or is
+    unchanged from original_content.
+    """
+    try:
+        current_content = file_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.debug(
+            "File not found for verification (likely test env), "
+            "trusting agent success for %s",
+            file_path,
+        )
+        return True
+
+    normalized_current = current_content.replace("\r\n", "\n")
+    normalized_suggested = suggested_code.replace("\r\n", "\n")
+
+    if normalized_current.strip() == normalized_suggested.strip():
+        logger.debug(
+            "Fix applied successfully for %s (file matches expected)",
+            file_path,
+        )
+        return True
+
+    # File doesn't match expected exactly - check if any changes were made
+    # by comparing with pre-apply content.
+    if original_content is not None:
+        normalized_original = original_content.replace("\r\n", "\n")
+        if normalized_current != normalized_original:
+            logger.debug(
+                "File modified for %s (differs from original)", file_path
+            )
+            return True
+        logger.warning("No changes made to %s (file unchanged)", file_path)
+        return False
+
+    # No original content provided - fallback to trusting the agent's success.
+    logger.debug(
+        "No original content, trusting agent success for %s", file_path
+    )
+    return True
 
 
 def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:
@@ -1019,48 +1022,32 @@ def _create_claude_agent(config: AgentConfig) -> CodingAgent:
 
 
 class ClaudeSDKAgent:
-    """Claude SDK implementation of CodingAgent."""
+    """Claude SDK implementation of CodingAgent.
+
+    Delegates to deep_architect.agents.client (the harness's canonical SDK
+    layer) instead of driving claude_agent_sdk directly, so this agent gets
+    the same inactivity timeout, retry, and cancel-scope handling as the
+    generator/critic agents for free.
+    """
+
+    # Narrow, edit-only turn budget — this agent applies one small change to
+    # one file, not a full generation task like the harness's generator.
+    MAX_TURNS = 10
 
     def __init__(
         self,
         model: str = "sonnet",
         permission_mode: str = "bypassPermissions",
         disallowed_tools: list[str] | None = None,
+        timeout_seconds: float = 300.0,
     ) -> None:
         self.model = model
         self.permission_mode = permission_mode
-        self.disallowed_tools = disallowed_tools or [
-            "TodoWrite",
-            "Agent",
-            "WebSearch",
-            "WebFetch",
-            "Bash",
-            "NotebookEdit",
-            "NotebookRead",
-            "NotebookCreate",
-            "NotebookQuery",
-        ]
-        self.model_id = self._resolve_model_id(model)
-        self.cli_path = self._resolve_cli_path()
-
-    def _resolve_model_id(self, model_alias: str) -> str:
-        """Resolve model alias to actual model ID."""
-        alias_map = {
-            "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        }
-        env_var = alias_map.get(model_alias.lower())
-        if env_var:
-            model_id = os.environ.get(env_var, model_alias)
-            return model_id or model_alias
-        return model_alias
-
-    def _resolve_cli_path(self) -> str | None:
-        """Resolve Claude CLI path."""
-        import shutil  # noqa: PLC0415
-
-        return shutil.which("claude")
+        # No longer used: deep_architect.agents.client.make_agent_options
+        # applies its own canonical DISALLOWED_TOOLS list. Kept only so
+        # existing callers passing disallowed_tools don't break.
+        self.disallowed_tools = disallowed_tools
+        self.timeout_seconds = timeout_seconds
 
     async def apply_fix(
         self,
@@ -1070,111 +1057,72 @@ class ClaudeSDKAgent:
         context: str = "",
         original_content: str | None = None,
     ) -> bool:
-        """Apply fix using Claude SDK."""
-        from claude_agent_sdk import (  # noqa: PLC0415
-            ClaudeAgentOptions,
+        """Apply fix using the Claude Agent SDK, via the shared client harness."""
+        from deep_architect.agents.client import (  # noqa: PLC0415
+            make_agent_options,
+            run_agent,
+        )
+        from deep_architect.config import (  # noqa: PLC0415
+            AgentConfig as ClientAgentConfig,
         )
 
-        prompt = (
-            f"Please apply the following code change to {file_path}:\n\n"
-            f"Existing code:\n```\n{existing_code}\n```\n\n"
-            f"Replace with:\n```\n{suggested_code}\n```\n\n"
-            f"Context: {context}\n\n"
-            "Make the change and confirm it was applied correctly."
-        )
+        absolute_file_path = file_path.resolve()
 
         system_prompt = (
             "You are a precise code editing assistant. Your task is to make "
             "exact code replacements as specified. Do not make any other "
-            "changes unless explicitly instructed. Confirm when the change "
-            "has been made."
+            "changes unless explicitly instructed. Do not run git or commit "
+            "the change — that is handled separately. Confirm when the "
+            "change has been made."
+        )
+        prompt = (
+            f"Please apply the following code change to {absolute_file_path}:\n\n"
+            f"Existing code:\n```\n{existing_code}\n```\n\n"
+            f"Replace with:\n```\n{suggested_code}\n```\n\n"
+            f"Context: {context}\n\n"
+            "Make the change and confirm it was applied correctly. "
+            "Do not commit the change."
         )
 
+        client_config = ClientAgentConfig(model=self.model, max_turns=self.MAX_TURNS)
+
         try:
-            options = ClaudeAgentOptions(
-                system_prompt=system_prompt,
-                permission_mode=self.permission_mode,  # type: ignore[arg-type]
-                tools=[],
-                disallowed_tools=self.disallowed_tools,
-                model=self.model_id,
-                settings='{"alwaysThinkingEnabled": false}',
+            options = make_agent_options(
+                client_config,
+                system_prompt,
+                allowed_tools=["Read", "Edit", "Write"],
+                cwd=str(Path.cwd()),
             )
 
-            if self.cli_path:
-                options = ClaudeAgentOptions(
-                    system_prompt=system_prompt,
-                    permission_mode=self.permission_mode,  # type: ignore[arg-type]
-                    tools=[],
-                    disallowed_tools=self.disallowed_tools,
-                    model=self.model_id,
-                    cli_path=self.cli_path,
-                    settings='{"alwaysThinkingEnabled": false}',
-                )
-
-            result = await self._consume_query(prompt, options)
-
-            if result.is_error:
-                error_detail = (
-                    result.errors[0] if result.errors else "Unknown error"
-                )
-                logger.error("Claude SDK error: %s", error_detail)
-                return False
-
-            return not result.is_error
-
+            await run_agent(
+                options,
+                prompt,
+                label=f"review-action:{file_path.name}",
+                timeout_seconds=self.timeout_seconds,
+                max_retries=0,
+            )
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.error("Exception using Claude SDK: %s", e)
+            logger.error(
+                "Exception using Claude SDK to apply fix for %s: %s",
+                file_path,
+                e,
+            )
             return False
 
-    async def _consume_query(
-        self, prompt: str, options: ClaudeAgentOptions
-    ) -> ResultMessage:
-        """Consume the query generator."""
-        from claude_agent_sdk import (  # noqa: PLC0415
-            AssistantMessage,
-            ResultMessage,
-            query,
-        )
-
-        gen = query(prompt=prompt, options=options).__aiter__()
+        # run_agent() raises on error, so reaching here means the agent
+        # reported success — but that's not proof it actually edited the
+        # file, so verify against the file on disk.
         try:
-            last_message: ResultMessage | None = None
-            while True:
-                try:
-                    message = await gen.__anext__()
-                except StopAsyncIteration:
-                    break
-                except Exception as e:
-                    logger.error("Error in query consumption: %s", e)
-                    break
-
-                if isinstance(message, ResultMessage):
-                    last_message = message
-                elif isinstance(message, AssistantMessage):
-                    if message.error is not None:
-                        logger.warning(
-                            "Claude SDK assistant error: %s", message.error
-                        )
-
-            if last_message is not None:
-                return last_message
-
-            # Fallback: create an error ResultMessage
-            # Use **kwargs to handle potential SDK version differences
-            kwargs: dict[str, object] = {
-                "result": "",
-                "session_id": "unknown",
-                "duration_ms": 0,
-                "is_error": True,
-                "num_turns": 0,
-                "errors": ["No result message received"],
-            }
-            return ResultMessage(**kwargs)  # type: ignore[arg-type]
-        finally:
-            try:
-                await gen.aclose()  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            return _file_reflects_fix(
+                absolute_file_path, suggested_code, original_content
+            )
+        except Exception as e:
+            logger.error(
+                "ClaudeSDKAgent: error verifying fix for %s: %s", file_path, e
+            )
+            return False
 
 
 # ---------------------------------------------------------------------------
