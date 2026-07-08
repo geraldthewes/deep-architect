@@ -390,7 +390,11 @@ def make_agent_options(
     """
 
     def _stderr_cb(line: str) -> None:
-        _log.error("[claude stderr] %s", line)
+        # stderr isn't inherently fatal — the CLI writes warnings/diagnostics
+        # there too (e.g. stale disallowedTools entries). Real ERROR-level
+        # logging happens in run_agent()'s exception handler, which re-emits
+        # the buffered lines once the call is actually known to have failed.
+        _log.warning("[claude stderr] %s", line)
 
     # An empty allowed_tools list is falsy, so the SDK would NOT pass --allowedTools,
     # leaving all default tools unrestricted.  Use tools=[] instead, which maps to
