@@ -33,14 +33,21 @@ The agents are powered by the [Claude Agent SDK](https://code.claude.com/docs/en
 ```bash
 git clone https://github.com/geraldthewes/deep-architect
 cd deep-architect
-uv sync
+just install    # or: uv sync && uv tool install --editable .
 ```
+
+`just install` does two things:
+- `uv sync` — sets up `deep-architect/.venv` for local development (tests, lint, type check)
+- `uv tool install --editable .` — installs `adversarial-architect`, `review-analyzer`, and `review-action` into `~/.local/bin` (via `uv`'s isolated tool environments), so they're on your `PATH` in **any** terminal, in **any** repository. This matters because `review-action` and `review-analyzer` are meant to be run from inside the repo you're applying fixes to, not from inside `deep-architect` itself.
+
+`--editable` means source edits in `deep-architect/` are picked up immediately, with no reinstall needed. If you only ran `uv sync` (no `uv tool install`), the commands only exist inside `deep-architect/.venv/bin/` and must be invoked with `uv run <command>` from inside this directory — running them bare from another repo will fail with `command not found`.
 
 Verify the install:
 
 ```bash
-uv run adversarial-architect --help
-uv run review-analyzer --help
+adversarial-architect --help
+review-analyzer --help
+review-action --help
 ```
 
 ---
