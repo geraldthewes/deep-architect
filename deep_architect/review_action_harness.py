@@ -912,15 +912,28 @@ def process_findings(
         if md_file.name not in ("SUMMARY.md", "INDEX.md"):
             stats["total_findings"] += 1
 
+    total = stats["total_findings"]
+    finding_index = 0
+
     for md_file in markdown_files:
         # Check for interrupt signal
         if _shutdown_requested:
             stats["interrupted"] = True
             break
-            
+
         # Skip summary/index files
         if md_file.name in ("SUMMARY.md", "INDEX.md"):
             continue
+
+        finding_index += 1
+        pct = round(finding_index / total * 100) if total else 0
+        logger.info(
+            "Addressing Review %d/%d (%d%%): %s",
+            finding_index,
+            total,
+            pct,
+            md_file.stem,
+        )
 
         # Skip already-processed findings unless forced
         if not force and has_action_taken(md_file):
@@ -931,6 +944,10 @@ def process_findings(
                     md_file.name,
                     existing.commit_sha or "unknown",
                 )
+                logger.info(
+                    "  -> Skipped (already completed, commit %s)",
+                    existing.commit_sha or "unknown",
+                )
                 stats["restored"] += 1
                 continue
             elif existing and existing.status == "error" and skip_errors:
@@ -938,6 +955,7 @@ def process_findings(
                     "Skipping errored finding (--skip-errors): %s",
                     md_file.name,
                 )
+                logger.info("  -> Skipped (previous error)")
                 stats["skipped"] += 1
                 continue
             elif existing:
@@ -951,6 +969,7 @@ def process_findings(
 
         if not is_valid_finding(md_file):
             logger.info("Skipping non-VALID finding: %s", md_file.name)
+            logger.info("  -> Rejected (verdict not VALID)")
             stats["skipped"] += 1
             continue
 
@@ -965,11 +984,14 @@ def process_findings(
 
         if status == "error":
             logger.error("%s", error or f"Unknown error processing {md_file.name}")
+            logger.info("  -> Error: %s", error or "unknown error")
             stats["errors"] += 1
         elif status == "skipped":
             logger.warning("%s", error or f"Skipped {md_file.name}")
+            logger.info("  -> Skipped (no change committed)")
             stats["skipped"] += 1
         elif committed:
+            logger.info("  -> Change applied and committed")
             stats["committed"] += 1
 
     return stats
