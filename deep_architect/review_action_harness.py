@@ -12,11 +12,14 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from deep_architect.config import HarnessConfig, load_config
 from deep_architect.git_ops import git_commit, validate_git_repo
 from deep_architect.logger import get_logger
+
+if TYPE_CHECKING:
+    from deep_architect.agents.client import RunStats
 
 logger = get_logger(__name__)
 
@@ -1208,7 +1211,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def print_summary(stats: dict[str, int], output_dir: Path) -> None:
+def print_summary(
+    stats: dict[str, int], output_dir: Path, run_stats: RunStats | None = None
+) -> None:
     """Print the final processing summary and write to file."""
     print("\n=== Review Action Harness Summary ===")
     print(f"Restored:   {stats['restored']}")
@@ -1216,7 +1221,12 @@ def print_summary(stats: dict[str, int], output_dir: Path) -> None:
     print(f"Committed:  {stats['committed']}")
     print(f"Skipped:    {stats['skipped']}")
     print(f"Errors:     {stats['errors']}")
-    
+    if run_stats is not None:
+        print(
+            f"Total cost: ${run_stats.total_cost_usd:.4f} "
+            f"across {run_stats.num_calls} agent call(s)"
+        )
+
     # Write summary to file
     summary_file = output_dir / "review-action_summary.md"
     with summary_file.open("w", encoding="utf-8") as f:
@@ -1226,6 +1236,11 @@ def print_summary(stats: dict[str, int], output_dir: Path) -> None:
         f.write(f"Committed:  {stats['committed']}\n")
         f.write(f"Skipped:    {stats['skipped']}\n")
         f.write(f"Errors:     {stats['errors']}\n")
+        if run_stats is not None:
+            f.write(
+                f"Total cost: ${run_stats.total_cost_usd:.4f} "
+                f"across {run_stats.num_calls} agent call(s)\n"
+            )
         f.write(f"Interrupted: {'yes' if stats['interrupted'] else 'no'}\n")
         processed = stats['processed']
         total = stats['total_findings']
@@ -1291,6 +1306,10 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Failed to initialize agent: %s", e)
         return 1
 
+    from deep_architect.agents.client import init_run_stats  # noqa: PLC0415
+
+    run_stats = init_run_stats()
+
     # Process findings
     stats = process_findings(
         args.output_dir,
@@ -1303,7 +1322,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_errors=args.skip_errors,
     )
 
-    print_summary(stats, args.output_dir)
+    print_summary(stats, args.output_dir, run_stats)
 
     return 130 if stats["interrupted"] else (0 if stats["errors"] == 0 else 1)
 
