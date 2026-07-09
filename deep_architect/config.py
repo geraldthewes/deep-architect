@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
+
+from deep_architect.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class AgentConfig(BaseModel):
@@ -72,15 +77,52 @@ class HarnessConfig(BaseModel):
         return self
 
 
+def _legacy_config_path() -> Path:
+    return Path.home() / ".deep-architect.toml"
+
+
+def _xdg_config_path() -> Path:
+    """Return $XDG_CONFIG_HOME/deep-architect/config.toml, defaulting to ~/.config."""
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg_config_home) if xdg_config_home else Path.home() / ".config"
+    return base / "deep-architect" / "config.toml"
+
+
+def _resolve_default_config_path() -> Path:
+    """Resolve the default config path: XDG location first, then the legacy dotfile.
+
+    Returns the XDG path even if nothing exists yet, so callers get a clear
+    "create this file" message pointing at the current convention.
+    """
+    xdg_path = _xdg_config_path()
+    if xdg_path.exists():
+        return xdg_path
+    legacy_path = _legacy_config_path()
+    if legacy_path.exists():
+        logger.warning(
+            "Loading config from legacy path %s. Move it to %s (XDG Base Directory convention).",
+            legacy_path,
+            xdg_path,
+        )
+        return legacy_path
+    return xdg_path
+
+
 def load_config(config_path: Path | None = None) -> HarnessConfig:
-    """Load config from ~/.deep-architect.toml, with optional override path."""
+    """Load config from the XDG config path, with optional override path.
+
+    Default resolution: $XDG_CONFIG_HOME/deep-architect/config.toml (or
+    ~/.config/deep-architect/config.toml), falling back to the legacy
+    ~/.deep-architect.toml if only that exists.
+    """
     if config_path is None:
-        config_path = Path.home() / ".deep-architect.toml"
+        config_path = _resolve_default_config_path()
 
     if not config_path.exists():
         raise FileNotFoundError(
             f"Config file not found: {config_path}\n"
-            "Create ~/.deep-architect.toml with [generator] and [critic] sections.\n"
+            "Create ~/.config/deep-architect/config.toml with [generator] and [critic] sections\n"
+            "(the legacy ~/.deep-architect.toml path is also still supported).\n"
             "Endpoint configuration is via environment variables:\n"
             "  ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_DEFAULT_SONNET_MODEL, etc."
         )

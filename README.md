@@ -75,11 +75,14 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 The model aliases (`ANTHROPIC_DEFAULT_SONNET_MODEL`, etc.) tell the `claude` CLI what actual model ID to use when the config says `"sonnet"`, `"opus"`, or `"haiku"`. If you're using Anthropic's API without a proxy, these can be left unset and the defaults apply.
 
-### Step 2: Create `~/.deep-architect.toml`
+### Step 2: Create `~/.config/deep-architect/config.toml`
 
 ```bash
-cp .deep-architect.toml.template ~/.deep-architect.toml
+mkdir -p ~/.config/deep-architect
+cp config.toml.template ~/.config/deep-architect/config.toml
 ```
+
+(The legacy `~/.deep-architect.toml` path is still honored if that's the only config file present, but new setups should use the XDG path above.)
 
 The TOML config controls which model alias to use for each agent and the quality thresholds:
 
@@ -150,7 +153,7 @@ That's it. By default the tool stops after each sprint so you can review the out
 | `--codebase PATH` | Path to the git repository to analyze (reverse-engineer mode) |
 | `--output PATH` | Output directory (default: `<codebase>/knowledge/architecture/` in RE mode) |
 | `--resume` | Resume an interrupted run from the last completed sprint |
-| `--config PATH` | Config file path (default: `~/.deep-architect.toml`) |
+| `--config PATH` | Config file path (default: `~/.config/deep-architect/config.toml`, falls back to legacy `~/.deep-architect.toml`) |
 | `--model-generator TEXT` | Override the generator model alias for this run |
 | `--model-critic TEXT` | Override the critic model alias for this run |
 | `--context PATH` | Supplementary context file injected into every generator prompt (repeatable) |
@@ -370,7 +373,7 @@ cat knowledge/architecture/contracts/sprint-1.json
 Install Claude Code: follow the instructions at [claude.ai/code](https://claude.ai/code). Then verify with `claude --version`.
 
 **`Config file not found`**
-Create `~/.deep-architect.toml` from the template: `cp .deep-architect.toml.template ~/.deep-architect.toml`.
+Create `~/.config/deep-architect/config.toml` from the template: `mkdir -p ~/.config/deep-architect && cp config.toml.template ~/.config/deep-architect/config.toml`. The legacy `~/.deep-architect.toml` path also still works.
 
 **`Error: PRD file not found`**
 The `--prd` path must point to an existing file. Check the path is correct relative to your current directory.
@@ -385,7 +388,7 @@ One of the two mode flags must be provided. They are mutually exclusive — don'
 The output directory must be inside a git repo. Initialize one first: `git init`.
 
 **ANTHROPIC_BASE_URL not respected**
-The SDK may fall back to the bundled Claude binary, which can ignore custom env vars. Set `cli_path` in `~/.deep-architect.toml` to the output of `which claude`.
+The SDK may fall back to the bundled Claude binary, which can ignore custom env vars. Set `cli_path` in `~/.config/deep-architect/config.toml` to the output of `which claude`.
 
 **A sprint fails after max rounds**
 By default the harness accepts the best-effort result and continues (soft-fail). Pass `--strict` to halt instead. Check the feedback JSON for recurring issues. Common causes: the PRD lacks enough detail, or `max_turns` is too low for the model to complete a full architecture file in one agent loop. Try increasing `max_turns` in the config.
@@ -513,7 +516,7 @@ Defaults to `feedback/` if no directory is specified.
 | `--provider <name>` | `opencode` | Agent provider (`opencode`, `claude`, or `grok`) |
 | `--dry-run` | off | Show what would be done without making changes |
 | `--verbose` | off | Enable verbose logging |
-| `--config <path>` | `~/.deep-architect.toml` | Configuration file path |
+| `--config <path>` | `~/.config/deep-architect/config.toml` (legacy `~/.deep-architect.toml` fallback) | Configuration file path |
 | `--force` | off | Re-process findings that were already completed |
 | `--skip-errors` | off | Skip findings that previously failed instead of retrying them |
 | `--max-check-iterations <n>` | (from config) | Post-fix quality-check retry cap; `0` = run checks but never block or retry |
@@ -574,7 +577,7 @@ The LLM judge runs through the **same coding-agent CLI as the fix agent** — wh
 `--provider` (opencode/claude/grok) is selected — so its endpoint and credentials always match
 the fix agent's; there's no separate credential setup. Judge output is validated as JSON with a
 parse-and-retry loop bounded by `thresholds.judge_parse_retries` (default 2 retries, i.e. 3
-attempts) in `~/.deep-architect.toml`. If you want a cheaper/faster first pass, pass
+attempts) in `~/.config/deep-architect/config.toml`. If you want a cheaper/faster first pass, pass
 `--skip-llm-checks` to run programmatic checks only.
 
 **Declaring checks.** Create `.quality-checks.toml` at the repo root (see
@@ -629,8 +632,8 @@ logged but never block/retry — a report-only escape hatch). If checks are stil
 the cap is hit, the fix's modified files are restored via git (fail-closed) and the finding is
 marked `error` — a later run (without `--skip-errors`) retries it.
 
-Relevant config keys (`~/.deep-architect.toml`, `[thresholds]`) — see
-`.deep-architect.toml.template`:
+Relevant config keys (`~/.config/deep-architect/config.toml`, `[thresholds]`) — see
+`config.toml.template`:
 
 ```toml
 check_max_fix_iterations = 3    # post-fix quality-check retry cap; 0 = report-only

@@ -44,7 +44,12 @@ def main(
     ),
     resume: bool = typer.Option(False, "--resume", help="Resume an interrupted run"),
     config_file: Path | None = typer.Option(
-        None, "--config", help="Config file path (default: ~/.deep-architect.toml)"
+        None,
+        "--config",
+        help=(
+            "Config file path (default: ~/.config/deep-architect/config.toml, "
+            "falls back to legacy ~/.deep-architect.toml)"
+        ),
     ),
     model_generator: str | None = typer.Option(
         None, "--model-generator", help="Override generator model name"

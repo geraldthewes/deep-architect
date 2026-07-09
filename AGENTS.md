@@ -31,7 +31,7 @@ Keep this managed block so `ocr init` can refresh the instructions.
 - **Typecheck**: `mypy .`
 - **Output**: Generated architecture files written to `knowledge/architecture/`
 - **Git**: Tool auto-commits after each generator pass; work in a git repository
-- **Config**: Optional `~/.deep-architect.toml` for harness configuration (see `.deep-architect.toml.template`)
+- **Config**: Optional `~/.config/deep-architect/config.toml` for harness configuration (see `config.toml.template`; legacy `~/.deep-architect.toml` still honored)
 - **Architecture**: Runs 7 fixed sprints with Generator (Winston) and Critic (Boris) agents in adversarial loop
 
 ## Circuit Breaker Pattern
@@ -39,7 +39,7 @@ Keep this managed block so `ocr init` can refresh the instructions.
 The system implements a circuit breaker pattern with exponential backoff to handle transient failures in LLM provider communication:
 
 - **Purpose**: Prevents repeated failed requests during temporary outages, rate limiting, or network issues
-- **Configuration**: Adjustable via `~/.deep-architect.toml`:
+- **Configuration**: Adjustable via `~/.config/deep-architect/config.toml`:
   - `model_comm_failure_threshold`: Consecutive failures before opening circuit (default: 3)
   - `model_comm_base_backoff`: Initial backoff delay in seconds (default: 1.0)
   - `model_comm_max_backoff`: Maximum backoff delay in seconds (default: 60.0)

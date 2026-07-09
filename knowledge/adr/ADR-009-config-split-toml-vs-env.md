@@ -2,7 +2,8 @@
 
 **Status:** Accepted  
 **Date:** 2026-04-10  
-**Deciders:** Project design
+**Deciders:** Project design  
+**Related:** ADR-028 (moved the config path to `~/.config/deep-architect/config.toml`; the TOML-vs-env split decided here is unaffected)
 
 ---
 

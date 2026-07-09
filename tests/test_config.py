@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -241,3 +242,74 @@ early_accept_stalls = 2
     cfg = load_config(cfg_file)
     assert cfg.thresholds.early_accept_score == 9.8
     assert cfg.thresholds.early_accept_stalls == 2
+
+
+def test_resolve_default_config_path_prefers_xdg_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deep_architect.config import _resolve_default_config_path
+
+    xdg_home = tmp_path / "xdgcfg"
+    cfg_dir = xdg_home / "deep-architect"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text("")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_home))
+
+    resolved = _resolve_default_config_path()
+    assert resolved == cfg_dir / "config.toml"
+
+
+def test_resolve_default_config_path_falls_back_to_dot_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deep_architect.config import _resolve_default_config_path
+
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    cfg_dir = tmp_path / ".config" / "deep-architect"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text("")
+
+    resolved = _resolve_default_config_path()
+    assert resolved == cfg_dir / "config.toml"
+
+
+def test_resolve_default_config_path_falls_back_to_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from deep_architect.config import _resolve_default_config_path
+
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    legacy_file = tmp_path / ".deep-architect.toml"
+    legacy_file.write_text("")
+
+    with caplog.at_level(logging.WARNING):
+        resolved = _resolve_default_config_path()
+
+    assert resolved == legacy_file
+    assert "legacy path" in caplog.text
+
+
+def test_resolve_default_config_path_defaults_to_xdg_when_nothing_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deep_architect.config import _resolve_default_config_path
+
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    resolved = _resolve_default_config_path()
+    assert resolved == tmp_path / ".config" / "deep-architect" / "config.toml"
+
+
+def test_load_config_default_path_missing_mentions_xdg_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    expected_path = tmp_path / ".config" / "deep-architect" / "config.toml"
+    with pytest.raises(FileNotFoundError, match=r"\.config/deep-architect/config\.toml"):
+        load_config(None)
+    assert not expected_path.exists()

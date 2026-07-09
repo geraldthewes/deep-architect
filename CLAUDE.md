@@ -9,7 +9,7 @@
 ```
 deep_architect/
 ├── cli.py                    # Typer entry point (adversarial-architect)
-├── config.py                 # HarnessConfig loaded from ~/.deep-architect.toml
+├── config.py                 # HarnessConfig loaded from ~/.config/deep-architect/config.toml
 ├── harness.py                # Main orchestration loop (run_harness)
 ├── sprints.py                # SPRINTS list — 7 fixed SprintDefinition objects
 ├── exit_criteria.py          # sprint_passes(), should_ping_pong_exit()
@@ -105,7 +105,7 @@ Logic lives entirely in `exit_criteria.py`. The thresholds (`min_score`, `ping_p
 
 ## Config File
 
-Users create `~/.deep-architect.toml` (template: `.deep-architect.toml.template`). The TOML config controls model aliases and thresholds only. Authentication and endpoint are set via environment variables (see above). `load_config()` in `config.py` raises `FileNotFoundError` with a clear message if the file is missing.
+Users create `~/.config/deep-architect/config.toml` (template: `config.toml.template`); the legacy `~/.deep-architect.toml` path is still honored if that's the only file present, with a deprecation warning logged. The TOML config controls model aliases and thresholds only. Authentication and endpoint are set via environment variables (see above). `load_config()` in `config.py` raises `FileNotFoundError` with a clear message if the file is missing.
 
 ## Review Action Harness — Post-Fix Quality Checks
 

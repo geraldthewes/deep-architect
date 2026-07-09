@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deep_architect.coding_agents import CodingAgent, CodingAgentConfig, create_agent
-from deep_architect.config import HarnessConfig, load_config
+from deep_architect.config import HarnessConfig, _resolve_default_config_path, load_config
 from deep_architect.git_ops import (
     get_modified_files,
     git_commit,
@@ -805,7 +805,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Path to configuration file "
-            "(defaults to ~/.deep-architect.toml)"
+            "(defaults to ~/.config/deep-architect/config.toml, "
+            "falls back to legacy ~/.deep-architect.toml)"
         ),
     )
     parser.add_argument(
@@ -895,7 +896,7 @@ def main(argv: list[str] | None = None) -> int:
     # Load configuration
     harness_config = HarnessConfig()
     try:
-        config_path = args.config or Path.home() / ".deep-architect.toml"
+        config_path = args.config or _resolve_default_config_path()
         if config_path.exists():
             harness_config = load_config(config_path)
     except Exception as e:

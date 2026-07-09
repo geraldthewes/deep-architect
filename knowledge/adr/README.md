@@ -33,6 +33,7 @@ This directory contains ADRs capturing the key architectural decisions made duri
 | [ADR-025](ADR-025-critic-rescue-fallback.md) | Critic Rescue Fallback for Empty Structured Output | Accepted |
 | [ADR-026](ADR-026-circuit-breaker-pattern.md) | Circuit Breaker Pattern for Model Communication Failures | Accepted |
 | [ADR-027](ADR-027-yolo-sprint-checkpoint-mode.md) | Sprint-by-Sprint Checkpoint Mode (`--yolo` Escape Hatch) | Accepted |
+| [ADR-028](ADR-028-xdg-config-path.md) | XDG Base Directory Config Path | Accepted |
 
 ## Key Themes
 
