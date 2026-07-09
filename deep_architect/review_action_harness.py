@@ -512,8 +512,9 @@ def _process_single_finding(
                         py_file,
                         diff,
                         rules_for_file(rules, py_file, repo_root),
-                        harness_config.critic,
+                        agent,
                         repo_root,
+                        max_parse_retries=harness_config.thresholds.judge_parse_retries,
                     )
                 )
                 style_failures.extend((py_file, v) for v in verdict.blocking)

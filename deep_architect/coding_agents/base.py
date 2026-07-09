@@ -49,6 +49,20 @@ class CodingAgent(Protocol):
     ) -> bool:
         """Address quality-check failures introduced by a prior fix attempt."""
 
+    async def run_structured(
+        self,
+        system_prompt: str,
+        prompt: str,
+        label: str = "structured",
+    ) -> str:
+        """Run a one-shot, tool-free prompt through the backend; return raw text.
+
+        The prompt embeds everything needed — no file tools are used. Raises
+        RuntimeError on CLI/process failure or empty output. JSON-schema
+        enforcement is the caller's job (parse-and-retry), since the CLIs
+        cannot enforce a schema server-side.
+        """
+
 
 def _file_reflects_fix(
     file_path: Path,

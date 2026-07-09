@@ -423,11 +423,13 @@ capped check output. Common fixes: raise `--max-check-iterations`, use a more ca
 finding stays `error` and is retried automatically).
 
 **`review-action` LLM judge call fails or the run hangs on `llm-judge:<file>`**
-The judge calls the Anthropic API directly (not through `opencode`/the `claude` CLI) — it needs
-`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (or `ANTHROPIC_API_KEY`) set, same as
-[Configuration, Step 1](#step-1-set-environment-variables), and reads the model from the
-`[critic]` section of `~/.deep-architect.toml`. If you just want the programmatic checks, pass
-`--skip-llm-checks`.
+The judge runs through the same `--provider` CLI as the fix agent, so credentials follow
+whichever provider is selected: `--provider claude` needs `ANTHROPIC_BASE_URL`/
+`ANTHROPIC_AUTH_TOKEN` (or `ANTHROPIC_API_KEY`) set, same as
+[Configuration, Step 1](#step-1-set-environment-variables) — a missing key now fails immediately
+with a clear error instead of retrying. `--provider opencode`/`--provider grok` use their own CLI
+auth (opencode's own config; `grok login` or `XAI_API_KEY`) — no separate credentials needed. If
+you just want the programmatic checks, pass `--skip-llm-checks`.
 
 **`Malformed .quality-checks.toml` / `Invalid .quality-checks.toml`**
 The file exists but failed TOML parsing or Pydantic validation. Compare against
@@ -568,12 +570,12 @@ introduced are failing (fail-closed). Two kinds of checks are supported:
 - **LLM-judged** — style/convention rules that need judgment rather than a CLI tool (e.g. a
   `python-style.md` guide), judged one modified file's diff at a time.
 
-The LLM judge is a separate agent call, not the fix agent — it uses the **`[critic]`**
-model from `~/.deep-architect.toml` (same section `adversarial-architect`'s critic uses) and
-the same `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` environment variables from
-[Configuration, Step 1](#step-1-set-environment-variables) — no separate credential setup is
-needed if you've already configured the tool. If you haven't (or want a cheaper/faster first
-pass), pass `--skip-llm-checks` to run programmatic checks only.
+The LLM judge runs through the **same coding-agent CLI as the fix agent** — whichever
+`--provider` (opencode/claude/grok) is selected — so its endpoint and credentials always match
+the fix agent's; there's no separate credential setup. Judge output is validated as JSON with a
+parse-and-retry loop bounded by `thresholds.judge_parse_retries` (default 2 retries, i.e. 3
+attempts) in `~/.deep-architect.toml`. If you want a cheaper/faster first pass, pass
+`--skip-llm-checks` to run programmatic checks only.
 
 **Declaring checks.** Create `.quality-checks.toml` at the repo root (see
 `.quality-checks.toml.template` for the full format):
@@ -634,6 +636,7 @@ Relevant config keys (`~/.deep-architect.toml`, `[thresholds]`) — see
 check_max_fix_iterations = 3    # post-fix quality-check retry cap; 0 = report-only
 check_command_timeout    = 120  # default per-command timeout (seconds) for auto-detected checks
 coding_agent_timeout     = 300  # per coding-agent call timeout (seconds); omit for per-agent default (opencode 120, claude/grok 300)
+judge_parse_retries      = 2    # LLM style-judge JSON parse retries (attempts = retries + 1)
 ```
 
 ### Grok Build backend

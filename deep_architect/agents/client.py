@@ -131,6 +131,22 @@ def resolve_model_id(alias: str) -> str:
     return alias
 
 
+def resolve_api_key() -> str:
+    """Return the Anthropic API key from env, failing fast with a clear error.
+
+    An empty string passed to AsyncAnthropic disables the SDK's own env-var
+    fallback and produces a cryptic TypeError deep in header validation, only
+    after burning a full retry loop. Fail immediately instead.
+    """
+    api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
+    if not api_key:
+        raise RuntimeError(
+            "No Anthropic credentials found: ANTHROPIC_AUTH_TOKEN or "
+            "ANTHROPIC_API_KEY must be set (see README, Configuration Step 1)."
+        )
+    return api_key
+
+
 def _extract_json(text: str) -> str:
     """Strip markdown code fences and return the JSON portion of text."""
     stripped = text.strip()
@@ -138,6 +154,51 @@ def _extract_json(text: str) -> str:
     if m:
         return m.group(1).strip()
     return stripped
+
+
+async def run_simple_text(
+    config: AgentConfig,
+    system_prompt: str,
+    prompt: str,
+    label: str = "Agent",
+) -> str:
+    """Single direct Anthropic API call (no tools, no retry). Returns raw text.
+
+    Raises RuntimeError immediately if no Anthropic credentials are configured.
+    """
+    api_key = resolve_api_key()
+    base_url = os.environ.get("ANTHROPIC_BASE_URL")
+    model_id = resolve_model_id(config.model)
+
+    client = _anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url)
+    t0 = time.monotonic()
+    response = await client.messages.create(
+        model=model_id,
+        max_tokens=16384,
+        system=system_prompt,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    elapsed = time.monotonic() - t0
+
+    text = "".join(b.text for b in response.content if hasattr(b, "text"))
+
+    input_tokens = response.usage.input_tokens
+    output_tokens = response.usage.output_tokens
+    _log.info(
+        "[%s] done: duration=%.1fs input=%d output=%d model=%s",
+        label, elapsed, input_tokens, output_tokens, model_id,
+    )
+
+    stats = _run_stats.get()
+    if stats is not None:
+        stats.num_calls += 1
+        stats.num_turns += 1
+        stats.duration_ms += int(elapsed * 1000)
+        ms = stats._model(model_id)
+        ms.input_tokens += input_tokens
+        ms.output_tokens += output_tokens
+
+    return text
 
 
 async def run_simple_structured(  # noqa: UP047
@@ -157,13 +218,11 @@ async def run_simple_structured(  # noqa: UP047
     system prompt, then extracts and validates with Pydantic.  Uses the anthropic
     SDK directly rather than pydantic-ai's tool_choice mechanism, which can fail
     on litellm proxies that don't properly honour tool_choice for all models.
-    
+
     Supports circuit breaker pattern for transient failures when circuit_breaker_state
     is provided.
     """
-    api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY", "")
-    base_url = os.environ.get("ANTHROPIC_BASE_URL")
-    model_id = resolve_model_id(config.model)
+    resolve_api_key()  # fail fast, before any network call or retry
 
     schema_str = json.dumps(output_type.model_json_schema(), indent=2)
     json_system = (
@@ -174,22 +233,12 @@ async def run_simple_structured(  # noqa: UP047
         f"{schema_str}"
     )
 
-    client = _anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url)
     last_exc: Exception | None = None
     max_retries = 2  # 3 attempts total
 
     # Factory for the coroutine
     async def _execute_call() -> _T:
-        t0 = time.monotonic()
-        response = await client.messages.create(
-            model=model_id,
-            max_tokens=16384,
-            system=json_system,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        elapsed = time.monotonic() - t0
-
-        text = "".join(b.text for b in response.content if hasattr(b, "text"))
+        text = await run_simple_text(config, json_system, prompt, label=label)
 
         try:
             result = output_type.model_validate_json(_extract_json(text))
@@ -199,22 +248,6 @@ async def run_simple_structured(  # noqa: UP047
                 label, exc, text,
             )
             raise RuntimeError(f"JSON parse failed: {exc}") from exc
-
-        input_tokens = response.usage.input_tokens
-        output_tokens = response.usage.output_tokens
-        _log.info(
-            "[%s] done: duration=%.1fs input=%d output=%d model=%s",
-            label, elapsed, input_tokens, output_tokens, model_id,
-        )
-
-        stats = _run_stats.get()
-        if stats is not None:
-            stats.num_calls += 1
-            stats.num_turns += 1
-            stats.duration_ms += int(elapsed * 1000)
-            ms = stats._model(model_id)
-            ms.input_tokens += input_tokens
-            ms.output_tokens += output_tokens
 
         return result
 

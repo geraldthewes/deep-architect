@@ -185,6 +185,27 @@ coding_agent_timeout = 240.0
     assert cfg.thresholds.coding_agent_timeout == 240.0
 
 
+def test_threshold_judge_parse_retries_default() -> None:
+    from deep_architect.config import ThresholdConfig
+
+    cfg = ThresholdConfig()
+    assert cfg.judge_parse_retries == 2
+
+
+def test_load_config_with_judge_parse_retries(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text("""
+[generator]
+model = "sonnet"
+[critic]
+model = "sonnet"
+[thresholds]
+judge_parse_retries = 4
+""")
+    cfg = load_config(cfg_file)
+    assert cfg.thresholds.judge_parse_retries == 4
+
+
 def test_load_config_with_early_accept(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text("""

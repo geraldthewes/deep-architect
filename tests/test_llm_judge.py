@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
-from deep_architect.config import AgentConfig
 from deep_architect.llm_judge import (
     RuleEntry,
     judge_file,
@@ -20,6 +19,13 @@ from deep_architect.models.checks import (
     StyleVerdict,
     StyleViolation,
 )
+
+
+class FakeAgent:
+    """Minimal CodingAgent stand-in exposing only run_structured."""
+
+    def __init__(self) -> None:
+        self.run_structured: AsyncMock = AsyncMock()
 
 # ---------------------------------------------------------------------------
 # load_llm_rules
@@ -150,13 +156,11 @@ class TestJudgeFile:
         f = tmp_path / "a.py"
         f.write_text("x = 1\n")
 
-        with patch(
-            "deep_architect.llm_judge.run_simple_structured", new_callable=AsyncMock
-        ) as mock_call:
-            verdict = await judge_file(f, "diff content", [], AgentConfig(), tmp_path)
+        agent = FakeAgent()
+        verdict = await judge_file(f, "diff content", [], agent, tmp_path)
 
         assert verdict.violations == []
-        mock_call.assert_not_awaited()
+        agent.run_structured.assert_not_awaited()
 
     async def test_prompt_contains_diff_and_rules_and_tool_config_wins_instruction(
         self, tmp_path: Path
@@ -165,20 +169,18 @@ class TestJudgeFile:
         f.write_text("import os\ndef f():\n    return 1\n")
         rules = [RuleEntry(path_glob="**/*.py", rule_text="PY-STY-042: no bare except")]
 
-        with patch(
-            "deep_architect.llm_judge.run_simple_structured", new_callable=AsyncMock
-        ) as mock_call:
-            mock_call.return_value = StyleVerdict()
-            await judge_file(f, "+import os\n-pass", rules, AgentConfig(), tmp_path)
+        agent = FakeAgent()
+        agent.run_structured.return_value = StyleVerdict().model_dump_json()
+        await judge_file(f, "+import os\n-pass", rules, agent, tmp_path)
 
-        assert mock_call.await_count == 1
-        _, kwargs = mock_call.call_args
-        args = mock_call.call_args.args
-        system_prompt, prompt = args[1], args[2]
+        assert agent.run_structured.await_count == 1
+        args = agent.run_structured.call_args.args
+        system_prompt, prompt = args[0], args[1]
 
         assert "+import os" in prompt
         assert "PY-STY-042" in prompt
         assert "tool" in system_prompt.lower() and "authoritative" in system_prompt.lower()
+        assert "Output Format" in system_prompt
 
     async def test_verdict_passthrough(self, tmp_path: Path) -> None:
         f = tmp_path / "a.py"
@@ -192,13 +194,72 @@ class TestJudgeFile:
             ]
         )
 
-        with patch(
-            "deep_architect.llm_judge.run_simple_structured", new_callable=AsyncMock
-        ) as mock_call:
-            mock_call.return_value = expected
-            verdict = await judge_file(f, "diff", rules, AgentConfig(), tmp_path)
+        agent = FakeAgent()
+        agent.run_structured.return_value = expected.model_dump_json()
+        verdict = await judge_file(f, "diff", rules, agent, tmp_path)
 
         assert verdict == expected
+
+    async def test_code_fenced_json_is_extracted(self, tmp_path: Path) -> None:
+        f = tmp_path / "a.py"
+        f.write_text("x = 1\n")
+        rules = [RuleEntry(path_glob="**/*.py", rule_text="rule text")]
+        expected = StyleVerdict(
+            violations=[StyleViolation(rule_id="A", severity="MAY", description="d")]
+        )
+
+        agent = FakeAgent()
+        agent.run_structured.return_value = f"```json\n{expected.model_dump_json()}\n```"
+        verdict = await judge_file(f, "diff", rules, agent, tmp_path)
+
+        assert verdict == expected
+
+    async def test_malformed_then_valid_output_retries_and_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "a.py"
+        f.write_text("x = 1\n")
+        rules = [RuleEntry(path_glob="**/*.py", rule_text="rule text")]
+        expected = StyleVerdict()
+
+        agent = FakeAgent()
+        agent.run_structured.side_effect = ["not json", expected.model_dump_json()]
+        verdict = await judge_file(f, "diff", rules, agent, tmp_path)
+
+        assert verdict == expected
+        assert agent.run_structured.await_count == 2
+
+    async def test_always_malformed_raises_after_max_attempts(
+        self, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "a.py"
+        f.write_text("x = 1\n")
+        rules = [RuleEntry(path_glob="**/*.py", rule_text="rule text")]
+
+        agent = FakeAgent()
+        agent.run_structured.return_value = "not json"
+        with pytest.raises(RuntimeError, match="after 3 attempts"):
+            await judge_file(f, "diff", rules, agent, tmp_path, max_parse_retries=2)
+
+        assert agent.run_structured.await_count == 3
+
+    async def test_run_structured_exception_then_success_is_retried(
+        self, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "a.py"
+        f.write_text("x = 1\n")
+        rules = [RuleEntry(path_glob="**/*.py", rule_text="rule text")]
+        expected = StyleVerdict()
+
+        agent = FakeAgent()
+        agent.run_structured.side_effect = [
+            RuntimeError("opencode timed out"),
+            expected.model_dump_json(),
+        ]
+        verdict = await judge_file(f, "diff", rules, agent, tmp_path)
+
+        assert verdict == expected
+        assert agent.run_structured.await_count == 2
 
     def test_blocking_severity_gating(self) -> None:
         verdict = StyleVerdict(

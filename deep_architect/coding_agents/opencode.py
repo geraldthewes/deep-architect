@@ -342,6 +342,62 @@ class OpencodeAgent:
                     except OSError:
                         pass  # Ignore cleanup errors
 
+    async def run_structured(
+        self,
+        system_prompt: str,
+        prompt: str,
+        label: str = "structured",
+    ) -> str:
+        """Run a one-shot, tool-free prompt via opencode subprocess; return raw text."""
+        prompt_file = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.md', delete=False, encoding='utf-8'
+            ) as f:
+                f.write(f"{system_prompt}\n\n---\n\n{prompt}")
+                prompt_file = f.name
+
+            result = subprocess.run(
+                [
+                    self.opencode_bin,
+                    "run",
+                    "--format",
+                    "json",
+                    "--dangerously-skip-permissions",
+                    "Respond to the request in the attached file. Reply with ONLY "
+                    "the JSON object it asks for — do not use tools and do not "
+                    "modify any files.",
+                    "--file",
+                    prompt_file,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"[{label}] opencode binary not found at {self.opencode_bin}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"[{label}] opencode timed out") from exc
+        finally:
+            if prompt_file and os.path.exists(prompt_file):
+                try:
+                    os.unlink(prompt_file)
+                except OSError:
+                    pass  # Ignore cleanup errors
+
+        success, text = _parse_opencode_ndjson(result.stdout)
+        if not success:
+            stderr_tail = result.stderr.strip()[-500:] if result.stderr else "(empty)"
+            raise RuntimeError(
+                f"[{label}] opencode structured run failed "
+                f"(returncode={result.returncode}): {stderr_tail}"
+            )
+        if not text:
+            raise RuntimeError(f"[{label}] opencode produced no text output")
+        return text
+
 
 def _parse_opencode_ndjson(raw_stdout: str) -> tuple[bool, str | None]:
     """Parse opencode NDJSON output; (True, last_text) if the agent completed.

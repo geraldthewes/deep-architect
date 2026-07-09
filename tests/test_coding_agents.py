@@ -154,6 +154,53 @@ class TestOpencodeAgent:
 
         assert result is False
 
+    @patch("deep_architect.coding_agents.opencode.subprocess.run")
+    async def test_run_structured_success(self, mock_run: MagicMock) -> None:
+        events = "\n".join([
+            json.dumps({"type": "text", "part": {"type": "text", "text": '{"ok": true}'}}),
+            json.dumps({"type": "result", "is_error": False, "result": "ok"}),
+        ])
+        mock_run.return_value = MagicMock(returncode=0, stdout=events, stderr="")
+
+        agent = OpencodeAgent(timeout_seconds=42.0)
+        result = await agent.run_structured("system", "prompt", label="test")
+
+        assert result == '{"ok": true}'
+        assert mock_run.call_args.kwargs["timeout"] == 42.0
+
+    @patch("deep_architect.coding_agents.opencode.subprocess.run")
+    async def test_run_structured_cli_error_raises(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
+
+        agent = OpencodeAgent()
+        with pytest.raises(RuntimeError, match="opencode structured run failed"):
+            await agent.run_structured("system", "prompt", label="test")
+
+    @patch("deep_architect.coding_agents.opencode.subprocess.run")
+    async def test_run_structured_empty_text_raises(self, mock_run: MagicMock) -> None:
+        ndjson = json.dumps({"type": "result", "is_error": False, "result": "ok"})
+        mock_run.return_value = MagicMock(returncode=0, stdout=ndjson, stderr="")
+
+        agent = OpencodeAgent()
+        with pytest.raises(RuntimeError, match="no text output"):
+            await agent.run_structured("system", "prompt", label="test")
+
+    @patch("deep_architect.coding_agents.opencode.subprocess.run")
+    async def test_run_structured_timeout_raises(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="opencode", timeout=120)
+
+        agent = OpencodeAgent()
+        with pytest.raises(RuntimeError, match="timed out"):
+            await agent.run_structured("system", "prompt", label="test")
+
+    @patch("deep_architect.coding_agents.opencode.subprocess.run")
+    async def test_run_structured_binary_not_found_raises(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = FileNotFoundError()
+
+        agent = OpencodeAgent(opencode_bin="/nonexistent/bin")
+        with pytest.raises(RuntimeError, match="opencode binary not found"):
+            await agent.run_structured("system", "prompt", label="test")
+
 
 # ---------------------------------------------------------------------------
 # _file_reflects_fix
@@ -314,6 +361,23 @@ class TestClaudeSDKAgent:
 
         assert result is False
 
+    @patch("deep_architect.agents.client.run_simple_text", new_callable=AsyncMock)
+    async def test_run_structured_delegates_to_run_simple_text(
+        self, mock_run_simple_text: AsyncMock
+    ) -> None:
+        mock_run_simple_text.return_value = "raw text result"
+
+        agent = ClaudeSDKAgent(model="opus")
+        result = await agent.run_structured("system", "prompt", label="test")
+
+        assert result == "raw text result"
+        mock_run_simple_text.assert_awaited_once()
+        args, kwargs = mock_run_simple_text.call_args
+        assert args[0].model == "opus"
+        assert args[1] == "system"
+        assert args[2] == "prompt"
+        assert kwargs["label"] == "test"
+
 
 # ---------------------------------------------------------------------------
 # _parse_grok_json
@@ -448,6 +512,51 @@ class TestGrokAgent:
 
         assert mock_run.call_args.kwargs["timeout"] == 42.0
 
+    @patch("deep_architect.coding_agents.grok.subprocess.run")
+    async def test_run_structured_success(self, mock_run: MagicMock) -> None:
+        stdout = json.dumps(
+            {"text": '{"ok": true}', "stopReason": "EndTurn", "sessionId": "s"}
+        )
+        mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
+
+        agent = GrokAgent()
+        result = await agent.run_structured("system", "prompt", label="test")
+
+        assert result == '{"ok": true}'
+
+    @patch("deep_architect.coding_agents.grok.subprocess.run")
+    async def test_run_structured_cli_error_raises(self, mock_run: MagicMock) -> None:
+        stdout = json.dumps({"type": "error", "message": "boom"})
+        mock_run.return_value = MagicMock(returncode=1, stdout=stdout, stderr="")
+
+        agent = GrokAgent()
+        with pytest.raises(RuntimeError, match="grok structured run failed"):
+            await agent.run_structured("system", "prompt", label="test")
+
+    @patch("deep_architect.coding_agents.grok.subprocess.run")
+    async def test_run_structured_no_text_raises(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="not json", stderr="")
+
+        agent = GrokAgent()
+        with pytest.raises(RuntimeError, match="no text output"):
+            await agent.run_structured("system", "prompt", label="test")
+
+    @patch("deep_architect.coding_agents.grok.subprocess.run")
+    async def test_run_structured_timeout_raises(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="grok", timeout=300)
+
+        agent = GrokAgent()
+        with pytest.raises(RuntimeError, match="timed out"):
+            await agent.run_structured("system", "prompt", label="test")
+
+    @patch("deep_architect.coding_agents.grok.subprocess.run")
+    async def test_run_structured_binary_not_found_raises(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = FileNotFoundError()
+
+        agent = GrokAgent(grok_bin="/nonexistent/grok")
+        with pytest.raises(RuntimeError, match="grok binary not found"):
+            await agent.run_structured("system", "prompt", label="test")
+
 
 # ---------------------------------------------------------------------------
 # create_agent
@@ -501,15 +610,18 @@ class TestCodingAgentProtocol:
         agent: CodingAgent = OpencodeAgent()
         assert hasattr(agent, "apply_fix")
         assert hasattr(agent, "fix_check_failures")
+        assert hasattr(agent, "run_structured")
 
     def test_claude_sdk_agent_implements_protocol(self) -> None:
         """Verify ClaudeSDKAgent satisfies the CodingAgent protocol."""
         agent: CodingAgent = ClaudeSDKAgent()
         assert hasattr(agent, "apply_fix")
         assert hasattr(agent, "fix_check_failures")
+        assert hasattr(agent, "run_structured")
 
     def test_grok_agent_implements_protocol(self) -> None:
         """Verify GrokAgent satisfies the CodingAgent protocol."""
         agent: CodingAgent = GrokAgent()
         assert hasattr(agent, "apply_fix")
         assert hasattr(agent, "fix_check_failures")
+        assert hasattr(agent, "run_structured")

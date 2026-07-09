@@ -180,3 +180,19 @@ class ClaudeSDKAgent:
                 "Exception using Claude SDK to fix check failures: %s", e
             )
             return False
+
+    async def run_structured(
+        self,
+        system_prompt: str,
+        prompt: str,
+        label: str = "structured",
+    ) -> str:
+        """Run a one-shot, tool-free prompt via the shared client harness; return raw text."""
+        from deep_architect.agents.client import run_simple_text  # noqa: PLC0415
+        from deep_architect.config import (  # noqa: PLC0415
+            AgentConfig as ClientAgentConfig,
+        )
+
+        return await run_simple_text(
+            ClientAgentConfig(model=self.model), system_prompt, prompt, label=label
+        )

@@ -22,6 +22,7 @@ from deep_architect.agents.client import (
     run_agent,
     run_agent_structured,
     run_simple_structured,
+    run_simple_text,
 )
 from deep_architect.config import AgentConfig
 
@@ -429,6 +430,52 @@ async def test_run_simple_structured_raises_after_three_failures(
     with pytest.raises(RuntimeError, match="structured output failed after 3 attempts"):
         await run_simple_structured(config, "sys", "prompt", _Dummy, label="test")
     assert mock_cls.return_value.messages.create.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# resolve_api_key fail-fast — missing credentials
+# ---------------------------------------------------------------------------
+
+
+@patch("deep_architect.agents.client._anthropic.AsyncAnthropic")
+async def test_run_simple_structured_fails_fast_without_credentials(
+    mock_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY raises immediately, no network call."""
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    config = AgentConfig(model="test-model", max_turns=5)
+    with pytest.raises(RuntimeError, match="ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY"):
+        await run_simple_structured(config, "sys", "prompt", _Dummy, label="test")
+    mock_cls.return_value.messages.create.assert_not_called()
+
+
+@patch("deep_architect.agents.client._anthropic.AsyncAnthropic")
+async def test_run_simple_text_fails_fast_without_credentials(
+    mock_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY raises immediately, no network call."""
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    config = AgentConfig(model="test-model", max_turns=5)
+    with pytest.raises(RuntimeError, match="ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY"):
+        await run_simple_text(config, "sys", "prompt", label="test")
+    mock_cls.return_value.messages.create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_simple_text — mocked anthropic client (no real LLM calls)
+# ---------------------------------------------------------------------------
+
+
+@patch("deep_architect.agents.client._anthropic.AsyncAnthropic")
+async def test_run_simple_text_returns_joined_text(mock_cls: MagicMock) -> None:
+    mock_cls.return_value.messages.create = AsyncMock(
+        return_value=_make_response("hello world")
+    )
+    config = AgentConfig(model="test-model", max_turns=5)
+    result = await run_simple_text(config, "sys", "prompt", label="test")
+    assert result == "hello world"
 
 
 # ---------------------------------------------------------------------------

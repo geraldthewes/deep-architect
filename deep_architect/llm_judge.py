@@ -7,8 +7,8 @@ from pathlib import Path
 import git
 import pathspec
 
-from deep_architect.agents.client import run_simple_structured
-from deep_architect.config import AgentConfig
+from deep_architect.agents.client import _extract_json
+from deep_architect.coding_agents.base import CodingAgent
 from deep_architect.logger import get_logger
 from deep_architect.models.checks import QualityChecksConfig, StyleVerdict
 from deep_architect.prompts import load_prompt
@@ -92,14 +92,44 @@ def git_diff_for_file(repo: git.Repo, file: Path) -> str:
     return str(repo.git.diff(None, "--", str(rel)))
 
 
+async def _judge_with_retries(
+    agent: CodingAgent,
+    system_prompt: str,
+    prompt: str,
+    label: str,
+    max_retries: int,
+) -> StyleVerdict:
+    """Run the judge prompt via the coding agent's CLI, parsing JSON with retries.
+
+    The CLIs (opencode/grok/claude) can't enforce a JSON schema server-side, so
+    schema validation happens here, with the same call retried on parse failure.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, max_retries + 2):
+        try:
+            raw = await agent.run_structured(system_prompt, prompt, label=label)
+            return StyleVerdict.model_validate_json(_extract_json(raw))
+        except Exception as exc:  # noqa: BLE001 - broad by design, retried below
+            last_exc = exc
+            if attempt <= max_retries:
+                logger.warning(
+                    "[%s] attempt %d/%d failed (%s) — retrying",
+                    label, attempt, max_retries + 1, exc,
+                )
+    raise RuntimeError(
+        f"[{label}] structured verdict failed after {max_retries + 1} attempts"
+    ) from last_exc
+
+
 async def judge_file(
     file: Path,
     diff: str,
     rules: list[RuleEntry],
-    agent_config: AgentConfig,
+    agent: CodingAgent,
     repo_root: Path,
+    max_parse_retries: int = 2,
 ) -> StyleVerdict:
-    """One run_simple_structured call judging the diff against the concatenated rules."""
+    """Judge the diff against the concatenated rules via the active coding agent."""
     if not rules:
         return StyleVerdict()
 
@@ -117,7 +147,14 @@ async def judge_file(
 
     rule_text = "\n\n---\n\n".join(r.rule_text for r in rules)
 
-    system_prompt = load_prompt("llm_judge_system")
+    schema_str = json.dumps(StyleVerdict.model_json_schema(), indent=2)
+    system_prompt = (
+        load_prompt("llm_judge_system")
+        + "\n\n## Output Format\n\n"
+        "Respond with ONLY a valid JSON object matching this schema — "
+        "no markdown, no explanation, no code fences:\n\n"
+        f"{schema_str}"
+    )
     prompt = (
         f"## File: {rel.as_posix()}\n\n"
         "## Diff (uncommitted changes)\n"
@@ -128,10 +165,10 @@ async def judge_file(
         f"## Applicable rules\n{rule_text}\n"
     )
 
-    return await run_simple_structured(
-        agent_config,
+    return await _judge_with_retries(
+        agent,
         system_prompt,
         prompt,
-        StyleVerdict,
         label=f"llm-judge:{file.name}",
+        max_retries=max_parse_retries,
     )

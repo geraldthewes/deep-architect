@@ -34,6 +34,8 @@ class ThresholdConfig(BaseModel):
     # review-action: per coding-agent call timeout in seconds
     # (None = per-agent default: opencode 120, claude 300, grok 300)
     coding_agent_timeout: float | None = None
+    # review-action: LLM style-judge JSON parse-and-retry cap (attempts = retries + 1)
+    judge_parse_retries: int = 2
 
 
 def _default_generator() -> AgentConfig:

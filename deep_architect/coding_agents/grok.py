@@ -186,6 +186,51 @@ class GrokAgent:
                 except OSError:
                     pass  # Ignore cleanup errors
 
+    async def run_structured(
+        self,
+        system_prompt: str,
+        prompt: str,
+        label: str = "structured",
+    ) -> str:
+        """Run a one-shot, tool-free prompt via the grok CLI; return raw text."""
+        prompt_file = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.md', delete=False, encoding='utf-8'
+            ) as f:
+                f.write(
+                    f"{system_prompt}\n\n---\n\n{prompt}\n\n---\n\n"
+                    "Respond with ONLY the JSON object requested above — do not "
+                    "use tools and do not modify any files."
+                )
+                prompt_file = f.name
+
+            result = subprocess.run(
+                self._build_command(prompt_file),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"[{label}] grok binary not found at {self.grok_bin}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"[{label}] grok timed out") from exc
+        finally:
+            if prompt_file and os.path.exists(prompt_file):
+                try:
+                    os.unlink(prompt_file)
+                except OSError:
+                    pass  # Ignore cleanup errors
+
+        success, text = _parse_grok_json(result.returncode, result.stdout, result.stderr)
+        if not success:
+            raise RuntimeError(
+                f"[{label}] grok structured run failed (returncode={result.returncode})"
+            )
+        if not text:
+            raise RuntimeError(f"[{label}] grok produced no text output")
+        return text
+
 
 def _parse_grok_json(
     returncode: int, raw_stdout: str, raw_stderr: str
