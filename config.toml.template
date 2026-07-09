@@ -1,5 +1,6 @@
-# ~/.deep-architect.toml — deep-architect configuration
-# Copy to ~/.deep-architect.toml and fill in your model preferences.
+# ~/.config/deep-architect/config.toml — deep-architect configuration
+# Copy to ~/.config/deep-architect/config.toml and fill in your model preferences.
+# (Legacy ~/.deep-architect.toml is still honored if that's the only file present.)
 #
 # Endpoint and authentication are configured via environment variables:
 #   ANTHROPIC_BASE_URL=http://litellm.cluster:9999
