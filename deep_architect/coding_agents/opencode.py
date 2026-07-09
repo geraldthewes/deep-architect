@@ -117,11 +117,14 @@ class OpencodeAgent:
                 timeout=self.timeout_seconds,
             )
 
-            opencode_success = _parse_opencode_ndjson(result.stdout)
+            opencode_success, opencode_text = _parse_opencode_ndjson(result.stdout)
             if opencode_success:
                 try:
                     return _file_reflects_fix(
-                        absolute_file_path, suggested_code, original_content
+                        absolute_file_path,
+                        suggested_code,
+                        original_content,
+                        agent_response_text=opencode_text,
                     )
                 except Exception as e:
                     logger.error(
@@ -315,7 +318,8 @@ class OpencodeAgent:
                 text=True,
                 timeout=self.timeout_seconds,
             )
-            return _parse_opencode_ndjson(result.stdout)
+            success, _ = _parse_opencode_ndjson(result.stdout)
+            return success
         except FileNotFoundError:
             logger.error(
                 "OpencodeAgent: opencode binary not found at %s",
@@ -339,12 +343,15 @@ class OpencodeAgent:
                         pass  # Ignore cleanup errors
 
 
-def _parse_opencode_ndjson(raw_stdout: str) -> bool:
-    """Parse opencode NDJSON output and return True if the agent completed.
+def _parse_opencode_ndjson(raw_stdout: str) -> tuple[bool, str | None]:
+    """Parse opencode NDJSON output; (True, last_text) if the agent completed.
 
     opencode streams NDJSON events; we check for a ResultMessage-like event
-    that indicates completion without error.
+    that indicates completion without error. Along the way we track the
+    most recent "text" event's content, so callers can log the agent's own
+    response when file verification later shows no change was made.
     """
+    last_text: str | None = None
     for line in raw_stdout.splitlines():
         line = line.strip()
         if not line:
@@ -354,6 +361,11 @@ def _parse_opencode_ndjson(raw_stdout: str) -> bool:
         except json.JSONDecodeError:
             continue
 
+        if event.get("type") == "text":
+            part = event.get("part", {})
+            if part.get("type") == "text":
+                last_text = part.get("text", last_text)
+
         # ResultMessage in NDJSON: {"type": "result", ...}
         if event.get("type") == "result":
             is_error = event.get("is_error", False)
@@ -362,12 +374,12 @@ def _parse_opencode_ndjson(raw_stdout: str) -> bool:
                 logger.error(
                     "OpencodeAgent: result error: %s", error_detail
                 )
-                return False
-            return True
+                return False, last_text
+            return True, last_text
 
     # No result event found — fallback: check stderr for clues
     if raw_stdout.strip():
         logger.warning(
             "OpencodeAgent: no result event in output, assuming partial"
         )
-    return False
+    return False, last_text

@@ -326,17 +326,17 @@ class TestParseGrokJson:
         stdout = json.dumps(
             {"text": "done", "stopReason": "EndTurn", "sessionId": "s", "requestId": "r"}
         )
-        assert _parse_grok_json(0, stdout, "") is True
+        assert _parse_grok_json(0, stdout, "") == (True, "done")
 
     def test_error_object(self) -> None:
         stdout = json.dumps({"type": "error", "message": "boom"})
-        assert _parse_grok_json(1, stdout, "") is False
+        assert _parse_grok_json(1, stdout, "") == (False, None)
 
     def test_exit_zero_non_json_trusts_exit_code(self) -> None:
-        assert _parse_grok_json(0, "not json", "") is True
+        assert _parse_grok_json(0, "not json", "") == (True, None)
 
     def test_exit_one_empty_stdout_with_stderr(self) -> None:
-        assert _parse_grok_json(1, "", "Error: something broke\n") is False
+        assert _parse_grok_json(1, "", "Error: something broke\n") == (False, None)
 
 
 # ---------------------------------------------------------------------------

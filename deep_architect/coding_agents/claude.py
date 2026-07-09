@@ -86,7 +86,7 @@ class ClaudeSDKAgent:
                 cwd=str(Path.cwd()),
             )
 
-            await run_agent(
+            result_message = await run_agent(
                 options,
                 prompt,
                 label=f"review-action:{file_path.name}",
@@ -108,7 +108,10 @@ class ClaudeSDKAgent:
         # file, so verify against the file on disk.
         try:
             return _file_reflects_fix(
-                absolute_file_path, suggested_code, original_content
+                absolute_file_path,
+                suggested_code,
+                original_content,
+                agent_response_text=result_message.result,
             )
         except Exception as e:
             logger.error(

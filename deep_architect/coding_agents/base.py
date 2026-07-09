@@ -54,6 +54,7 @@ def _file_reflects_fix(
     file_path: Path,
     suggested_code: str,
     original_content: str | None,
+    agent_response_text: str | None = None,
 ) -> bool:
     """Check whether file_path's current content shows a fix was applied.
 
@@ -65,6 +66,9 @@ def _file_reflects_fix(
     differs from original_content (some change was made). Returns False if
     the file is unreadable while original_content was captured, or is
     unchanged from original_content.
+
+    *agent_response_text*, when provided, is logged alongside the "unchanged"
+    warning so it's possible to tell why the agent thought it was done.
     """
     try:
         current_content = file_path.read_text(encoding="utf-8")
@@ -95,7 +99,11 @@ def _file_reflects_fix(
                 "File modified for %s (differs from original)", file_path
             )
             return True
-        logger.warning("No changes made to %s (file unchanged)", file_path)
+        logger.warning(
+            "No changes made to %s (file unchanged). Agent's response: %s",
+            file_path,
+            (agent_response_text or "<no response text captured>").strip()[:1000],
+        )
         return False
 
     # No original content provided - fallback to trusting the agent's success.

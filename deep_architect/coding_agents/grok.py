@@ -87,13 +87,18 @@ class GrokAgent:
                 timeout=self.timeout_seconds,
             )
 
-            grok_success = _parse_grok_json(result.returncode, result.stdout, result.stderr)
+            grok_success, grok_text = _parse_grok_json(
+                result.returncode, result.stdout, result.stderr
+            )
             if not grok_success:
                 return False
 
             try:
                 return _file_reflects_fix(
-                    absolute_file_path, suggested_code, original_content
+                    absolute_file_path,
+                    suggested_code,
+                    original_content,
+                    agent_response_text=grok_text,
                 )
             except Exception as e:
                 logger.error(
@@ -161,7 +166,8 @@ class GrokAgent:
                 text=True,
                 timeout=self.timeout_seconds,
             )
-            return _parse_grok_json(result.returncode, result.stdout, result.stderr)
+            success, _ = _parse_grok_json(result.returncode, result.stdout, result.stderr)
+            return success
         except FileNotFoundError:
             logger.error(
                 "GrokAgent: grok binary not found at %s", self.grok_bin
@@ -181,12 +187,17 @@ class GrokAgent:
                     pass  # Ignore cleanup errors
 
 
-def _parse_grok_json(returncode: int, raw_stdout: str, raw_stderr: str) -> bool:
-    """Parse grok --output-format json output; True if the agent completed.
+def _parse_grok_json(
+    returncode: int, raw_stdout: str, raw_stderr: str
+) -> tuple[bool, str | None]:
+    """Parse grok --output-format json output; (True, text) if the agent completed.
 
     Verified contract (grok 0.2.93):
       success → exit 0, stdout is one JSON object with text/stopReason/sessionId
       failure → exit 1, stdout is {"type": "error", "message": "..."}
+
+    The returned text is the agent's own response ("text" field), so callers
+    can log it when file verification later shows no change was made.
     """
     if returncode != 0:
         message = "unknown error"
@@ -199,13 +210,14 @@ def _parse_grok_json(returncode: int, raw_stdout: str, raw_stderr: str) -> bool:
         if message == "unknown error" and raw_stderr.strip():
             message = raw_stderr.strip().splitlines()[-1][:200]
         logger.error("GrokAgent: failed (returncode=%d): %s", returncode, message)
-        return False
+        return False, None
     try:
         result = json.loads(raw_stdout.strip())
         logger.debug(
             "GrokAgent: completed (stopReason=%s, sessionId=%s)",
             result.get("stopReason"), result.get("sessionId"),
         )
+        return True, result.get("text")
     except json.JSONDecodeError:
         logger.warning("GrokAgent: exit 0 but non-JSON stdout — trusting exit code")
-    return True
+        return True, None
