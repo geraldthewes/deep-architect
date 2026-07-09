@@ -147,12 +147,78 @@ def resolve_api_key() -> str:
     return api_key
 
 
+def _first_balanced_json(text: str) -> str | None:
+    """Return the first balanced JSON object/array in `text`, or None.
+
+    Scans from the first ``{`` or ``[`` and tracks nesting depth, respecting
+    string literals and backslash escapes so braces inside string values do not
+    corrupt the depth count.
+    """
+    start = next(
+        (i for i, ch in enumerate(text) if ch in "{["),
+        None,
+    )
+    if start is None:
+        return None
+
+    open_ch = text[start]
+    close_ch = "}" if open_ch == "{" else "]"
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
 def _extract_json(text: str) -> str:
-    """Strip markdown code fences and return the JSON portion of text."""
+    """Return the JSON object/array embedded in `text`.
+
+    Tolerates the shapes models emit despite a "JSON only" instruction: a
+    whole-message code fence, a fenced block preceded by prose, and a bare
+    object/array preceded by reasoning prose (e.g. grok). Falls back to the
+    stripped text unchanged when no JSON is found, so callers' schema validation
+    raises the same clear error as before.
+    """
     stripped = text.strip()
+
+    # Whole-message code fence — unwrap and continue with its content.
     m = re.match(r"^```(?:json)?\s*([\s\S]+?)\s*```\s*$", stripped)
     if m:
-        return m.group(1).strip()
+        stripped = m.group(1).strip()
+
+    # Already a bare JSON value.
+    if stripped[:1] in "{[":
+        return stripped
+
+    # A fenced block somewhere inside prose.
+    m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", stripped)
+    if m:
+        candidate = m.group(1).strip()
+        if candidate[:1] in "{[":
+            return candidate
+
+    # Prose preamble followed by a bare object/array.
+    span = _first_balanced_json(stripped)
+    if span is not None:
+        return span
+
     return stripped
 
 

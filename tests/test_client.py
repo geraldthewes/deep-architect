@@ -357,6 +357,27 @@ def test_extract_json_strips_surrounding_whitespace() -> None:
     assert _extract_json(padded) == '{"value": 1}'
 
 
+def test_extract_json_recovers_json_after_prose_preamble() -> None:
+    # Regression: grok (a reasoning model) prepends prose before the JSON.
+    raw = 'Reading the full prompt is important.\n{"violations": []}'
+    assert _extract_json(raw) == '{"violations": []}'
+
+
+def test_extract_json_handles_nested_braces_and_string_braces() -> None:
+    raw = 'Here is my verdict:\n{"violations": [{"note": "watch the } char"}]}'
+    assert _extract_json(raw) == '{"violations": [{"note": "watch the } char"}]}'
+
+
+def test_extract_json_recovers_fenced_block_after_prose() -> None:
+    raw = 'Sure, here you go:\n```json\n{"violations": []}\n```'
+    assert _extract_json(raw) == '{"violations": []}'
+
+
+def test_extract_json_returns_prose_without_json_unchanged() -> None:
+    raw = "I could not evaluate this file."
+    assert _extract_json(raw) == raw
+
+
 # ---------------------------------------------------------------------------
 # run_simple_structured — mocked anthropic client (no real LLM calls)
 # ---------------------------------------------------------------------------
