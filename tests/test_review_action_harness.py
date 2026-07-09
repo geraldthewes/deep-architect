@@ -1,7 +1,6 @@
 """Unit tests for deep_architect.review_action_harness."""
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import git
 import pytest
 
+from deep_architect.coding_agents import OpencodeAgent
 from deep_architect.config import HarnessConfig
 from deep_architect.llm_judge import RuleEntry
 from deep_architect.models.checks import (
@@ -18,16 +18,12 @@ from deep_architect.models.checks import (
     StyleViolation,
 )
 from deep_architect.review_action_harness import (
-    AgentConfig,
-    ClaudeSDKAgent,
     FindingStatus,
-    OpencodeAgent,
     ReviewFinding,
-    _file_reflects_fix,
     _process_single_finding,
-    create_agent,
     has_action_taken,
     is_valid_finding,
+    parse_args,
     parse_markdown_finding,
     process_findings,
     read_action_taken,
@@ -307,309 +303,6 @@ class TestIsValidFinding:
 
 
 # ---------------------------------------------------------------------------
-# OpencodeAgent
-# ---------------------------------------------------------------------------
-
-
-class TestOpencodeAgent:
-
-    def test_default_init(self) -> None:
-        agent = OpencodeAgent()
-        assert agent.model == "standard/coder"
-        assert "opencode" in agent.opencode_bin
-
-    def test_custom_model(self) -> None:
-        agent = OpencodeAgent(model="custom/model")
-        assert agent.model == "custom/model"
-
-    def test_custom_bin(self) -> None:
-        agent = OpencodeAgent(opencode_bin="/custom/path")
-        assert agent.opencode_bin == "/custom/path"
-
-    @patch("deep_architect.review_action_harness.subprocess.run")
-    async def test_apply_fix_success(self, mock_run: MagicMock) -> None:
-        import json as _json
-
-        ndjson = _json.dumps({"type": "result", "is_error": False, "result": "ok"})
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout=ndjson, stderr=""
-        )
-
-        agent = OpencodeAgent()
-        result = await agent.apply_fix(
-            Path("test.py"), "old code", "new code", "context"
-        )
-
-        assert result is True
-        mock_run.assert_called_once()
-
-    @patch("deep_architect.review_action_harness.subprocess.run")
-    async def test_apply_fix_failure(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(
-            returncode=1, stdout="", stderr="Error occurred"
-        )
-
-        agent = OpencodeAgent()
-        result = await agent.apply_fix(
-            Path("test.py"), "old code", "new code"
-        )
-
-        assert result is False
-
-    @patch("deep_architect.review_action_harness.subprocess.run")
-    async def test_apply_fix_timeout(self, mock_run: MagicMock) -> None:
-        mock_run.side_effect = subprocess.TimeoutExpired(
-            cmd="opencode", timeout=120
-        )
-
-        agent = OpencodeAgent()
-        result = await agent.apply_fix(
-            Path("test.py"), "old code", "new code"
-        )
-
-        assert result is False
-
-    @patch("deep_architect.review_action_harness.subprocess.run")
-    async def test_apply_fix_binary_not_found(
-        self, mock_run: MagicMock
-    ) -> None:
-        mock_run.side_effect = FileNotFoundError()
-
-        agent = OpencodeAgent(opencode_bin="/nonexistent/bin")
-        result = await agent.apply_fix(
-            Path("test.py"), "old code", "new code"
-        )
-
-        assert result is False
-
-    @patch("deep_architect.review_action_harness.subprocess.run")
-    async def test_fix_check_failures_success(self, mock_run: MagicMock) -> None:
-        import json as _json
-
-        ndjson = _json.dumps({"type": "result", "is_error": False, "result": "ok"})
-        mock_run.return_value = MagicMock(returncode=0, stdout=ndjson, stderr="")
-
-        agent = OpencodeAgent()
-        result = await agent.fix_check_failures(
-            [Path("test.py")], "## Programmatic check failures\n\nruff: E501", "context"
-        )
-
-        assert result is True
-        mock_run.assert_called_once()
-
-    @patch("deep_architect.review_action_harness.subprocess.run")
-    async def test_fix_check_failures_failure(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
-
-        agent = OpencodeAgent()
-        result = await agent.fix_check_failures([Path("test.py")], "failure report")
-
-        assert result is False
-
-    @patch("deep_architect.review_action_harness.subprocess.run")
-    async def test_fix_check_failures_timeout(self, mock_run: MagicMock) -> None:
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="opencode", timeout=120)
-
-        agent = OpencodeAgent()
-        result = await agent.fix_check_failures([Path("test.py")], "failure report")
-
-        assert result is False
-
-    @patch("deep_architect.review_action_harness.subprocess.run")
-    async def test_fix_check_failures_binary_not_found(self, mock_run: MagicMock) -> None:
-        mock_run.side_effect = FileNotFoundError()
-
-        agent = OpencodeAgent(opencode_bin="/nonexistent/bin")
-        result = await agent.fix_check_failures([Path("test.py")], "failure report")
-
-        assert result is False
-
-
-# ---------------------------------------------------------------------------
-# _file_reflects_fix
-# ---------------------------------------------------------------------------
-
-
-class TestFileReflectsFix:
-
-    def test_matches_suggested_code(self, tmp_path: Path) -> None:
-        target = tmp_path / "f.py"
-        target.write_text("new code\n", encoding="utf-8")
-        assert _file_reflects_fix(target, "new code\n", "old code\n") is True
-
-    def test_differs_from_original(self, tmp_path: Path) -> None:
-        target = tmp_path / "f.py"
-        target.write_text("something else\n", encoding="utf-8")
-        assert _file_reflects_fix(target, "new code\n", "old code\n") is True
-
-    def test_unchanged_from_original_returns_false(self, tmp_path: Path) -> None:
-        target = tmp_path / "f.py"
-        target.write_text("old code\n", encoding="utf-8")
-        assert _file_reflects_fix(target, "new code\n", "old code\n") is False
-
-    def test_missing_file_trusts_agent(self, tmp_path: Path) -> None:
-        target = tmp_path / "missing.py"
-        assert _file_reflects_fix(target, "new code\n", "old code\n") is True
-
-    def test_no_original_content_trusts_agent_on_mismatch(
-        self, tmp_path: Path
-    ) -> None:
-        target = tmp_path / "f.py"
-        target.write_text("something unexpected\n", encoding="utf-8")
-        assert _file_reflects_fix(target, "new code\n", None) is True
-
-
-# ---------------------------------------------------------------------------
-# ClaudeSDKAgent
-# ---------------------------------------------------------------------------
-
-
-class TestClaudeSDKAgent:
-
-    def test_default_init(self) -> None:
-        agent = ClaudeSDKAgent()
-        assert agent.model == "sonnet"
-        assert agent.timeout_seconds == 300.0
-
-    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
-    @patch("deep_architect.agents.client.make_agent_options")
-    async def test_apply_fix_success(
-        self,
-        mock_make_options: MagicMock,
-        mock_run_agent: AsyncMock,
-        tmp_path: Path,
-    ) -> None:
-        target = tmp_path / "example.py"
-        target.write_text("new code\n", encoding="utf-8")
-        mock_make_options.return_value = MagicMock()
-        mock_run_agent.return_value = MagicMock(is_error=False)
-
-        agent = ClaudeSDKAgent()
-        result = await agent.apply_fix(
-            target,
-            "old code",
-            "new code",
-            "context",
-            original_content="old code\n",
-        )
-
-        assert result is True
-        mock_run_agent.assert_awaited_once()
-
-    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
-    @patch("deep_architect.agents.client.make_agent_options")
-    async def test_apply_fix_agent_error(
-        self,
-        mock_make_options: MagicMock,
-        mock_run_agent: AsyncMock,
-        tmp_path: Path,
-    ) -> None:
-        target = tmp_path / "example.py"
-        target.write_text("old code\n", encoding="utf-8")
-        mock_make_options.return_value = MagicMock()
-        mock_run_agent.side_effect = RuntimeError("Agent query failed: boom")
-
-        agent = ClaudeSDKAgent()
-        result = await agent.apply_fix(
-            target, "old code", "new code", "context"
-        )
-
-        assert result is False
-
-    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
-    @patch("deep_architect.agents.client.make_agent_options")
-    async def test_apply_fix_no_op_returns_false(
-        self,
-        mock_make_options: MagicMock,
-        mock_run_agent: AsyncMock,
-        tmp_path: Path,
-    ) -> None:
-        # run_agent reports success, but the file on disk was never touched.
-        target = tmp_path / "example.py"
-        target.write_text("old code\n", encoding="utf-8")
-        mock_make_options.return_value = MagicMock()
-        mock_run_agent.return_value = MagicMock(is_error=False)
-
-        agent = ClaudeSDKAgent()
-        result = await agent.apply_fix(
-            target,
-            "old code",
-            "new code",
-            "context",
-            original_content="old code\n",
-        )
-
-        assert result is False
-
-    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
-    @patch("deep_architect.agents.client.make_agent_options")
-    async def test_fix_check_failures_success(
-        self,
-        mock_make_options: MagicMock,
-        mock_run_agent: AsyncMock,
-        tmp_path: Path,
-    ) -> None:
-        target = tmp_path / "example.py"
-        target.write_text("code\n", encoding="utf-8")
-        mock_make_options.return_value = MagicMock()
-        mock_run_agent.return_value = MagicMock(is_error=False)
-
-        agent = ClaudeSDKAgent()
-        result = await agent.fix_check_failures(
-            [target], "## Programmatic check failures\n\nruff: E501", "context"
-        )
-
-        assert result is True
-        mock_run_agent.assert_awaited_once()
-
-    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
-    @patch("deep_architect.agents.client.make_agent_options")
-    async def test_fix_check_failures_agent_error(
-        self,
-        mock_make_options: MagicMock,
-        mock_run_agent: AsyncMock,
-        tmp_path: Path,
-    ) -> None:
-        target = tmp_path / "example.py"
-        target.write_text("code\n", encoding="utf-8")
-        mock_make_options.return_value = MagicMock()
-        mock_run_agent.side_effect = RuntimeError("Agent query failed: boom")
-
-        agent = ClaudeSDKAgent()
-        result = await agent.fix_check_failures([target], "failure report")
-
-        assert result is False
-
-
-# ---------------------------------------------------------------------------
-# create_agent
-# ---------------------------------------------------------------------------
-
-
-class TestCreateAgent:
-
-    def test_create_opencode_agent(self) -> None:
-        config = AgentConfig(provider="opencode", model="test/model")
-        agent = create_agent(config)
-        assert isinstance(agent, OpencodeAgent)
-        assert agent.model == "test/model"
-
-    def test_create_unsupported_agent_raises(self) -> None:
-        config = AgentConfig(provider="unsupported", model="test/model")
-        with pytest.raises(ValueError, match="Unsupported agent provider"):
-            create_agent(config)
-
-    def test_create_claude_agent_unavailable_raises(self) -> None:
-        """When claude-agent-sdk is not importable (simulated), raising is expected."""
-        config = AgentConfig(provider="claude", model="sonnet")
-        # This will try to import claude_agent_sdk - since it's installed in
-        # the project, we patch the import to simulate absence
-        with patch.dict("sys.modules", {"claude_agent_sdk": None}):
-            with pytest.raises(ImportError, match="claude-agent-sdk"):
-                create_agent(config)
-
-
-# ---------------------------------------------------------------------------
 # ReviewFinding dataclass
 # ---------------------------------------------------------------------------
 
@@ -795,33 +488,6 @@ class TestProcessFindings:
 
         assert stats["processed"] == 1
         assert stats["skipped"] == 1
-
-
-# ---------------------------------------------------------------------------
-# CodingAgent Protocol
-# ---------------------------------------------------------------------------
-
-
-class TestCodingAgentProtocol:
-
-    def test_opencode_agent_implements_protocol(self) -> None:
-        """Verify OpencodeAgent satisfies the CodingAgent protocol."""
-        from deep_architect.review_action_harness import CodingAgent
-
-        agent: CodingAgent = OpencodeAgent()
-        assert hasattr(agent, "apply_fix")
-        assert hasattr(agent, "fix_check_failures")
-
-    def test_claude_sdk_agent_implements_protocol(self) -> None:
-        """Verify ClaudeSDKAgent satisfies the CodingAgent protocol."""
-        from deep_architect.review_action_harness import (
-            ClaudeSDKAgent,
-            CodingAgent,
-        )
-
-        agent: CodingAgent = ClaudeSDKAgent()
-        assert hasattr(agent, "apply_fix")
-        assert hasattr(agent, "fix_check_failures")
 
 
 # ---------------------------------------------------------------------------
@@ -1470,5 +1136,21 @@ class TestProcessFindingsPersistence:
 
         assert stats["processed"] == 1
         assert stats["committed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# parse_args
+# ---------------------------------------------------------------------------
+
+
+class TestParseArgs:
+
+    def test_provider_grok_accepted(self) -> None:
+        args = parse_args(["feedback/", "--provider", "grok"])
+        assert args.provider == "grok"
+
+    def test_unknown_provider_rejected(self) -> None:
+        with pytest.raises(SystemExit):
+            parse_args(["feedback/", "--provider", "bogus"])
 
 

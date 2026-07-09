@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import sys
 
-from deep_architect.review_action_harness import (
-    AgentConfig,
+from deep_architect.coding_agents import (
     ClaudeSDKAgent,
     CodingAgent,
-    FindingStatus,
+    CodingAgentConfig,
     OpencodeAgent,
-    ReviewFinding,
     create_agent,
+)
+from deep_architect.review_action_harness import (
+    FindingStatus,
+    ReviewFinding,
     has_action_taken,
     is_valid_finding,
     main,
@@ -20,9 +22,9 @@ from deep_architect.review_action_harness import (
 )
 
 __all__ = [
-    "AgentConfig",
     "ClaudeSDKAgent",
     "CodingAgent",
+    "CodingAgentConfig",
     "FindingStatus",
     "OpencodeAgent",
     "ReviewFinding",

@@ -45,3 +45,4 @@ model_comm_max_backoff       = 60.0 # Maximum backoff (1 minute)
 # review-action: post-fix quality-check loop (see README "Quality checks")
 check_max_fix_iterations     = 3    # Retry cap for the check-fix loop; 0 = run checks but never block/retry
 check_command_timeout        = 120  # Default per-command timeout (seconds) for auto-detected checks
+# coding_agent_timeout       = 300  # Per coding-agent call timeout (seconds); omit for per-agent default (opencode 120, claude/grok 300)

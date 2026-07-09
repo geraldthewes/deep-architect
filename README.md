@@ -409,6 +409,12 @@ The command is installed inside the project's virtual environment. Use `uv run r
 export OPENCODE_BIN=$(which opencode)
 ```
 
+**`grok binary not found`**
+`review-action --provider grok` needs the Grok Build CLI. Install it (`curl -fsSL https://x.ai/cli/install.sh | bash`), or if it's installed somewhere not on `PATH`, set `GROK_BIN` to the full path:
+```bash
+export GROK_BIN=$(which grok)
+```
+
 **`review-action` finding stuck in `error` status: "Quality checks failed after N iteration(s)"**
 The coding agent couldn't satisfy the target repo's checks within `check_max_fix_iterations`
 (default 3). Read the `ErrorMessage` in the finding's `## Action Taken` block — it includes the
@@ -502,7 +508,7 @@ Defaults to `feedback/` if no directory is specified.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--model <name>` | (from config) | Model for the coding agent |
-| `--provider <name>` | `opencode` | Agent provider (`opencode` or `claude`) |
+| `--provider <name>` | `opencode` | Agent provider (`opencode`, `claude`, or `grok`) |
 | `--dry-run` | off | Show what would be done without making changes |
 | `--verbose` | off | Enable verbose logging |
 | `--config <path>` | `~/.deep-architect.toml` | Configuration file path |
@@ -523,6 +529,9 @@ uv run review-action feedback/ --dry-run
 
 # Use Claude SDK instead of opencode
 uv run review-action feedback/ --provider claude --model sonnet
+
+# Use Grok Build (xAI) instead of opencode
+uv run review-action feedback/ --provider grok --model grok-build
 ```
 
 ### Workflow
@@ -624,7 +633,43 @@ Relevant config keys (`~/.deep-architect.toml`, `[thresholds]`) — see
 ```toml
 check_max_fix_iterations = 3    # post-fix quality-check retry cap; 0 = report-only
 check_command_timeout    = 120  # default per-command timeout (seconds) for auto-detected checks
+coding_agent_timeout     = 300  # per coding-agent call timeout (seconds); omit for per-agent default (opencode 120, claude/grok 300)
 ```
+
+### Grok Build backend
+
+`review-action` can drive [Grok Build](https://docs.x.ai/build/overview) (xAI's terminal-native
+coding agent CLI) as a third coding-agent backend, alongside `opencode` and `claude`.
+
+**Install.**
+
+```bash
+curl -fsSL https://x.ai/cli/install.sh | bash
+```
+
+**Auth.** Either an interactive `grok login` session (cached on the machine) or, for
+headless/CI use, the `XAI_API_KEY` environment variable — a pay-as-you-go console.x.ai key,
+env-var-only per this project's convention:
+
+```bash
+export XAI_API_KEY=<your-key>
+```
+
+**Binary override.** `review-action` expects `grok` on `PATH`. Override with `GROK_BIN`:
+
+```bash
+export GROK_BIN=/path/to/your/grok
+```
+
+**Model selection.** Pass `--model` to select a specific model (e.g. `grok-build`); if
+omitted, grok uses its own configured default model.
+
+```bash
+uv run review-action feedback/ --provider grok --model grok-build
+```
+
+**Timeout.** Governed by the same `[thresholds] coding_agent_timeout` key as the other
+backends (default 300s when unset).
 
 ---
 

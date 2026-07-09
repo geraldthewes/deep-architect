@@ -31,6 +31,9 @@ class ThresholdConfig(BaseModel):
     # review-action: post-fix quality-check retry cap (0 = checks report-only)
     check_max_fix_iterations: int = 3
     check_command_timeout: int = 120    # review-action: default per-command timeout (seconds)
+    # review-action: per coding-agent call timeout in seconds
+    # (None = per-agent default: opencode 120, claude 300, grok 300)
+    coding_agent_timeout: float | None = None
 
 
 def _default_generator() -> AgentConfig:
