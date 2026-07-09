@@ -21,10 +21,13 @@ from deep_architect.review_action_harness import (
     FindingStatus,
     ReviewFinding,
     _process_single_finding,
+    build_detailed_summary,
+    get_verdict,
     has_action_taken,
     is_valid_finding,
     parse_args,
     parse_markdown_finding,
+    print_summary,
     process_findings,
     read_action_taken,
     write_action_taken,
@@ -302,6 +305,29 @@ class TestIsValidFinding:
         assert is_valid_finding(Path("/nonexistent/file.md")) is False
 
 
+class TestGetVerdict:
+
+    def test_valid(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "valid.md"
+        md_file.write_text(VALID_COMMENT_MARKDOWN)
+        assert get_verdict(md_file) == "VALID"
+
+    def test_rejected(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "rejected.md"
+        md_file.write_text(REJECTED_MARKDOWN)
+        assert get_verdict(md_file) == "REJECTED"
+
+    def test_backlog(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "backlog.md"
+        md_file.write_text(BACKLOG_MARKDOWN)
+        assert get_verdict(md_file) == "BACKLOG"
+
+    def test_no_verdict_returns_none(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "no_verdict.md"
+        md_file.write_text("# Some random content\nNo verdict here\n")
+        assert get_verdict(md_file) is None
+
+
 # ---------------------------------------------------------------------------
 # ReviewFinding dataclass
 # ---------------------------------------------------------------------------
@@ -402,6 +428,44 @@ class TestProcessFindings:
         # SUMMARY.md and INDEX.md should not be counted
         assert stats["processed"] == 0
 
+    def test_stale_review_action_summary_not_reprocessed(
+        self, tmp_path: Path
+    ) -> None:
+        """A prior run's own review-action_summary.md must not be globbed as
+        a finding on a rerun (it would inflate counters and get an
+        ## Action Taken block appended to it)."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        (output_dir / "valid-0.md").write_text(VALID_COMMENT_MARKDOWN)
+        summary_file = output_dir / "review-action_summary.md"
+        summary_file.write_text("# Review Action Summary\n\nRestored:   0\n")
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=_mock_repo(tmp_path),
+            ),
+            patch(
+                "deep_architect.review_action_harness.get_modified_files",
+                return_value=[],
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit",
+                return_value=True,
+            ),
+        ):
+            stats = process_findings(
+                output_dir, agent, 0, 0.0, HarnessConfig()
+            )
+
+        assert stats["total_findings"] == 1
+        assert stats["processed"] == 1
+        assert not has_action_taken(summary_file)
+
     def test_dry_run_commits_without_changes(self, tmp_path: Path) -> None:
         """Test dry-run mode counts as committed but makes no changes."""
         output_dir = tmp_path / "feedback"
@@ -465,6 +529,46 @@ class TestProcessFindings:
         assert call_count == 3
         assert stats["processed"] == 1
         assert stats["committed"] == 1
+
+    def test_commit_message_includes_attribution_and_full_comment(
+        self, tmp_path: Path
+    ) -> None:
+        """The commit message subject truncates the review comment to 50
+        chars — the body must carry the full comment plus trailers that
+        identify the commit as review-action's and name the source finding,
+        so `git log` alone is enough to trace a commit back to its review."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        (output_dir / "valid-0.md").write_text(VALID_COMMENT_MARKDOWN)
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        mock_git_commit = MagicMock(return_value=True)
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=_mock_repo(tmp_path),
+            ),
+            patch(
+                "deep_architect.review_action_harness.get_modified_files",
+                return_value=[],
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit",
+                mock_git_commit,
+            ),
+        ):
+            process_findings(output_dir, agent, 0, 0.0, HarnessConfig())
+
+        mock_git_commit.assert_called_once()
+        message = mock_git_commit.call_args[0][1]
+        assert message.startswith("fix: This function should be updated")
+        assert "[valid-0]" in message.splitlines()[0]
+        assert "This function should be updated for better performance" in message
+        assert "Review-Finding: valid-0.md" in message
+        assert "Generated-by: deep-architect review-action" in message
 
     def test_unparseable_valid_finding_is_skipped(
         self, tmp_path: Path
@@ -970,6 +1074,40 @@ class TestWriteAndReadActionTaken:
         assert restored.commit_sha == original.commit_sha
         assert restored.error_message == original.error_message
 
+    def test_multiline_error_message_does_not_corrupt_status(
+        self, tmp_path: Path
+    ) -> None:
+        """A raw quality-check failure report embeds its own "## " headers
+        and "key: value"-shaped lines (e.g. "Status: 1"); unflattened, that
+        corrupts read_action_taken()'s key:value parse and can overwrite the
+        real Status. write_action_taken() must flatten newlines out first."""
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text("# Finding\n\n**Verdict**: VALID\n")
+
+        malicious_report = (
+            "## Style rule violations\n"
+            "Status: 1\n"
+            "Summary: not the real summary\n"
+            "some other output line"
+        )
+        write_action_taken(
+            md_file,
+            FindingStatus(
+                status="error",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="Quality checks failed after 3 iteration(s)",
+                error_message=malicious_report,
+            ),
+        )
+
+        restored = read_action_taken(md_file)
+        assert restored is not None
+        assert restored.status == "error"
+        assert restored.summary == "Quality checks failed after 3 iteration(s)"
+        assert restored.error_message is not None
+        assert "\n" not in restored.error_message
+        assert "\\n" in restored.error_message
+
 
 class TestProcessFindingsPersistence:
 
@@ -1137,6 +1275,84 @@ class TestProcessFindingsPersistence:
         assert stats["processed"] == 1
         assert stats["committed"] == 1
 
+    def test_rejected_finding_persists_and_not_replayed(
+        self, tmp_path: Path
+    ) -> None:
+        """A REJECTED/BACKLOG finding gets a persisted "rejected" record and
+        must not be re-evaluated (and re-counted) on every rerun."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        md_file = output_dir / "rejected-0.md"
+        md_file.write_text(REJECTED_MARKDOWN)
+
+        agent = OpencodeAgent()
+        stats = process_findings(
+            output_dir, agent, 0, 0.0, HarnessConfig()
+        )
+
+        assert stats["processed"] == 1
+        assert stats["skipped"] == 1
+
+        status = read_action_taken(md_file)
+        assert status is not None
+        assert status.status == "rejected"
+        assert "REJECTED" in status.summary
+
+        stats2 = process_findings(
+            output_dir, agent, 0, 0.0, HarnessConfig()
+        )
+        assert stats2["processed"] == 0
+        assert stats2["restored"] == 1
+
+    def test_dry_run_status_is_replayed_on_real_run(
+        self, tmp_path: Path
+    ) -> None:
+        """Dry-run must not be recorded as "completed" — a later real run
+        needs to replay the finding rather than treating it as resolved."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        md_file = output_dir / "valid-0.md"
+        md_file.write_text(VALID_COMMENT_MARKDOWN)
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        stats = process_findings(
+            output_dir, agent, 0, 0.0, HarnessConfig(), dry_run=True
+        )
+        assert stats["committed"] == 1
+
+        status = read_action_taken(md_file)
+        assert status is not None
+        assert status.status == "dry-run"
+
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=_mock_repo(tmp_path),
+            ),
+            patch(
+                "deep_architect.review_action_harness.get_modified_files",
+                return_value=[],
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit",
+                return_value=True,
+            ),
+        ):
+            stats2 = process_findings(
+                output_dir, agent, 0, 0.0, HarnessConfig()
+            )
+
+        assert stats2["processed"] == 1
+        assert stats2["committed"] == 1
+
+        status2 = read_action_taken(md_file)
+        assert status2 is not None
+        assert status2.status == "completed"
+
 
 # ---------------------------------------------------------------------------
 # parse_args
@@ -1152,5 +1368,182 @@ class TestParseArgs:
     def test_unknown_provider_rejected(self) -> None:
         with pytest.raises(SystemExit):
             parse_args(["feedback/", "--provider", "bogus"])
+
+
+# ---------------------------------------------------------------------------
+# build_detailed_summary
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDetailedSummary:
+
+    def test_table_rows_cover_every_outcome(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        completed = output_dir / "completed-0.md"
+        completed.write_text(VALID_COMMENT_MARKDOWN)
+        write_action_taken(
+            completed,
+            FindingStatus(
+                status="completed",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="Fix applied and committed: fix: foo [completed-0]",
+                commit_sha="abc12345",
+            ),
+        )
+
+        errored = output_dir / "errored-0.md"
+        errored.write_text(VALID_COMMENT_MARKDOWN)
+        write_action_taken(
+            errored,
+            FindingStatus(
+                status="error",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="Quality checks failed after 3 iteration(s)",
+                error_message="some | pipe on first line\nsecond line ignored",
+            ),
+        )
+
+        rejected = output_dir / "rejected-0.md"
+        rejected.write_text(REJECTED_MARKDOWN)
+        write_action_taken(
+            rejected,
+            FindingStatus(
+                status="rejected",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="Verdict REJECTED — not actioned",
+            ),
+        )
+
+        warning = output_dir / "warning-0.md"
+        warning.write_text("# OCR Review Analysis\n\n**Verdict**: VALID\n")
+        write_action_taken(
+            warning,
+            FindingStatus(
+                status="skipped",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="Cannot parse action from warning-0.md (no code blocks)",
+            ),
+        )
+
+        never_processed = output_dir / "never-0.md"
+        never_processed.write_text(VALID_COMMENT_MARKDOWN)
+
+        # A stale summary file from a prior run must be excluded entirely.
+        (output_dir / "review-action_summary.md").write_text("# old\n")
+
+        table = build_detailed_summary(output_dir)
+
+        assert "[review-action_summary]" not in table
+
+        assert "[completed-0](./completed-0.md)" in table
+        assert "Fixed" in table
+        assert "`abc12345`" in table
+
+        assert "[errored-0](./errored-0.md)" in table
+        assert "Error" in table
+        assert "some \\| pipe on first line" in table
+        assert "second line ignored" not in table
+
+        assert "[rejected-0](./rejected-0.md)" in table
+        assert "Rejected (REJECTED)" in table
+
+        assert "[warning-0](./warning-0.md)" in table
+
+        assert "[never-0](./never-0.md)" in table
+        assert "Not processed" in table
+
+
+# ---------------------------------------------------------------------------
+# write_summary_file / print_summary
+# ---------------------------------------------------------------------------
+
+
+class TestSummaryFile:
+
+    def test_summary_file_has_counters_and_findings_table(
+        self, tmp_path: Path
+    ) -> None:
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+        (output_dir / "valid-0.md").write_text(VALID_COMMENT_MARKDOWN)
+        (output_dir / "rejected-0.md").write_text(REJECTED_MARKDOWN)
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=_mock_repo(tmp_path),
+            ),
+            patch(
+                "deep_architect.review_action_harness.get_modified_files",
+                return_value=[],
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit",
+                return_value=True,
+            ),
+        ):
+            stats = process_findings(
+                output_dir, agent, 0, 0.0, HarnessConfig()
+            )
+
+        print_summary(stats, output_dir)
+
+        summary_text = (output_dir / "review-action_summary.md").read_text()
+        assert "# Review Action Summary" in summary_text
+        assert "Committed:  1" in summary_text
+        assert "## Findings" in summary_text
+        assert "[valid-0](./valid-0.md)" in summary_text
+        assert "[rejected-0](./rejected-0.md)" in summary_text
+        assert "Rejected (REJECTED)" in summary_text
+
+    def test_summary_file_survives_crash_mid_run(
+        self, tmp_path: Path
+    ) -> None:
+        """write_summary_file() is called after each finding, not only at
+        the very end, so a hard crash mid-run still leaves an accurate
+        summary for the findings that did complete before it."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+        (output_dir / "valid-0.md").write_text(VALID_COMMENT_MARKDOWN)
+        (output_dir / "valid-1.md").write_text(VALID_COMMENT_MARKDOWN)
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        modified_side_effects: list[object] = [[], RuntimeError("boom mid-run")]
+
+        def get_modified_files_side_effect(*args: object, **kwargs: object) -> object:
+            result = modified_side_effects.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=_mock_repo(tmp_path),
+            ),
+            patch(
+                "deep_architect.review_action_harness.get_modified_files",
+                side_effect=get_modified_files_side_effect,
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit",
+                return_value=True,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="boom mid-run"):
+                process_findings(output_dir, agent, 0, 0.0, HarnessConfig())
+
+        summary_file = output_dir / "review-action_summary.md"
+        assert summary_file.exists()
+        summary_text = summary_file.read_text()
+        assert "[valid-0](./valid-0.md)" in summary_text
+        assert "Fixed" in summary_text
 
 

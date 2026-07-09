@@ -53,6 +53,11 @@ def _sigint_handler(signum: int, frame: object) -> None:
 
 DEFAULT_OUTPUT_DIR = Path("feedback")
 
+# Files in the output dir that are not findings and must never be processed
+# or written back to as if they were one (includes review-action's own
+# summary file, which lives alongside the findings it reports on).
+_NON_FINDING_FILES = frozenset({"SUMMARY.md", "INDEX.md", "review-action_summary.md"})
+
 
 @dataclass
 class ReviewFinding:
@@ -72,7 +77,7 @@ class ReviewFinding:
 class FindingStatus:
     """Persistent status for a finding — written to the .md file after each run."""
 
-    status: str  # "completed" | "error" | "skipped" | "interrupted"
+    status: str  # "completed" | "error" | "skipped" | "rejected" | "dry-run" | "interrupted"
     timestamp: str
     summary: str = ""
     commit_sha: str | None = None
@@ -152,18 +157,21 @@ def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:
     )
 
 
-def is_valid_finding(file_path: Path) -> bool:
-    """Check if a markdown file contains a VALID verdict."""
+def get_verdict(file_path: Path) -> str | None:
+    """Return the finding's verdict ("VALID"/"REJECTED"/"BACKLOG"), or None."""
     try:
         content = file_path.read_text(encoding="utf-8")
         verdict_match = re.search(
             r"\*\*Verdict\*\*:?\s*(VALID|REJECTED|BACKLOG)", content
         )
-        if verdict_match:
-            return verdict_match.group(1) == "VALID"
-        return False
+        return verdict_match.group(1) if verdict_match else None
     except Exception:
-        return False
+        return None
+
+
+def is_valid_finding(file_path: Path) -> bool:
+    """Check if a markdown file contains a VALID verdict."""
+    return get_verdict(file_path) == "VALID"
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +186,32 @@ def _finding_status_header() -> str:
     return _ACTION_TAKEN_HEADER
 
 
+_ACTION_TAKEN_FIELD_MAX_LEN = 500
+
+
+def _sanitize_action_taken_field(value: str) -> str:
+    """Flatten a value for embedding as a single `Key: value` line.
+
+    write_action_taken()'s block is parsed back by splitting on newlines and
+    matching `key: value` per line (read_action_taken()); an unflattened
+    multi-line value (e.g. a quality-check failure report containing its own
+    "## " headers or "key: value"-shaped lines) would corrupt the parse —
+    including possibly overwriting the Status field itself.
+    """
+    flattened = value.replace("\r\n", "\\n").replace("\n", "\\n")
+    if len(flattened) > _ACTION_TAKEN_FIELD_MAX_LEN:
+        flattened = flattened[:_ACTION_TAKEN_FIELD_MAX_LEN] + "...(truncated, see logs)"
+    return flattened
+
+
 def has_action_taken(file_path: Path) -> bool:
-    """Check if a finding has already been acted upon."""
+    """Check if a finding has already been acted upon.
+
+    Uses a raw substring check, so if a field written by write_action_taken()
+    ever contained a literal "## Action Taken" the block would be misdetected;
+    _sanitize_action_taken_field() flattening newlines out of written fields
+    makes this practically unreachable.
+    """
     try:
         content = file_path.read_text(encoding="utf-8")
         return _ACTION_TAKEN_HEADER in content
@@ -242,12 +274,12 @@ def write_action_taken(file_path: Path, status: FindingStatus) -> None:
     new_block = separator + "\n".join([
         f"Status: {status.status}",
         f"Timestamp: {status.timestamp}",
-        f"Summary: {status.summary}",
+        f"Summary: {_sanitize_action_taken_field(status.summary)}",
     ])
     if status.commit_sha:
         new_block += f"\nCommitSha: {status.commit_sha}"
     if status.error_message:
-        new_block += f"\nErrorMessage: {status.error_message}"
+        new_block += f"\nErrorMessage: {_sanitize_action_taken_field(status.error_message)}"
     new_block += "\n"
 
     try:
@@ -343,13 +375,15 @@ def _process_single_finding(
         "Processing finding %s for %s", finding.finding_id, finding.file_path
     )
 
-    # Dry-run: skip agent call entirely
+    # Dry-run: skip agent call entirely. Status is "dry-run", not "completed" —
+    # no fix was actually applied or committed, so a later real run must
+    # replay this finding rather than treating it as already resolved.
     if dry_run:
         logger.info("[DRY RUN] Would apply fix for %s", finding.file_path)
         write_action_taken(
             md_file,
             FindingStatus(
-                status="completed",
+                status="dry-run",
                 timestamp=_now_iso(),
                 summary="[DRY RUN] Would apply fix",
             ),
@@ -575,8 +609,12 @@ def _process_single_finding(
         suffix = (
             "..." if len(finding.review_comment) > 50 else ""
         )
+        commit_subject = f"fix: {comment_snippet}{suffix} [{finding.finding_id}]"
         commit_message = (
-            f"fix: {comment_snippet}{suffix} [{finding.finding_id}]"
+            f"{commit_subject}\n\n"
+            f"{finding.review_comment}\n\n"
+            f"Review-Finding: {md_file.name}\n"
+            f"Generated-by: deep-architect review-action"
         )
         commit_paths = modified if modified else [finding.file_path]
         committed = git_commit(
@@ -590,7 +628,7 @@ def _process_single_finding(
                 FindingStatus(
                     status="completed",
                     timestamp=_now_iso(),
-                    summary=f"Fix applied and committed: {commit_message}",
+                    summary=f"Fix applied and committed: {commit_subject}",
                     commit_sha=commit_sha,
                 ),
             )
@@ -670,7 +708,7 @@ def process_findings(
 
     # Count eligible findings first
     for md_file in markdown_files:
-        if md_file.name not in ("SUMMARY.md", "INDEX.md"):
+        if md_file.name not in _NON_FINDING_FILES:
             stats["total_findings"] += 1
 
     total = stats["total_findings"]
@@ -683,7 +721,7 @@ def process_findings(
             break
 
         # Skip summary/index files
-        if md_file.name in ("SUMMARY.md", "INDEX.md"):
+        if md_file.name in _NON_FINDING_FILES:
             continue
 
         finding_index += 1
@@ -699,17 +737,20 @@ def process_findings(
         # Skip already-processed findings unless forced
         if not force and has_action_taken(md_file):
             existing = read_action_taken(md_file)
-            if existing and existing.status == "completed":
+            if existing and existing.status in ("completed", "rejected"):
                 logger.info(
-                    "Skipping completed finding: %s (commit: %s)",
+                    "Skipping %s finding: %s (commit: %s)",
+                    existing.status,
                     md_file.name,
                     existing.commit_sha or "unknown",
                 )
                 logger.info(
-                    "  -> Skipped (already completed, commit %s)",
+                    "  -> Skipped (already %s, commit %s)",
+                    existing.status,
                     existing.commit_sha or "unknown",
                 )
                 stats["restored"] += 1
+                write_summary_file(stats, output_dir)
                 continue
             elif existing and existing.status == "error" and skip_errors:
                 logger.info(
@@ -718,6 +759,7 @@ def process_findings(
                 )
                 logger.info("  -> Skipped (previous error)")
                 stats["skipped"] += 1
+                write_summary_file(stats, output_dir)
                 continue
             elif existing:
                 logger.info(
@@ -728,10 +770,25 @@ def process_findings(
 
         stats["processed"] += 1
 
-        if not is_valid_finding(md_file):
-            logger.info("Skipping non-VALID finding: %s", md_file.name)
-            logger.info("  -> Rejected (verdict not VALID)")
+        verdict = get_verdict(md_file)
+        if verdict != "VALID":
+            verdict_label = verdict or "unknown"
+            logger.info(
+                "Skipping non-VALID finding: %s (verdict: %s)",
+                md_file.name,
+                verdict_label,
+            )
+            logger.info("  -> Rejected (verdict %s)", verdict_label)
             stats["skipped"] += 1
+            write_action_taken(
+                md_file,
+                FindingStatus(
+                    status="rejected",
+                    timestamp=_now_iso(),
+                    summary=f"Verdict {verdict_label} — not actioned",
+                ),
+            )
+            write_summary_file(stats, output_dir)
             continue
 
         status, committed, error = _process_single_finding(
@@ -756,6 +813,8 @@ def process_findings(
         elif committed:
             logger.info("  -> Change applied and committed")
             stats["committed"] += 1
+
+        write_summary_file(stats, output_dir)
 
     return stats
 
@@ -842,23 +901,82 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def print_summary(
+_OUTCOME_LABELS = {
+    "completed": "Fixed",
+    "rejected": "Rejected",
+    "error": "Error",
+    "skipped": "Skipped",
+    "interrupted": "Interrupted",
+    "dry-run": "Dry run",
+}
+
+
+def _escape_table_cell(value: str) -> str:
+    """Escape characters that would break a markdown table cell."""
+    return value.replace("|", "\\|").replace("\n", " ")
+
+
+def _outcome_label(status: FindingStatus) -> str:
+    """Human-readable outcome label, including the verdict for rejections."""
+    label = _OUTCOME_LABELS.get(status.status, status.status)
+    if status.status == "rejected" and status.summary.startswith("Verdict "):
+        # "Verdict BACKLOG — not actioned" -> "Rejected (BACKLOG)"
+        verdict = status.summary.split(" ")[1]
+        return f"{label} ({verdict})"
+    return label
+
+
+def build_detailed_summary(output_dir: Path) -> str:
+    """Render a per-finding markdown table from each finding's Action Taken block.
+
+    Re-scans the output directory rather than accumulating results in memory
+    during process_findings() — this way restored/prior-run findings and
+    findings never reached (e.g. after a SIGINT) still get a row, using
+    exactly the same persisted state the resume logic relies on.
+    """
+    lines = [
+        "## Findings",
+        "",
+        "| Finding | File | Outcome | Commit | What was done |",
+        "|---------|------|---------|--------|---------------|",
+    ]
+    for md_file in sorted(output_dir.glob("*.md")):
+        if md_file.name in _NON_FINDING_FILES:
+            continue
+
+        finding = parse_markdown_finding(md_file)
+        finding_id = finding.finding_id if finding else md_file.stem
+        file_ref = str(finding.file_path) if finding else "(unparseable)"
+
+        action = read_action_taken(md_file)
+        if action is None:
+            outcome = "Not processed"
+            commit_cell = "—"
+            what = "—"
+        else:
+            outcome = _outcome_label(action)
+            commit_cell = f"`{action.commit_sha}`" if action.commit_sha else "—"
+            what = action.summary or "—"
+            if action.status == "error" and action.error_message:
+                first_line = action.error_message.split("\\n", 1)[0]
+                what = f"{what}: {first_line}" if what != "—" else first_line
+
+        link = f"[{finding_id}](./{md_file.name})"
+        lines.append(
+            "| "
+            + " | ".join(
+                _escape_table_cell(cell)
+                for cell in (link, file_ref, outcome, commit_cell, what)
+            )
+            + " |"
+        )
+    return "\n".join(lines)
+
+
+def write_summary_file(
     stats: dict[str, int], output_dir: Path, run_stats: RunStats | None = None
 ) -> None:
-    """Print the final processing summary and write to file."""
-    print("\n=== Review Action Harness Summary ===")
-    print(f"Restored:   {stats['restored']}")
-    print(f"Processed:  {stats['processed']}")
-    print(f"Committed:  {stats['committed']}")
-    print(f"Skipped:    {stats['skipped']}")
-    print(f"Errors:     {stats['errors']}")
-    if run_stats is not None:
-        print(
-            f"Total cost: ${run_stats.total_cost_usd:.4f} "
-            f"across {run_stats.num_calls} agent call(s)"
-        )
-
-    # Write summary to file
+    """Write the aggregate counters + per-finding table to review-action_summary.md."""
     summary_file = output_dir / "review-action_summary.md"
     with summary_file.open("w", encoding="utf-8") as f:
         f.write("# Review Action Summary\n\n")
@@ -876,6 +994,28 @@ def print_summary(
         processed = stats['processed']
         total = stats['total_findings']
         f.write(f"Progress: {processed} out of {total} findings processed\n")
+        f.write("\n")
+        f.write(build_detailed_summary(output_dir))
+        f.write("\n")
+
+
+def print_summary(
+    stats: dict[str, int], output_dir: Path, run_stats: RunStats | None = None
+) -> None:
+    """Print the final processing summary and write it to file."""
+    print("\n=== Review Action Harness Summary ===")
+    print(f"Restored:   {stats['restored']}")
+    print(f"Processed:  {stats['processed']}")
+    print(f"Committed:  {stats['committed']}")
+    print(f"Skipped:    {stats['skipped']}")
+    print(f"Errors:     {stats['errors']}")
+    if run_stats is not None:
+        print(
+            f"Total cost: ${run_stats.total_cost_usd:.4f} "
+            f"across {run_stats.num_calls} agent call(s)"
+        )
+
+    write_summary_file(stats, output_dir, run_stats)
 
 
 def main(argv: list[str] | None = None) -> int:

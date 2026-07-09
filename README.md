@@ -556,10 +556,41 @@ uv run review-action feedback/
 
 ### Output
 
-`review-action` prints a summary report showing items processed, committed, skipped, and errors. Each successful fix is committed atomically with a message like:
+`review-action` prints a summary of items processed, committed, skipped, and errors, and
+writes the same counters plus a per-finding table to `<output-dir>/review-action_summary.md`
+(updated after every finding, so a crash mid-run still leaves an accurate record):
+
+```
+# Review Action Summary
+
+Restored:   0
+Processed:  2
+Committed:  1
+Skipped:    1
+Errors:     0
+Interrupted: no
+Progress: 2 out of 2 findings processed
+
+## Findings
+
+| Finding | File | Outcome | Commit | What was done |
+|---------|------|---------|--------|---------------|
+| [abc12345-0](./abc12345-0.md) | src/example.py | Fixed | `85ef21e1` | Fix applied and committed: fix: Rename variable for clarity... [abc12345-0] |
+| [def67890-0](./def67890-0.md) | src/other.py | Rejected (BACKLOG) | — | Verdict BACKLOG — not actioned |
+```
+
+Each successful fix is committed atomically, with a subject line, the full review comment,
+and trailers identifying the commit as review-action's and naming the source finding file —
+so `git log` alone traces a commit back to its review without cross-referencing the output
+directory:
 
 ```
 fix: Rename variable for clarity... [abc12345-0]
+
+Rename `x` to `total_count` for clarity
+
+Review-Finding: abc12345-0.md
+Generated-by: deep-architect review-action
 ```
 
 ### Quality checks
