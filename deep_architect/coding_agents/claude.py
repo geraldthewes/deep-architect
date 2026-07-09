@@ -22,7 +22,7 @@ class ClaudeSDKAgent:
 
     # Narrow, edit-only turn budget — this agent applies one small change to
     # one file, not a full generation task like the harness's generator.
-    MAX_TURNS = 10
+    MAX_TURNS = 30
 
     def __init__(
         self,
@@ -30,6 +30,7 @@ class ClaudeSDKAgent:
         permission_mode: str = "bypassPermissions",
         disallowed_tools: list[str] | None = None,
         timeout_seconds: float | None = None,
+        max_turns: int | None = None,
     ) -> None:
         self.model = model
         self.permission_mode = permission_mode
@@ -40,6 +41,7 @@ class ClaudeSDKAgent:
         self.timeout_seconds = (
             timeout_seconds if timeout_seconds is not None else CLAUDE_DEFAULT_TIMEOUT
         )
+        self.max_turns = max_turns if max_turns is not None else self.MAX_TURNS
 
     async def apply_fix(
         self,
@@ -76,7 +78,7 @@ class ClaudeSDKAgent:
             "Do not commit the change."
         )
 
-        client_config = ClientAgentConfig(model=self.model, max_turns=self.MAX_TURNS)
+        client_config = ClientAgentConfig(model=self.model, max_turns=self.max_turns)
 
         try:
             options = make_agent_options(
@@ -155,7 +157,7 @@ class ClaudeSDKAgent:
             "Fix these quality-check failures, then confirm when done."
         )
 
-        client_config = ClientAgentConfig(model=self.model, max_turns=self.MAX_TURNS)
+        client_config = ClientAgentConfig(model=self.model, max_turns=self.max_turns)
 
         try:
             options = make_agent_options(

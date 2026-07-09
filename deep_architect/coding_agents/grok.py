@@ -12,7 +12,7 @@ from deep_architect.logger import get_logger
 logger = get_logger(__name__)
 
 GROK_DEFAULT_TIMEOUT: float = 300.0
-GROK_DEFAULT_MAX_TURNS: int = 10  # mirrors ClaudeSDKAgent.MAX_TURNS
+GROK_DEFAULT_MAX_TURNS: int = 30  # fallback when not overridden via config
 
 
 class GrokAgent:

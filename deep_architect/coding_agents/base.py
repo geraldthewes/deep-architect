@@ -20,6 +20,7 @@ class CodingAgentConfig:
     permission_mode: str = "bypassPermissions"
     disallowed_tools: list[str] | None = None
     timeout_seconds: float | None = None
+    max_turns: int | None = None
 
 
 # ---------------------------------------------------------------------------

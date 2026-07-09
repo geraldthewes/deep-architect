@@ -185,6 +185,27 @@ coding_agent_timeout = 240.0
     assert cfg.thresholds.coding_agent_timeout == 240.0
 
 
+def test_threshold_coding_agent_max_turns_default() -> None:
+    from deep_architect.config import ThresholdConfig
+
+    cfg = ThresholdConfig()
+    assert cfg.coding_agent_max_turns is None
+
+
+def test_load_config_with_coding_agent_max_turns(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text("""
+[generator]
+model = "sonnet"
+[critic]
+model = "sonnet"
+[thresholds]
+coding_agent_max_turns = 50
+""")
+    cfg = load_config(cfg_file)
+    assert cfg.thresholds.coding_agent_max_turns == 50
+
+
 def test_threshold_judge_parse_retries_default() -> None:
     from deep_architect.config import ThresholdConfig
 

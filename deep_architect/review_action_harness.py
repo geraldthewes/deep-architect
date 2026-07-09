@@ -928,6 +928,7 @@ def main(argv: list[str] | None = None) -> int:
         retry_delay=harness_config.thresholds.model_comm_base_backoff,
         permission_mode="bypassPermissions",
         timeout_seconds=harness_config.thresholds.coding_agent_timeout,
+        max_turns=harness_config.thresholds.coding_agent_max_turns,
     )
 
     if args.max_check_iterations is not None:

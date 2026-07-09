@@ -247,10 +247,15 @@ class TestClaudeSDKAgent:
         agent = ClaudeSDKAgent()
         assert agent.model == "sonnet"
         assert agent.timeout_seconds == 300.0
+        assert agent.max_turns == 30
 
     def test_custom_timeout(self) -> None:
         agent = ClaudeSDKAgent(timeout_seconds=42.0)
         assert agent.timeout_seconds == 42.0
+
+    def test_custom_max_turns(self) -> None:
+        agent = ClaudeSDKAgent(max_turns=50)
+        assert agent.max_turns == 50
 
     @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
     @patch("deep_architect.agents.client.make_agent_options")
@@ -415,6 +420,11 @@ class TestGrokAgent:
         assert agent.grok_bin == "grok"
         assert agent.model is None
         assert agent.timeout_seconds == 300.0
+        assert agent.max_turns == 30
+
+    def test_custom_max_turns(self) -> None:
+        agent = GrokAgent(max_turns=50)
+        assert agent.max_turns == 50
 
     def test_grok_bin_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GROK_BIN", "/custom/grok")
@@ -596,6 +606,24 @@ class TestCreateAgent:
         agent = create_agent(config)
         assert isinstance(agent, GrokAgent)
         assert agent.model == "grok-build"
+
+    def test_create_grok_agent_default_max_turns(self) -> None:
+        config = CodingAgentConfig(provider="grok", model="grok-build")
+        agent = create_agent(config)
+        assert isinstance(agent, GrokAgent)
+        assert agent.max_turns == 30
+
+    def test_create_grok_agent_custom_max_turns(self) -> None:
+        config = CodingAgentConfig(provider="grok", model="grok-build", max_turns=50)
+        agent = create_agent(config)
+        assert isinstance(agent, GrokAgent)
+        assert agent.max_turns == 50
+
+    def test_create_claude_agent_custom_max_turns(self) -> None:
+        config = CodingAgentConfig(provider="claude", model="sonnet", max_turns=50)
+        agent = create_agent(config)
+        assert isinstance(agent, ClaudeSDKAgent)
+        assert agent.max_turns == 50
 
 
 # ---------------------------------------------------------------------------

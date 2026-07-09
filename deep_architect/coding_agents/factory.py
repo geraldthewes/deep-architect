@@ -17,6 +17,12 @@ def create_agent(config: CodingAgentConfig) -> CodingAgent:
     elif config.provider == "grok":
         from deep_architect.coding_agents.grok import GrokAgent  # noqa: PLC0415
 
+        if config.max_turns is not None:
+            return GrokAgent(
+                model=config.model,
+                timeout_seconds=config.timeout_seconds,
+                max_turns=config.max_turns,
+            )
         return GrokAgent(model=config.model, timeout_seconds=config.timeout_seconds)
     else:
         raise ValueError(
@@ -44,4 +50,5 @@ def _create_claude_agent(config: CodingAgentConfig) -> CodingAgent:
         permission_mode=config.permission_mode,
         disallowed_tools=config.disallowed_tools,
         timeout_seconds=config.timeout_seconds,
+        max_turns=config.max_turns,
     )
