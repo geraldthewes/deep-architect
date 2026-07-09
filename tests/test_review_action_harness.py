@@ -562,13 +562,19 @@ class TestProcessFindings:
         ):
             process_findings(output_dir, agent, 0, 0.0, HarnessConfig())
 
-        mock_git_commit.assert_called_once()
-        message = mock_git_commit.call_args[0][1]
+        assert mock_git_commit.call_count == 2
+        fix_call, status_call = mock_git_commit.call_args_list
+        message = fix_call[0][1]
         assert message.startswith("fix: This function should be updated")
         assert "[valid-0]" in message.splitlines()[0]
         assert "This function should be updated for better performance" in message
         assert "Review-Finding: valid-0.md" in message
         assert "Generated-by: deep-architect review-action" in message
+
+        # The status write for this finding must be committed immediately,
+        # on its own, so it can't leak into the next finding's commit.
+        assert status_call[0][1] == "chore: record review-action status for valid-0"
+        assert status_call[0][2] == [output_dir / "valid-0.md"]
 
     def test_unparseable_valid_finding_is_skipped(
         self, tmp_path: Path
@@ -793,7 +799,14 @@ class TestQualityCheckLoop:
         assert committed is False
         assert error is not None and "2 iteration" in error
         assert fix_calls == 1  # cap=2 -> 1 fix attempt between the 2 check runs
-        mock_commit.assert_not_called()
+        # fail-closed: no commit of the (restored) fix content, but the error
+        # status write is still committed on its own so it can't leak into
+        # the next finding's commit.
+        mock_commit.assert_called_once_with(
+            repo,
+            "chore: record review-action status for finding-0",
+            [md_file],
+        )
         # fail-closed: working tree restored to the pre-fix baseline
         assert target.read_text() == "GOOD\n"
 
@@ -1186,6 +1199,82 @@ class TestProcessFindingsPersistence:
         read_status = read_action_taken(md_file)
         assert read_status is not None
         assert read_status.status == "completed"
+
+    def test_no_cross_finding_status_contamination(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression test: a finding's own status write must land in a
+        commit that touches only that finding's own .md file — never
+        bystander-committed alongside a *different* finding's fix, which is
+        what happened when write_action_taken() ran after git_commit()
+        without its own commit (the status write sat dirty until the next
+        finding's get_modified_files() swept it in)."""
+        monkeypatch.chdir(tmp_path)
+        repo = _init_repo(tmp_path)
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        (tmp_path / "a.py").write_text("A\n")
+        (tmp_path / "b.py").write_text("B\n")
+        repo.index.add(["a.py", "b.py"])
+        repo.index.commit("add targets")
+
+        md_a = output_dir / "aaa-1.md"
+        md_a.write_text(_finding_markdown("a.py", "A", "A2", comment="fix a"))
+        md_b = output_dir / "bbb-2.md"
+        md_b.write_text(_finding_markdown("b.py", "B", "B2", comment="fix b"))
+        # Feedback files are already tracked before review-action runs (as
+        # they would be from the review-analyzer step) so the test isolates
+        # the post-commit status-write contamination this fix targets, not
+        # the separate pre-existing behavior of sweeping untracked files
+        # into whichever commit happens first.
+        repo.index.add(["feedback/aaa-1.md", "feedback/bbb-2.md"])
+        repo.index.commit("add feedback")
+
+        async def apply_fix(
+            file_path: Path,
+            existing_code: str,
+            suggested_code: str,
+            analysis: str,
+            original_content: str | None = None,
+        ) -> bool:
+            Path(file_path).write_text(suggested_code + "\n")
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+
+        with (
+            patch("deep_architect.review_action_harness.validate_git_repo", return_value=repo),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=QualityChecksConfig(),
+            ),
+        ):
+            stats = process_findings(output_dir, agent, 0, 0.0, HarnessConfig())
+
+        assert stats["committed"] == 2
+
+        status_a = read_action_taken(md_a)
+        status_b = read_action_taken(md_b)
+        assert status_a is not None and status_a.status == "completed"
+        assert status_b is not None and status_b.status == "completed"
+
+        # No commit may touch both findings' .md files, and each finding's
+        # own .md file must actually be committed (not left dirty) — unlike
+        # review-action_summary.md, which write_summary_file() updates
+        # continuously and is out of scope for this fix.
+        dirty_paths = {d.a_path for d in repo.index.diff(None)} | set(repo.untracked_files)
+        assert "feedback/aaa-1.md" not in dirty_paths
+        assert "feedback/bbb-2.md" not in dirty_paths
+        review_action_commits = [
+            c for c in repo.iter_commits()
+            if c.message.startswith(("fix:", "chore: record review-action status"))
+        ]
+        assert len(review_action_commits) == 4  # 2 fix + 2 status commits
+        for commit in review_action_commits:
+            touched = set(commit.stats.files.keys())
+            assert not ({"feedback/aaa-1.md", "feedback/bbb-2.md"} <= touched)
 
     def test_skip_errors_flag(self, tmp_path: Path) -> None:
         """Test that --skip-errors skips errored findings."""

@@ -32,6 +32,8 @@ from deep_architect.quality_checks import (
 )
 
 if TYPE_CHECKING:
+    import git
+
     from deep_architect.agents.client import RunStats
 
 logger = get_logger(__name__)
@@ -335,6 +337,20 @@ def _render_failure_report(
 # ---------------------------------------------------------------------------
 
 
+def _commit_status_file(repo: git.Repo, md_file: Path, finding_id: str) -> None:
+    """Commit a finding's own status write immediately.
+
+    Without this, the status write sits as a dirty file until the *next*
+    finding's get_modified_files() sweeps it into that finding's commit —
+    misattributing it and breaking resume for the current finding.
+    """
+    git_commit(
+        repo,
+        f"chore: record review-action status for {finding_id}",
+        [md_file],
+    )
+
+
 def _process_single_finding(
     md_file: Path,
     agent: CodingAgent,
@@ -453,6 +469,7 @@ def _process_single_finding(
                     error_message=interrupt_msg,
                 ),
             )
+            _commit_status_file(repo, md_file, finding.finding_id)
             return ("interrupted", False, interrupt_msg)
 
         try:
@@ -500,6 +517,7 @@ def _process_single_finding(
                 error_message=error_msg,
             ),
         )
+        _commit_status_file(repo, md_file, finding.finding_id)
         return (
             "error",
             False,
@@ -529,6 +547,7 @@ def _process_single_finding(
                     error_message=interrupt_msg,
                 ),
             )
+            _commit_status_file(repo, md_file, finding.finding_id)
             return ("interrupted", False, interrupt_msg)
 
         modified = get_modified_files(repo)
@@ -601,6 +620,7 @@ def _process_single_finding(
                 error_message=error_msg,
             ),
         )
+        _commit_status_file(repo, md_file, finding.finding_id)
         return ("error", False, error_msg)
 
     # Commit changes
@@ -632,6 +652,7 @@ def _process_single_finding(
                     commit_sha=commit_sha,
                 ),
             )
+            _commit_status_file(repo, md_file, finding.finding_id)
             return ("committed", True, None)
         else:
             logger.info(
@@ -646,6 +667,7 @@ def _process_single_finding(
                     summary="File already contained expected changes",
                 ),
             )
+            _commit_status_file(repo, md_file, finding.finding_id)
             return ("skipped", False, None)
     except Exception as e:
         error_msg = (
