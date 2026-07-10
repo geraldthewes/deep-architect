@@ -558,10 +558,18 @@ uv run review-action feedback/
 
 `review-action` prints a summary of items processed, committed, skipped, and errors, and
 writes the same counters plus a per-finding table to `<output-dir>/review-action_summary.md`
-(updated after every finding, so a crash mid-run still leaves an accurate record):
+(updated after every finding, so a crash mid-run still leaves an accurate record). Each run
+writes its own timestamped block — tagged with the coding agent/model that was used — and
+**appends** it below any prior runs' blocks rather than overwriting the file, so
+`review-action_summary.md` accumulates a history of every invocation against that output
+directory:
 
 ```
+<!-- review-action-run: 2026-01-01 12:00:00 UTC -->
 # Review Action Summary
+
+Run started:  2026-01-01 12:00:00 UTC
+Coding agent: opencode (sonnet)
 
 Restored:   0
 Processed:  2
@@ -597,7 +605,8 @@ Files under the output directory (`feedback/` by default) are never committed by
 `review-action` itself — only the target code a fix touches is. Each finding's
 `## Action Taken` block and `review-action_summary.md` are written to disk (so resume and
 `--force` behave correctly across runs) but left as ephemeral working state; committing or
-gitignoring that directory is left to you.
+gitignoring that directory is left to you. `review-action_summary.md` in particular keeps
+growing with one block per invocation, so periodically clearing or archiving it is your call.
 
 ### Quality checks
 

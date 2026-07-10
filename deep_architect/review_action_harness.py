@@ -723,6 +723,9 @@ def process_findings(
     skip_errors: bool = False,
     skip_llm_checks: bool = False,
     quality_checks_override: Path | None = None,
+    *,
+    run_started_at: str | None = None,
+    coding_agent: str | None = None,
 ) -> dict[str, int]:
     """Process all VALID findings in the output directory.
 
@@ -730,6 +733,14 @@ def process_findings(
     skipped unless force=True.  Findings previously marked "error" are
     retried unless skip_errors=True.
     """
+    if run_started_at is None:
+        run_started_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    if coding_agent is None:
+        agent_model = getattr(agent, "model", None)
+        coding_agent = (
+            f"{type(agent).__name__} ({agent_model})" if agent_model else type(agent).__name__
+        )
+
     stats: dict[str, int] = {
         "processed": 0,
         "committed": 0,
@@ -795,7 +806,9 @@ def process_findings(
                     existing.commit_sha or "unknown",
                 )
                 stats["restored"] += 1
-                write_summary_file(stats, output_dir)
+                write_summary_file(
+                    stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
+                )
                 continue
             elif existing and existing.status == "error" and skip_errors:
                 logger.info(
@@ -804,7 +817,9 @@ def process_findings(
                 )
                 logger.info("  -> Skipped (previous error)")
                 stats["skipped"] += 1
-                write_summary_file(stats, output_dir)
+                write_summary_file(
+                    stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
+                )
                 continue
             elif existing:
                 logger.info(
@@ -833,7 +848,9 @@ def process_findings(
                     summary=f"Verdict {verdict_label} — not actioned",
                 ),
             )
-            write_summary_file(stats, output_dir)
+            write_summary_file(
+                stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
+            )
             continue
 
         status, committed, error = _process_single_finding(
@@ -859,7 +876,9 @@ def process_findings(
             logger.info("  -> Change applied and committed")
             stats["committed"] += 1
 
-        write_summary_file(stats, output_dir)
+        write_summary_file(
+            stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
+        )
 
     return stats
 
@@ -1025,35 +1044,76 @@ def build_detailed_summary(output_dir: Path) -> str:
 
 
 def write_summary_file(
-    stats: dict[str, int], output_dir: Path, run_stats: RunStats | None = None
+    stats: dict[str, int],
+    output_dir: Path,
+    run_stats: RunStats | None = None,
+    *,
+    run_started_at: str,
+    coding_agent: str,
 ) -> None:
-    """Write the aggregate counters + per-finding table to review-action_summary.md."""
+    """Append this run's counters + per-finding table to review-action_summary.md.
+
+    Each run's block is wrapped in an HTML comment marker keyed by
+    run_started_at. Prior runs' blocks (everything before the marker) are
+    preserved verbatim; this run's own block is rebuilt fresh on every call
+    (once per finding) so a crash mid-run still leaves an accurate partial
+    record, without duplicating the block on every write.
+    """
     summary_file = output_dir / "review-action_summary.md"
+    marker = f"<!-- review-action-run: {run_started_at} -->"
+
+    prior_runs = ""
+    if summary_file.exists():
+        existing = summary_file.read_text(encoding="utf-8")
+        prior_runs = existing.partition(marker)[0]
+        if prior_runs:
+            prior_runs = prior_runs.rstrip("\n") + "\n\n"
+
+    lines = [
+        marker,
+        "# Review Action Summary",
+        "",
+        f"Run started:  {run_started_at}",
+        f"Coding agent: {coding_agent}",
+        "",
+        f"Restored:   {stats['restored']}",
+        f"Processed:  {stats['processed']}",
+        f"Committed:  {stats['committed']}",
+        f"Skipped:    {stats['skipped']}",
+        f"Errors:     {stats['errors']}",
+    ]
+    if run_stats is not None:
+        lines.append(
+            f"Total cost: ${run_stats.total_cost_usd:.4f} "
+            f"across {run_stats.num_calls} agent call(s)"
+        )
+    lines.append(f"Interrupted: {'yes' if stats['interrupted'] else 'no'}")
+    processed = stats['processed']
+    total = stats['total_findings']
+    lines.append(f"Progress: {processed} out of {total} findings processed")
+    lines.append("")
+    lines.append(build_detailed_summary(output_dir))
+    lines.append("")
+
     with summary_file.open("w", encoding="utf-8") as f:
-        f.write("# Review Action Summary\n\n")
-        f.write(f"Restored:   {stats['restored']}\n")
-        f.write(f"Processed:  {stats['processed']}\n")
-        f.write(f"Committed:  {stats['committed']}\n")
-        f.write(f"Skipped:    {stats['skipped']}\n")
-        f.write(f"Errors:     {stats['errors']}\n")
-        if run_stats is not None:
-            f.write(
-                f"Total cost: ${run_stats.total_cost_usd:.4f} "
-                f"across {run_stats.num_calls} agent call(s)\n"
-            )
-        f.write(f"Interrupted: {'yes' if stats['interrupted'] else 'no'}\n")
-        processed = stats['processed']
-        total = stats['total_findings']
-        f.write(f"Progress: {processed} out of {total} findings processed\n")
-        f.write("\n")
-        f.write(build_detailed_summary(output_dir))
-        f.write("\n")
+        f.write(prior_runs)
+        f.write("\n".join(lines))
 
 
 def print_summary(
-    stats: dict[str, int], output_dir: Path, run_stats: RunStats | None = None
+    stats: dict[str, int],
+    output_dir: Path,
+    run_stats: RunStats | None = None,
+    *,
+    run_started_at: str | None = None,
+    coding_agent: str | None = None,
 ) -> None:
     """Print the final processing summary and write it to file."""
+    if run_started_at is None:
+        run_started_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    if coding_agent is None:
+        coding_agent = "unknown"
+
     print("\n=== Review Action Harness Summary ===")
     print(f"Restored:   {stats['restored']}")
     print(f"Processed:  {stats['processed']}")
@@ -1066,7 +1126,9 @@ def print_summary(
             f"across {run_stats.num_calls} agent call(s)"
         )
 
-    write_summary_file(stats, output_dir, run_stats)
+    write_summary_file(
+        stats, output_dir, run_stats, run_started_at=run_started_at, coding_agent=coding_agent
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1102,6 +1164,9 @@ def main(argv: list[str] | None = None) -> int:
         model = args.model
     else:
         model = args.model or harness_config.generator.model
+
+    run_started_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    coding_agent = f"{provider} ({model})" if model else provider
 
     # Validate git repo
     try:
@@ -1149,9 +1214,13 @@ def main(argv: list[str] | None = None) -> int:
         skip_errors=args.skip_errors,
         skip_llm_checks=args.skip_llm_checks,
         quality_checks_override=args.quality_checks,
+        run_started_at=run_started_at,
+        coding_agent=coding_agent,
     )
 
-    print_summary(stats, args.output_dir, run_stats)
+    print_summary(
+        stats, args.output_dir, run_stats, run_started_at=run_started_at, coding_agent=coding_agent
+    )
 
     return 130 if stats["interrupted"] else (0 if stats["errors"] == 0 else 1)
 

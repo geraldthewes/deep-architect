@@ -31,6 +31,7 @@ from deep_architect.review_action_harness import (
     process_findings,
     read_action_taken,
     write_action_taken,
+    write_summary_file,
 )
 
 # ---------------------------------------------------------------------------
@@ -1741,13 +1742,26 @@ class TestSummaryFile:
             ),
         ):
             stats = process_findings(
-                output_dir, agent, 0, 0.0, HarnessConfig()
+                output_dir,
+                agent,
+                0,
+                0.0,
+                HarnessConfig(),
+                run_started_at="2026-01-01 00:00:00 UTC",
+                coding_agent="opencode (sonnet)",
             )
 
-        print_summary(stats, output_dir)
+        print_summary(
+            stats,
+            output_dir,
+            run_started_at="2026-01-01 00:00:00 UTC",
+            coding_agent="opencode (sonnet)",
+        )
 
         summary_text = (output_dir / "review-action_summary.md").read_text()
         assert "# Review Action Summary" in summary_text
+        assert "Run started:  2026-01-01 00:00:00 UTC" in summary_text
+        assert "Coding agent: opencode (sonnet)" in summary_text
         assert "Committed:  1" in summary_text
         assert "## Findings" in summary_text
         assert "[valid-0](./valid-0.md)" in summary_text
@@ -1791,12 +1805,71 @@ class TestSummaryFile:
             ),
         ):
             with pytest.raises(RuntimeError, match="boom mid-run"):
-                process_findings(output_dir, agent, 0, 0.0, HarnessConfig())
+                process_findings(
+                    output_dir,
+                    agent,
+                    0,
+                    0.0,
+                    HarnessConfig(),
+                    run_started_at="2026-01-01 00:00:00 UTC",
+                    coding_agent="opencode (sonnet)",
+                )
 
         summary_file = output_dir / "review-action_summary.md"
         assert summary_file.exists()
         summary_text = summary_file.read_text()
         assert "[valid-0](./valid-0.md)" in summary_text
         assert "Fixed" in summary_text
+
+    def test_summary_file_appends_across_runs_but_not_within_one(
+        self, tmp_path: Path
+    ) -> None:
+        """A second `review-action` invocation (different run_started_at)
+        appends a new block below the first run's, but repeated writes
+        within the same run (same run_started_at) update that run's block
+        in place instead of duplicating it."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+        (output_dir / "valid-0.md").write_text(VALID_COMMENT_MARKDOWN)
+
+        stats = {
+            "processed": 1,
+            "committed": 1,
+            "skipped": 0,
+            "errors": 0,
+            "restored": 0,
+            "total_findings": 1,
+            "interrupted": False,
+        }
+
+        run1_started_at = "2026-01-01 00:00:00 UTC"
+        run1_agent = "opencode (sonnet)"
+        run2_started_at = "2026-01-02 00:00:00 UTC"
+        run2_agent = "claude (opus)"
+
+        # Two writes within the same run (e.g. after each finding) — should
+        # not duplicate the run's block.
+        write_summary_file(
+            stats, output_dir, run_started_at=run1_started_at, coding_agent=run1_agent
+        )
+        write_summary_file(
+            stats, output_dir, run_started_at=run1_started_at, coding_agent=run1_agent
+        )
+
+        first_run_text = (output_dir / "review-action_summary.md").read_text()
+        assert first_run_text.count(f"Run started:  {run1_started_at}") == 1
+        assert first_run_text.count(f"Coding agent: {run1_agent}") == 1
+
+        # A later, separate run (different run_started_at) appends below.
+        write_summary_file(
+            stats, output_dir, run_started_at=run2_started_at, coding_agent=run2_agent
+        )
+
+        final_text = (output_dir / "review-action_summary.md").read_text()
+        assert f"Run started:  {run1_started_at}" in final_text
+        assert f"Coding agent: {run1_agent}" in final_text
+        assert f"Run started:  {run2_started_at}" in final_text
+        assert f"Coding agent: {run2_agent}" in final_text
+        assert final_text.index(run1_started_at) < final_text.index(run2_started_at)
 
 
