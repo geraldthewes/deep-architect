@@ -793,7 +793,7 @@ def process_findings(
         # Skip already-processed findings unless forced
         if not force and has_action_taken(md_file):
             existing = read_action_taken(md_file)
-            if existing and existing.status in ("completed", "rejected"):
+            if existing and existing.status in ("completed", "rejected", "skipped"):
                 logger.info(
                     "Skipping %s finding: %s (commit: %s)",
                     existing.status,

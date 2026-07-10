@@ -1262,6 +1262,43 @@ class TestProcessFindingsPersistence:
         assert stats["restored"] == 1
         assert stats["errors"] == 0
 
+    def test_skipped_finding_not_replayed_on_restart(
+        self, tmp_path: Path
+    ) -> None:
+        """A finding that terminated in 'skipped' must not be reprocessed.
+
+        'skipped' is deterministically terminal (warning-type, already
+        satisfied, or stale anchor) — replaying it re-skips it identically
+        every run, so it belongs with completed/rejected in the restore set.
+        """
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        md_file = output_dir / "valid-0.md"
+        md_file.write_text(VALID_COMMENT_MARKDOWN)
+
+        # Simulate that the finding was skipped in a prior run
+        write_action_taken(
+            md_file,
+            FindingStatus(
+                status="skipped",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="File already contained expected changes",
+            ),
+        )
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        stats = process_findings(
+            output_dir, agent, 0, 0.0, HarnessConfig()
+        )
+
+        assert stats["processed"] == 0
+        assert stats["restored"] == 1
+        assert stats["errors"] == 0
+        agent.apply_fix.assert_not_called()
+
     def test_error_finding_retried_on_restart(self, tmp_path: Path) -> None:
         """Test that a finding with error status is retried on restart."""
         output_dir = tmp_path / "feedback"
