@@ -11,7 +11,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deep_architect.coding_agents import CodingAgent, CodingAgentConfig, create_agent
+from deep_architect.coding_agents import (
+    CodingAgent,
+    CodingAgentConfig,
+    create_agent,
+    finding_already_satisfied,
+)
 from deep_architect.config import HarnessConfig, _resolve_default_config_path, load_config
 from deep_architect.git_ops import (
     get_modified_files,
@@ -434,6 +439,25 @@ def _process_single_finding(
             ),
         )
         return ("error", False, error_msg)
+
+    if original_content is not None:
+        already_satisfied_reason = finding_already_satisfied(
+            original_content, finding.existing_code, finding.suggested_code
+        )
+        if already_satisfied_reason is not None:
+            logger.info(
+                "Skipping %s: %s", finding.finding_id, already_satisfied_reason
+            )
+            write_action_taken(
+                md_file,
+                FindingStatus(
+                    status="skipped",
+                    timestamp=_now_iso(),
+                    summary=already_satisfied_reason,
+                ),
+            )
+            _commit_status_file(repo, md_file, finding.finding_id)
+            return ("skipped", False, already_satisfied_reason)
 
     repo_root = Path(repo.working_dir)
     checks_cfg = load_quality_checks(

@@ -126,3 +126,31 @@ def _file_reflects_fix(
         "No original content, trusting agent success for %s", file_path
     )
     return True
+
+
+def _normalize_block(text: str) -> str:
+    """Stripped, blank-free lines - tolerant matching of code snippets."""
+    lines = (ln.strip() for ln in text.replace("\r\n", "\n").split("\n"))
+    return "\n".join(ln for ln in lines if ln)
+
+
+def finding_already_satisfied(
+    file_content: str, existing_code: str, suggested_code: str
+) -> str | None:
+    """Return a human reason if the fix is a no-op, else None.
+
+    - suggested_code already present  -> "already applied"
+    - existing_code anchor absent     -> "stale/obsolete anchor"
+    Empty existing_code (pure addition) is never treated as stale.
+    """
+    body = _normalize_block(file_content)
+    sugg = _normalize_block(suggested_code)
+    if sugg and sugg in body:
+        return "Already applied — file already reflects the suggested code"
+    anchor = _normalize_block(existing_code)
+    if anchor and anchor not in body:
+        return (
+            "Stale finding — target code not found in file "
+            "(already changed or removed elsewhere)"
+        )
+    return None

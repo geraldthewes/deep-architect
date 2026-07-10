@@ -16,7 +16,7 @@ from deep_architect.coding_agents import (
     OpencodeAgent,
     create_agent,
 )
-from deep_architect.coding_agents.base import _file_reflects_fix
+from deep_architect.coding_agents.base import _file_reflects_fix, finding_already_satisfied
 from deep_architect.coding_agents.grok import _parse_grok_json
 
 # ---------------------------------------------------------------------------
@@ -234,6 +234,55 @@ class TestFileReflectsFix:
         target = tmp_path / "f.py"
         target.write_text("something unexpected\n", encoding="utf-8")
         assert _file_reflects_fix(target, "new code\n", None) is True
+
+
+# ---------------------------------------------------------------------------
+# finding_already_satisfied
+# ---------------------------------------------------------------------------
+
+
+class TestFindingAlreadySatisfied:
+
+    def test_normal_case_returns_none(self) -> None:
+        file_content = "def foo():\n    pass\n"
+        assert finding_already_satisfied(file_content, "def foo():", "def foo() -> None:") is None
+
+    def test_already_applied_returns_reason(self) -> None:
+        file_content = "def foo() -> None:\n    pass\n"
+        reason = finding_already_satisfied(
+            file_content, "def foo():", "def foo() -> None:"
+        )
+        assert reason is not None
+        assert "already" in reason.lower()
+
+    def test_stale_anchor_returns_reason(self) -> None:
+        # Mirrors the real eedcebe3-159 case: __init__ was already rewritten
+        # with parameters by a sibling finding, so the plain anchor is gone.
+        file_content = (
+            "class S3Service:\n"
+            "    def __init__(\n"
+            "        self,\n"
+            "        endpoint_url: str | None,\n"
+            "        bucket: str,\n"
+            "    ) -> None:\n"
+            "        pass\n"
+        )
+        reason = finding_already_satisfied(
+            file_content, "def __init__(self):", "def __init__(self) -> None:"
+        )
+        assert reason is not None
+        assert "stale" in reason.lower()
+
+    def test_empty_existing_code_addition_never_stale(self) -> None:
+        file_content = "def foo():\n    pass\n"
+        assert finding_already_satisfied(file_content, "", "def bar():\n    pass\n") is None
+
+    def test_indentation_only_difference_still_matches(self) -> None:
+        file_content = "class C:\n    def foo():\n        pass\n"
+        # Anchor written with different indentation than the file - should
+        # still be found via the stripped-line comparison.
+        anchor = "def foo():\n  pass"
+        assert finding_already_satisfied(file_content, anchor, "def foo() -> None:") is None
 
 
 # ---------------------------------------------------------------------------

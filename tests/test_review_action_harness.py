@@ -821,10 +821,10 @@ class TestQualityCheckLoop:
         repo.index.commit("add target with pre-existing failure")
 
         md_file = tmp_path / "finding-0.md"
-        md_file.write_text(_finding_markdown("target.py", "BAD", "BAD"))
+        md_file.write_text(_finding_markdown("target.py", "BAD", "BAD_UNRELATED"))
 
         async def apply_fix(*args: object, **kwargs: object) -> bool:
-            target.write_text("BAD\n")  # unrelated no-op touch, still has the marker
+            target.write_text("BAD_UNRELATED\n")  # unrelated touch, still has the marker
             return True
 
         agent = OpencodeAgent()
@@ -945,6 +945,75 @@ class TestQualityCheckLoop:
 
         assert status == "interrupted"
         assert committed is False
+
+
+# ---------------------------------------------------------------------------
+# Already-satisfied preflight (_process_single_finding)
+# ---------------------------------------------------------------------------
+
+
+class TestAlreadySatisfiedPreflight:
+    """A finding whose fix is a no-op is skipped before the agent is ever called."""
+
+    def _setup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[git.Repo, Path]:
+        monkeypatch.chdir(tmp_path)
+        repo = _init_repo(tmp_path)
+        target = tmp_path / "target.py"
+        target.write_text("GOOD\n")
+        repo.index.add(["target.py"])
+        repo.index.commit("add target")
+        return repo, target
+
+    def test_already_applied_skips_without_calling_agent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, target = self._setup(tmp_path, monkeypatch)
+        # suggested_code ("GOOD") already matches the file's current content.
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "OLD", "GOOD"))
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock()  # type: ignore[method-assign]
+
+        with patch(
+            "deep_architect.review_action_harness.validate_git_repo", return_value=repo
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, HarnessConfig()
+            )
+
+        assert status == "skipped"
+        assert committed is False
+        assert error is not None and "already" in error.lower()
+        agent.apply_fix.assert_not_called()
+
+        result = read_action_taken(md_file)
+        assert result is not None
+        assert result.status == "skipped"
+
+    def test_stale_anchor_skips_without_calling_agent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, target = self._setup(tmp_path, monkeypatch)
+        # existing_code ("BAD") is not present in the file — the anchor is stale,
+        # as when a sibling finding already rewrote this section of the file.
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "BAD", "BAD2"))
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock()  # type: ignore[method-assign]
+
+        with patch(
+            "deep_architect.review_action_harness.validate_git_repo", return_value=repo
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, HarnessConfig()
+            )
+
+        assert status == "skipped"
+        assert committed is False
+        assert error is not None and "stale" in error.lower()
+        agent.apply_fix.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
