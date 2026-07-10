@@ -593,6 +593,12 @@ Review-Finding: abc12345-0.md
 Generated-by: deep-architect review-action
 ```
 
+Files under the output directory (`feedback/` by default) are never committed by
+`review-action` itself — only the target code a fix touches is. Each finding's
+`## Action Taken` block and `review-action_summary.md` are written to disk (so resume and
+`--force` behave correctly across runs) but left as ephemeral working state; committing or
+gitignoring that directory is left to you.
+
 ### Quality checks
 
 After a coding agent applies a fix, `review-action` runs the **target repo's own quality

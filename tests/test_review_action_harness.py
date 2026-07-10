@@ -597,19 +597,16 @@ class TestProcessFindings:
         ):
             process_findings(output_dir, agent, 0, 0.0, HarnessConfig())
 
-        assert mock_git_commit.call_count == 2
-        fix_call, status_call = mock_git_commit.call_args_list
+        # review-action never commits its own findings/status files — the
+        # fix commit is the only commit made for this finding.
+        assert mock_git_commit.call_count == 1
+        (fix_call,) = mock_git_commit.call_args_list
         message = fix_call[0][1]
         assert message.startswith("fix: This function should be updated")
         assert "[valid-0]" in message.splitlines()[0]
         assert "This function should be updated for better performance" in message
         assert "Review-Finding: valid-0.md" in message
         assert "Generated-by: deep-architect review-action" in message
-
-        # The status write for this finding must be committed immediately,
-        # on its own, so it can't leak into the next finding's commit.
-        assert status_call[0][1] == "chore: record review-action status for valid-0"
-        assert status_call[0][2] == [output_dir / "valid-0.md"]
 
     def test_unparseable_valid_finding_is_skipped(
         self, tmp_path: Path
@@ -648,14 +645,23 @@ class TestQualityCheckLoop:
     load_quality_checks (discovery) and the LLM judge are patched.
     """
 
-    def _setup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[git.Repo, Path]:
+    def _setup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[git.Repo, Path, Path]:
+        """target.py lives at the repo root; the finding .md lives under a
+        separate feedback/ subdirectory — mirroring real usage, where the
+        output dir is never the same directory as the code being fixed.
+        This matters now that review-action excludes the output dir from
+        anything it commits."""
         monkeypatch.chdir(tmp_path)
         repo = _init_repo(tmp_path)
         target = tmp_path / "target.py"
         target.write_text("GOOD\n")
         repo.index.add(["target.py"])
         repo.index.commit("add target")
-        return repo, target
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+        return repo, target, output_dir
 
     def _checks_cfg(self) -> QualityChecksConfig:
         return QualityChecksConfig(
@@ -665,8 +671,8 @@ class TestQualityCheckLoop:
     def test_clean_first_iteration_commits_without_fix_check_failures(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repo, target = self._setup(tmp_path, monkeypatch)
-        md_file = tmp_path / "finding-0.md"
+        repo, target, output_dir = self._setup(tmp_path, monkeypatch)
+        md_file = output_dir / "finding-0.md"
         md_file.write_text(_finding_markdown("target.py", "GOOD", "GOOD2"))
 
         async def apply_fix(*args: object, **kwargs: object) -> bool:
@@ -694,8 +700,8 @@ class TestQualityCheckLoop:
     def test_programmatic_failure_then_fix_commits(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repo, target = self._setup(tmp_path, monkeypatch)
-        md_file = tmp_path / "finding-0.md"
+        repo, target, output_dir = self._setup(tmp_path, monkeypatch)
+        md_file = output_dir / "finding-0.md"
         md_file.write_text(_finding_markdown("target.py", "GOOD", "BAD"))
 
         async def apply_fix(*args: object, **kwargs: object) -> bool:
@@ -733,8 +739,8 @@ class TestQualityCheckLoop:
     def test_style_only_failure_judge_invoked_then_retry_commits(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repo, target = self._setup(tmp_path, monkeypatch)
-        md_file = tmp_path / "finding-0.md"
+        repo, target, output_dir = self._setup(tmp_path, monkeypatch)
+        md_file = output_dir / "finding-0.md"
         md_file.write_text(_finding_markdown("target.py", "GOOD", "GOOD2"))
 
         async def apply_fix(*args: object, **kwargs: object) -> bool:
@@ -792,8 +798,8 @@ class TestQualityCheckLoop:
     def test_persistent_failure_reaches_cap_restores_and_errors(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repo, target = self._setup(tmp_path, monkeypatch)
-        md_file = tmp_path / "finding-0.md"
+        repo, target, output_dir = self._setup(tmp_path, monkeypatch)
+        md_file = output_dir / "finding-0.md"
         md_file.write_text(_finding_markdown("target.py", "GOOD", "BAD"))
 
         async def apply_fix(*args: object, **kwargs: object) -> bool:
@@ -834,14 +840,10 @@ class TestQualityCheckLoop:
         assert committed is False
         assert error is not None and "2 iteration" in error
         assert fix_calls == 1  # cap=2 -> 1 fix attempt between the 2 check runs
-        # fail-closed: no commit of the (restored) fix content, but the error
-        # status write is still committed on its own so it can't leak into
-        # the next finding's commit.
-        mock_commit.assert_called_once_with(
-            repo,
-            "chore: record review-action status for finding-0",
-            [md_file],
-        )
+        # fail-closed: no commit of the (restored) fix content, and the error
+        # status write is never committed either — review-action never
+        # commits anything under the output dir.
+        mock_commit.assert_not_called()
         # fail-closed: working tree restored to the pre-fix baseline
         assert target.read_text() == "GOOD\n"
 
@@ -855,7 +857,9 @@ class TestQualityCheckLoop:
         repo.index.add(["target.py"])
         repo.index.commit("add target with pre-existing failure")
 
-        md_file = tmp_path / "finding-0.md"
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+        md_file = output_dir / "finding-0.md"
         md_file.write_text(_finding_markdown("target.py", "BAD", "BAD_UNRELATED"))
 
         async def apply_fix(*args: object, **kwargs: object) -> bool:
@@ -883,8 +887,8 @@ class TestQualityCheckLoop:
     def test_skip_llm_checks_never_invokes_judge(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repo, target = self._setup(tmp_path, monkeypatch)
-        md_file = tmp_path / "finding-0.md"
+        repo, target, output_dir = self._setup(tmp_path, monkeypatch)
+        md_file = output_dir / "finding-0.md"
         md_file.write_text(_finding_markdown("target.py", "GOOD", "GOOD2"))
 
         async def apply_fix(*args: object, **kwargs: object) -> bool:
@@ -915,8 +919,8 @@ class TestQualityCheckLoop:
     def test_check_max_fix_iterations_zero_report_only_never_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repo, target = self._setup(tmp_path, monkeypatch)
-        md_file = tmp_path / "finding-0.md"
+        repo, target, output_dir = self._setup(tmp_path, monkeypatch)
+        md_file = output_dir / "finding-0.md"
         md_file.write_text(_finding_markdown("target.py", "GOOD", "BAD"))
 
         async def apply_fix(*args: object, **kwargs: object) -> bool:
@@ -949,8 +953,8 @@ class TestQualityCheckLoop:
     ) -> None:
         import deep_architect.review_action_harness as rah
 
-        repo, target = self._setup(tmp_path, monkeypatch)
-        md_file = tmp_path / "finding-0.md"
+        repo, target, output_dir = self._setup(tmp_path, monkeypatch)
+        md_file = output_dir / "finding-0.md"
         md_file.write_text(_finding_markdown("target.py", "GOOD", "GOOD2"))
 
         async def apply_fix(*args: object, **kwargs: object) -> bool:
@@ -1307,12 +1311,11 @@ class TestProcessFindingsPersistence:
     def test_no_cross_finding_status_contamination(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Regression test: a finding's own status write must land in a
-        commit that touches only that finding's own .md file — never
-        bystander-committed alongside a *different* finding's fix, which is
-        what happened when write_action_taken() ran after git_commit()
-        without its own commit (the status write sat dirty until the next
-        finding's get_modified_files() swept it in)."""
+        """Regression test: a finding's own status write must never leak
+        into a *different* finding's fix commit. review-action never commits
+        anything under the output dir at all, so a dirty status write simply
+        can't be swept into the next finding's git_commit() call — the
+        output dir is excluded from commit_paths at the source."""
         monkeypatch.chdir(tmp_path)
         repo = _init_repo(tmp_path)
         output_dir = tmp_path / "feedback"
@@ -1365,21 +1368,77 @@ class TestProcessFindingsPersistence:
         assert status_a is not None and status_a.status == "completed"
         assert status_b is not None and status_b.status == "completed"
 
-        # No commit may touch both findings' .md files, and each finding's
-        # own .md file must actually be committed (not left dirty) — unlike
-        # review-action_summary.md, which write_summary_file() updates
-        # continuously and is out of scope for this fix.
+        # Status writes are persisted to disk (read_action_taken above
+        # proves that) but are never committed — they stay dirty, and that's
+        # correct: findings under feedback/ are ephemeral working state.
         dirty_paths = {d.a_path for d in repo.index.diff(None)} | set(repo.untracked_files)
-        assert "feedback/aaa-1.md" not in dirty_paths
-        assert "feedback/bbb-2.md" not in dirty_paths
-        review_action_commits = [
-            c for c in repo.iter_commits()
-            if c.message.startswith(("fix:", "chore: record review-action status"))
-        ]
-        assert len(review_action_commits) == 4  # 2 fix + 2 status commits
+        assert "feedback/aaa-1.md" in dirty_paths
+        assert "feedback/bbb-2.md" in dirty_paths
+
+        # Exactly one commit per finding — the fix itself — and none of them
+        # touch anything under feedback/.
+        review_action_commits = [c for c in repo.iter_commits() if c.message.startswith("fix:")]
+        assert len(review_action_commits) == 2
         for commit in review_action_commits:
             touched = set(commit.stats.files.keys())
-            assert not ({"feedback/aaa-1.md", "feedback/bbb-2.md"} <= touched)
+            assert not any(path.startswith("feedback/") for path in touched)
+
+    def test_dirty_sibling_finding_file_excluded_from_fix_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sibling finding's status write can be sitting dirty in the
+        output dir (untracked, e.g. processed earlier in the same run) when
+        this finding's fix is about to be committed. get_modified_files()
+        would otherwise sweep it into this commit via commit_paths — this is
+        exactly the leak _commit_status_file() used to paper over by
+        committing status immediately; output-dir exclusion prevents it at
+        the source instead."""
+        monkeypatch.chdir(tmp_path)
+        repo = _init_repo(tmp_path)
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+
+        target = tmp_path / "target.py"
+        target.write_text("GOOD\n")
+        repo.index.add(["target.py"])
+        repo.index.commit("add target")
+
+        md_file = output_dir / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "GOOD2"))
+
+        # A sibling finding's dirty, uncommitted status write already sitting
+        # in the output dir — untracked, exactly as it now always is.
+        sibling = output_dir / "sibling-1.md"
+        sibling.write_text("# Sibling finding\n\n## Action Taken\nStatus: completed\n")
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("GOOD2\n")
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        with (
+            patch("deep_architect.review_action_harness.validate_git_repo", return_value=repo),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=QualityChecksConfig(),
+            ),
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, HarnessConfig()
+            )
+
+        assert (status, committed, error) == ("committed", True, None)
+
+        touched = set(repo.head.commit.stats.files.keys())
+        assert touched == {"target.py"}
+
+        # The sibling and this finding's own status write are both still
+        # sitting dirty on disk — review-action never touched them.
+        assert "feedback/sibling-1.md" in set(repo.untracked_files)
+        assert "feedback/finding-0.md" in set(repo.untracked_files)
 
     def test_skip_errors_flag(self, tmp_path: Path) -> None:
         """Test that --skip-errors skips errored findings."""

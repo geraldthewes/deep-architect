@@ -37,8 +37,6 @@ from deep_architect.quality_checks import (
 )
 
 if TYPE_CHECKING:
-    import git
-
     from deep_architect.agents.client import RunStats
 
 logger = get_logger(__name__)
@@ -64,6 +62,24 @@ DEFAULT_OUTPUT_DIR = Path("feedback")
 # or written back to as if they were one (includes review-action's own
 # summary file, which lives alongside the findings it reports on).
 _NON_FINDING_FILES = frozenset({"SUMMARY.md", "INDEX.md", "review-action_summary.md"})
+
+
+def _exclude_output_dir(paths: list[Path], output_dir: Path) -> list[Path]:
+    """Drop paths under output_dir.
+
+    Finding markdown and the summary file are review-action's own ephemeral
+    working state (review-analyzer's scratch output plus the Action Taken
+    audit trail appended on disk) — they must never be staged into a git
+    commit, only the actual code files a fix touches.
+    """
+    output_dir_resolved = output_dir.resolve()
+    kept = []
+    for p in paths:
+        resolved = p.resolve()
+        if resolved == output_dir_resolved or output_dir_resolved in resolved.parents:
+            continue
+        kept.append(p)
+    return kept
 
 
 @dataclass
@@ -346,20 +362,6 @@ def _render_failure_report(
 # ---------------------------------------------------------------------------
 
 
-def _commit_status_file(repo: git.Repo, md_file: Path, finding_id: str) -> None:
-    """Commit a finding's own status write immediately.
-
-    Without this, the status write sits as a dirty file until the *next*
-    finding's get_modified_files() sweeps it into that finding's commit —
-    misattributing it and breaking resume for the current finding.
-    """
-    git_commit(
-        repo,
-        f"chore: record review-action status for {finding_id}",
-        [md_file],
-    )
-
-
 def _process_single_finding(
     md_file: Path,
     agent: CodingAgent,
@@ -459,7 +461,6 @@ def _process_single_finding(
                     summary=already_satisfied_reason,
                 ),
             )
-            _commit_status_file(repo, md_file, finding.finding_id)
             return ("skipped", False, already_satisfied_reason)
 
     repo_root = Path(repo.working_dir)
@@ -496,7 +497,6 @@ def _process_single_finding(
                     error_message=interrupt_msg,
                 ),
             )
-            _commit_status_file(repo, md_file, finding.finding_id)
             return ("interrupted", False, interrupt_msg)
 
         try:
@@ -545,7 +545,6 @@ def _process_single_finding(
                 error_message=error_msg,
             ),
         )
-        _commit_status_file(repo, md_file, finding.finding_id)
         return (
             "error",
             False,
@@ -575,10 +574,9 @@ def _process_single_finding(
                     error_message=interrupt_msg,
                 ),
             )
-            _commit_status_file(repo, md_file, finding.finding_id)
             return ("interrupted", False, interrupt_msg)
 
-        modified = get_modified_files(repo)
+        modified = _exclude_output_dir(get_modified_files(repo), md_file.parent)
         matched = match_profiles(checks_cfg, modified, repo_root)
         prog_failures = new_failures(
             run_checks(matched, checks_cfg, repo_root), baseline, modified
@@ -648,7 +646,6 @@ def _process_single_finding(
                 error_message=error_msg,
             ),
         )
-        _commit_status_file(repo, md_file, finding.finding_id)
         return ("error", False, error_msg)
 
     # Commit changes
@@ -680,7 +677,6 @@ def _process_single_finding(
                     commit_sha=commit_sha,
                 ),
             )
-            _commit_status_file(repo, md_file, finding.finding_id)
             return ("committed", True, None)
         else:
             logger.info(
@@ -695,7 +691,6 @@ def _process_single_finding(
                     summary="File already contained expected changes",
                 ),
             )
-            _commit_status_file(repo, md_file, finding.finding_id)
             return ("skipped", False, None)
     except Exception as e:
         error_msg = (
