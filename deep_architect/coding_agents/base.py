@@ -39,6 +39,7 @@ class CodingAgent(Protocol):
         suggested_code: str,
         context: str = "",
         original_content: str | None = None,
+        review_comment: str = "",
     ) -> bool:
         """Apply a fix to a file. Returns True if successful."""
 
@@ -98,7 +99,7 @@ def _file_reflects_fix(
     normalized_current = current_content.replace("\r\n", "\n")
     normalized_suggested = suggested_code.replace("\r\n", "\n")
 
-    if normalized_current.strip() == normalized_suggested.strip():
+    if normalized_suggested.strip() and normalized_current.strip() == normalized_suggested.strip():
         logger.debug(
             "Fix applied successfully for %s (file matches expected)",
             file_path,
@@ -126,6 +127,23 @@ def _file_reflects_fix(
         "No original content, trusting agent success for %s", file_path
     )
     return True
+
+
+def format_suggested_code_section(suggested_code: str) -> str:
+    """Render the Suggested Code section, or an instruction to derive it.
+
+    Some findings (prose-only review comments with no concrete replacement)
+    have no suggested code. In that case the agent must work out the edit
+    from the Review Comment and Analysis instead of being shown an empty
+    fenced block, which would read as "replace this code with nothing."
+    """
+    if suggested_code.strip():
+        return f"**Suggested Code**:\n```\n{suggested_code}\n```\n\n"
+    return (
+        "No suggested code was provided. Derive the exact change from the "
+        "Review Comment and Analysis below, then apply it to the Existing "
+        "Code shown above. Change nothing else.\n\n"
+    )
 
 
 def _normalize_block(text: str) -> str:

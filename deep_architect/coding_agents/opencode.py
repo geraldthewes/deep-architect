@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from deep_architect.coding_agents.base import _file_reflects_fix
+from deep_architect.coding_agents.base import _file_reflects_fix, format_suggested_code_section
 from deep_architect.logger import get_logger
 
 logger = get_logger(__name__)
@@ -54,7 +54,8 @@ class OpencodeAgent:
                 "The feedback file contains:\n"
                 "- File to modify\n"
                 "- Existing code (what's currently there)\n"
-                "- Suggested code (what it should be changed to)\n"
+                "- Suggested code (what it should be changed to), if provided —\n"
+                "  otherwise derive the change from the review comment/analysis\n"
                 "- Context/explanation of why the change is needed\n\n"
                 "When committing, use the format: `fix: {brief_description} [{file_path}]`\n"
                 "If no changes are needed (already fixed), that's also acceptable."
@@ -67,6 +68,7 @@ class OpencodeAgent:
         suggested_code: str,
         context: str = "",
         original_content: str | None = None,
+        review_comment: str = "",
     ) -> bool:
         """Apply fix using opencode subprocess with file-based input."""
         # Use absolute path to avoid any path resolution issues
@@ -89,8 +91,9 @@ class OpencodeAgent:
             feedback_content = (
                 f"**File**: {absolute_file_path}\n\n"
                 f"**Existing Code**:\n```\n{existing_code}\n```\n\n"
-                f"**Suggested Code**:\n```\n{suggested_code}\n```\n\n"
-                f"**Review Comment**: {context}\n"
+                f"{format_suggested_code_section(suggested_code)}"
+                f"**Review Comment**: {review_comment}\n\n"
+                f"**Analysis**: {context}\n"
             )
             with tempfile.NamedTemporaryFile(
                 mode='w', suffix='.md', delete=False, encoding='utf-8'

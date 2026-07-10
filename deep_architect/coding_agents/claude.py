@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from deep_architect.coding_agents.base import _file_reflects_fix
+from deep_architect.coding_agents.base import _file_reflects_fix, format_suggested_code_section
 from deep_architect.logger import get_logger
 
 logger = get_logger(__name__)
@@ -50,6 +50,7 @@ class ClaudeSDKAgent:
         suggested_code: str,
         context: str = "",
         original_content: str | None = None,
+        review_comment: str = "",
     ) -> bool:
         """Apply fix using the Claude Agent SDK, via the shared client harness."""
         from deep_architect.agents.client import (  # noqa: PLC0415
@@ -72,8 +73,9 @@ class ClaudeSDKAgent:
         prompt = (
             f"Please apply the following code change to {absolute_file_path}:\n\n"
             f"Existing code:\n```\n{existing_code}\n```\n\n"
-            f"Replace with:\n```\n{suggested_code}\n```\n\n"
-            f"Context: {context}\n\n"
+            f"{format_suggested_code_section(suggested_code)}"
+            f"Review Comment: {review_comment}\n\n"
+            f"Analysis: {context}\n\n"
             "Make the change and confirm it was applied correctly. "
             "Do not commit the change."
         )

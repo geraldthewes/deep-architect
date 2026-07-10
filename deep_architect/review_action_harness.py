@@ -122,13 +122,17 @@ def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:
         re.DOTALL,
     )
 
-    if (
-        file_match is None
-        or existing_code_match is None
-        or suggested_code_match is None
-        or review_comment_match is None
-    ):
-        logger.warning("Missing required sections in %s", file_path)
+    if file_match is None or existing_code_match is None or review_comment_match is None:
+        missing = [
+            name
+            for name, match in (
+                ("File", file_match),
+                ("Existing Code", existing_code_match),
+                ("Review Comment", review_comment_match),
+            )
+            if match is None
+        ]
+        logger.warning("Missing required sections in %s: %s", file_path, ", ".join(missing))
         return None
 
     file_str = file_match.group(1).strip()
@@ -157,7 +161,7 @@ def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:
         line_start=line_start,
         line_end=line_end,
         existing_code=existing_code_match.group(1).strip(),
-        suggested_code=suggested_code_match.group(1).strip(),
+        suggested_code=suggested_code_match.group(1).strip() if suggested_code_match else "",
         review_comment=review_comment_match.group(1).strip(),
         analysis=analysis_match.group(1).strip() if analysis_match else "",
         finding_id=finding_id,
@@ -374,10 +378,9 @@ def _process_single_finding(
     """
     finding = parse_markdown_finding(md_file)
     if finding is None:
-        # Warning-type findings have no code blocks — skip, don't error
-        skip_msg = (
-            f"Cannot parse action from {md_file.name} (no code blocks)"
-        )
+        # Warning-type findings have no File/Existing Code/Review Comment
+        # anchor to act on — skip, don't error.
+        skip_msg = f"{md_file.name}: warning-type finding — no actionable code change"
         write_action_taken(
             md_file,
             FindingStatus(
@@ -504,6 +507,7 @@ def _process_single_finding(
                     finding.suggested_code,
                     finding.analysis,
                     original_content=original_content,
+                    review_comment=finding.review_comment,
                 )
             )
 
@@ -992,7 +996,13 @@ def build_detailed_summary(output_dir: Path) -> str:
 
         finding = parse_markdown_finding(md_file)
         finding_id = finding.finding_id if finding else md_file.stem
-        file_ref = str(finding.file_path) if finding else "(unparseable)"
+        if finding is not None:
+            file_ref = str(finding.file_path)
+        else:
+            bare_file_match = re.search(
+                r"-?\s*\*\*File\*\*:?\s*(.+)", md_file.read_text(encoding="utf-8")
+            )
+            file_ref = bare_file_match.group(1).strip() if bare_file_match else "(unparseable)"
 
         action = read_action_taken(md_file)
         if action is None:

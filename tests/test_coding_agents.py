@@ -235,6 +235,15 @@ class TestFileReflectsFix:
         target.write_text("something unexpected\n", encoding="utf-8")
         assert _file_reflects_fix(target, "new code\n", None) is True
 
+    def test_empty_suggested_code_unchanged_file_returns_false(
+        self, tmp_path: Path
+    ) -> None:
+        """suggested_code='' (derive-it-yourself findings) must not be treated
+        as trivially satisfied by an empty/whitespace-only file."""
+        target = tmp_path / "f.py"
+        target.write_text("   \n", encoding="utf-8")
+        assert _file_reflects_fix(target, "", "   \n") is False
+
 
 # ---------------------------------------------------------------------------
 # finding_already_satisfied
