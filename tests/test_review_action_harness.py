@@ -1,6 +1,7 @@
 """Unit tests for deep_architect.review_action_harness."""
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1631,7 +1632,9 @@ class TestParseArgs:
 
 class TestBuildDetailedSummary:
 
-    def test_table_rows_cover_every_outcome(self, tmp_path: Path) -> None:
+    def test_table_rows_cover_every_outcome(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         output_dir = tmp_path / "feedback"
         output_dir.mkdir()
 
@@ -1687,7 +1690,13 @@ class TestBuildDetailedSummary:
         # A stale summary file from a prior run must be excluded entirely.
         (output_dir / "review-action_summary.md").write_text("# old\n")
 
-        table = build_detailed_summary(output_dir)
+        with caplog.at_level(logging.WARNING):
+            table = build_detailed_summary(output_dir)
+
+        # Rendering the summary must not emit "Missing required sections"
+        # warnings for rejected/warning-type findings that legitimately lack a
+        # code anchor — that message belongs only to the fix path.
+        assert "Missing required sections" not in caplog.text
 
         assert "[review-action_summary]" not in table
 

@@ -1008,15 +1008,11 @@ def build_detailed_summary(output_dir: Path) -> str:
         if md_file.name in _NON_FINDING_FILES:
             continue
 
-        finding = parse_markdown_finding(md_file)
-        finding_id = finding.finding_id if finding else md_file.stem
-        if finding is not None:
-            file_ref = str(finding.file_path)
-        else:
-            bare_file_match = re.search(
-                r"-?\s*\*\*File\*\*:?\s*(.+)", md_file.read_text(encoding="utf-8")
-            )
-            file_ref = bare_file_match.group(1).strip() if bare_file_match else "(unparseable)"
+        finding_id = md_file.stem
+        bare_file_match = re.search(
+            r"-?\s*\*\*File\*\*:?\s*(.+)", md_file.read_text(encoding="utf-8")
+        )
+        file_ref = bare_file_match.group(1).strip() if bare_file_match else "(unparseable)"
 
         action = read_action_taken(md_file)
         if action is None:
