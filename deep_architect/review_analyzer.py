@@ -490,10 +490,18 @@ def generate_markdown_content(
 def generate_summary_report(
     counts: dict[str, int],
     total: int,
+    *,
+    model: str,
 ) -> str:
-    """Build a human-readable summary of verdict distribution."""
+    """Build a human-readable summary of verdict distribution.
+
+    *model* is the opencode model id used for analysis; the summary always
+    labels the backend as ``opencode`` (the only analyzer backend today).
+    """
     lines: list[str] = [
         "# Review Analysis Summary",
+        "",
+        f"Coding agent: opencode ({model})",
         "",
         f"Total findings processed: {total}",
         "",
@@ -595,7 +603,7 @@ def _run_analysis(
     if not summary_only:
         log.info("Per-finding reports written to %s", output_dir)
 
-    summary = generate_summary_report(counts, len(findings))
+    summary = generate_summary_report(counts, len(findings), model=model)
     print("\n" + summary)
 
     if not summary_only:

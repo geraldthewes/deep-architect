@@ -462,15 +462,21 @@ class TestGenerateSummaryReport:
 
     def test_basic(self) -> None:
         counts = {"valid": 2, "rejected": 1, "backlog": 0}
-        report = generate_summary_report(counts, 3)
+        report = generate_summary_report(counts, 3, model="standard/coder")
+        assert "Coding agent: opencode (standard/coder)" in report
         assert "Total findings processed: 3" in report
         assert "VALID: 2 (66.7%)" in report
         assert "REJECTED: 1 (33.3%)" in report
         assert "BACKLOG: 0 (0.0%)" in report
 
     def test_zero_total(self) -> None:
-        report = generate_summary_report({}, 0)
+        report = generate_summary_report({}, 0, model="standard/coder")
+        assert "Coding agent: opencode (standard/coder)" in report
         assert "Total findings processed: 0" in report
+
+    def test_includes_model(self) -> None:
+        report = generate_summary_report({}, 0, model="custom/model")
+        assert "Coding agent: opencode (custom/model)" in report
 
 
 # ---------------------------------------------------------------------------

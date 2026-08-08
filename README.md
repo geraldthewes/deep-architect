@@ -484,7 +484,7 @@ uv run review-analyzer code-review.json \
 
 ### Output
 
-The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to the output directory, plus a `SUMMARY.md` with verdict counts and percentages.
+The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to the output directory, plus a `SUMMARY.md` with the coding agent/model used (`opencode` + `--model`), verdict counts, and percentages.
 
 ### Configuration
 
