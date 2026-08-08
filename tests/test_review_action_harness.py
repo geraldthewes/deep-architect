@@ -20,7 +20,10 @@ from deep_architect.models.checks import (
 )
 from deep_architect.review_action_harness import (
     FindingStatus,
+    PlainReporter,
+    ProgressEvent,
     ReviewFinding,
+    RunMeta,
     _process_single_finding,
     build_detailed_summary,
     get_verdict,
@@ -31,6 +34,7 @@ from deep_architect.review_action_harness import (
     print_summary,
     process_findings,
     read_action_taken,
+    should_use_tui,
     write_action_taken,
     write_summary_file,
 )
@@ -1661,6 +1665,18 @@ class TestParseArgs:
         with pytest.raises(SystemExit):
             parse_args(["feedback/", "--provider", "bogus"])
 
+    def test_tui_flags(self) -> None:
+        args = parse_args(["feedback/", "--tui"])
+        assert args.tui is True
+        assert args.no_tui is False
+        args = parse_args(["feedback/", "--no-tui"])
+        assert args.tui is False
+        assert args.no_tui is True
+
+    def test_tui_mutual_exclusion(self) -> None:
+        with pytest.raises(SystemExit):
+            parse_args(["feedback/", "--tui", "--no-tui"])
+
 
 # ---------------------------------------------------------------------------
 # build_detailed_summary
@@ -1918,4 +1934,105 @@ class TestSummaryFile:
         assert f"Coding agent: {run2_agent}" in final_text
         assert final_text.index(run1_started_at) < final_text.index(run2_started_at)
 
+
+# ---------------------------------------------------------------------------
+# should_use_tui / PlainReporter / progress callbacks
+# ---------------------------------------------------------------------------
+
+
+class TestShouldUseTui:
+
+    def test_force_true(self) -> None:
+        assert should_use_tui(force_tui=True) is True
+
+    def test_force_false(self) -> None:
+        assert should_use_tui(force_tui=False) is False
+
+    def test_auto_tty(self) -> None:
+        stream = MagicMock()
+        stream.isatty.return_value = True
+        assert should_use_tui(force_tui=None, stream=stream) is True
+
+    def test_auto_non_tty(self) -> None:
+        stream = MagicMock()
+        stream.isatty.return_value = False
+        assert should_use_tui(force_tui=None, stream=stream) is False
+
+
+class TestPlainReporter:
+
+    def test_start_and_on_result_prints(self, capsys: pytest.CaptureFixture[str]) -> None:
+        meta = RunMeta(
+            output_dir=Path("feedback"),
+            provider="opencode",
+            model="sonnet",
+            dry_run=True,
+            force=False,
+            skip_errors=False,
+            total_findings=3,
+            coding_agent="opencode (sonnet)",
+        )
+        reporter = PlainReporter()
+        reporter.start(meta)
+        reporter.on_result(
+            ProgressEvent(
+                completed=1,
+                total=3,
+                finding_id="abc-0",
+                file_path="src/foo.py",
+                outcome="completed",
+                summary="Fix applied",
+                commit_sha="deadbeef",
+                elapsed_s=1.5,
+                stats={"committed": 1},
+            )
+        )
+        reporter.finish({"committed": 1, "processed": 1})
+        out = capsys.readouterr().out
+        assert "Applying fixes for 3 findings" in out
+        assert "Feedback dir: feedback/" in out
+        assert "dry-run" in out
+        assert "abc-0: completed" in out
+        assert "deadbeef" in out
+
+
+class TestProcessFindingsCallback:
+
+    def test_on_result_called_for_rejected_and_restored(
+        self, tmp_path: Path
+    ) -> None:
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+        (output_dir / "rejected-0.md").write_text(REJECTED_MARKDOWN)
+        completed = output_dir / "done-0.md"
+        completed.write_text(VALID_COMMENT_MARKDOWN)
+        write_action_taken(
+            completed,
+            FindingStatus(
+                status="completed",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="already fixed",
+                commit_sha="abc12345",
+            ),
+        )
+
+        events: list[ProgressEvent] = []
+        agent = OpencodeAgent()
+        stats = process_findings(
+            output_dir,
+            agent,
+            0,
+            0.0,
+            HarnessConfig(),
+            on_result=events.append,
+        )
+
+        assert stats["processed"] == 1  # rejected counts as processed
+        assert stats["restored"] == 1
+        assert stats["skipped"] == 1
+        assert len(events) == 2
+        outcomes = {e.outcome for e in events}
+        assert outcomes == {"rejected", "restored"}
+        assert {e.completed for e in events} == {1, 2}
+        assert all(e.total == 2 for e in events)
 

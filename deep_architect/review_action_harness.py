@@ -6,10 +6,12 @@ import logging
 import re
 import signal
 import sys
-from dataclasses import dataclass
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, TextIO
 
 from deep_architect import feedback_report as _feedback_report
 from deep_architect.coding_agents import (
@@ -94,6 +96,112 @@ class FindingStatus:
     summary: str = ""
     commit_sha: str | None = None
     error_message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Progress reporting (plain text or Rich Live TUI)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RunMeta:
+    """Immutable run metadata shown in the progress header."""
+
+    output_dir: Path
+    provider: str
+    model: str | None
+    dry_run: bool
+    force: bool
+    skip_errors: bool
+    total_findings: int
+    coding_agent: str
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """One finding completion (or mid-finding phase update) during a run."""
+
+    completed: int
+    total: int
+    finding_id: str
+    file_path: str
+    outcome: str  # completed|error|skipped|rejected|dry-run|interrupted|restored
+    summary: str
+    commit_sha: str | None
+    elapsed_s: float
+    phase: str | None = None
+    stats: dict[str, int] = field(default_factory=dict)
+
+
+class ProgressReporter(Protocol):
+    """Progress sink used by the action pipeline (plain text or TUI)."""
+
+    def start(self, meta: RunMeta) -> None:
+        """Called once before processing begins."""
+
+    def on_result(self, event: ProgressEvent) -> None:
+        """Called after each finding is finished (including skips/restores)."""
+
+    def on_phase(self, event: ProgressEvent) -> None:
+        """Called for mid-finding phase updates (does not advance completed)."""
+
+    def finish(self, stats: dict[str, int]) -> None:
+        """Called after all findings are processed (or on early exit)."""
+
+
+def should_use_tui(
+    *,
+    force_tui: bool | None = None,
+    stream: TextIO | None = None,
+) -> bool:
+    """Return whether the live TUI should be used.
+
+    *force_tui* is ``True`` for ``--tui``, ``False`` for ``--no-tui``, and
+    ``None`` for auto-detect via ``stream.isatty()`` (default: stdout).
+    """
+    if force_tui is True:
+        return True
+    if force_tui is False:
+        return False
+    target = stream if stream is not None else sys.stdout
+    return bool(target.isatty())
+
+
+class PlainReporter:
+    """Plain-text progress reporter for non-interactive terminals and CI."""
+
+    def start(self, meta: RunMeta) -> None:
+        print(
+            f"Applying fixes for {meta.total_findings} findings "
+            f"(agent={meta.coding_agent})…"
+        )
+        print(f"Feedback dir: {meta.output_dir}/")
+        flags: list[str] = []
+        if meta.dry_run:
+            flags.append("dry-run")
+        if meta.force:
+            flags.append("force")
+        if meta.skip_errors:
+            flags.append("skip-errors")
+        if flags:
+            print(f"Flags: {', '.join(flags)}")
+
+    def on_result(self, event: ProgressEvent) -> None:
+        pct = round(event.completed / event.total * 100) if event.total else 0
+        commit_bit = f" commit={event.commit_sha}" if event.commit_sha else ""
+        print(
+            f"  [{event.completed}/{event.total} {pct}%] "
+            f"{event.finding_id}: {event.outcome}"
+            f"{commit_bit} — {event.summary}"
+        )
+
+    def on_phase(self, event: ProgressEvent) -> None:
+        # Keep plain mode quiet mid-finding; logger already covers detail.
+        _ = event
+
+    def finish(self, stats: dict[str, int]) -> None:
+        # Final counters are printed by print_summary after the pipeline returns.
+        _ = stats
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +365,36 @@ def _render_failure_report(
 # ---------------------------------------------------------------------------
 
 
+def _emit_phase(
+    on_phase: Callable[[ProgressEvent], None] | None,
+    *,
+    finding_id: str,
+    file_path: str,
+    phase: str,
+    completed: int,
+    total: int,
+    t0: float,
+    stats: dict[str, int] | None = None,
+) -> None:
+    """Notify the progress reporter of a mid-finding phase (no completion advance)."""
+    if on_phase is None:
+        return
+    on_phase(
+        ProgressEvent(
+            completed=completed,
+            total=total,
+            finding_id=finding_id,
+            file_path=file_path,
+            outcome="in-progress",
+            summary=phase,
+            commit_sha=None,
+            elapsed_s=time.monotonic() - t0,
+            phase=phase,
+            stats=dict(stats) if stats else {},
+        )
+    )
+
+
 def _process_single_finding(
     md_file: Path,
     agent: CodingAgent,
@@ -266,6 +404,12 @@ def _process_single_finding(
     harness_config: HarnessConfig,
     skip_llm_checks: bool = False,
     quality_checks_override: Path | None = None,
+    *,
+    on_phase: Callable[[ProgressEvent], None] | None = None,
+    completed: int = 0,
+    total: int = 0,
+    t0: float | None = None,
+    stats: dict[str, int] | None = None,
 ) -> tuple[str, bool, str | None]:
     """Process a single VALID finding. Returns (status, committed, error).
 
@@ -273,6 +417,7 @@ def _process_single_finding(
     After each action, a ## Action Taken section is appended to the finding
     markdown file so interrupted runs can be resumed safely.
     """
+    started = t0 if t0 is not None else time.monotonic()
     finding = parse_markdown_finding(md_file)
     if finding is None:
         # Warning-type findings have no File/Existing Code/Review Comment
@@ -379,6 +524,17 @@ def _process_single_finding(
     success = False
     last_error: str | None = None
 
+    _emit_phase(
+        on_phase,
+        finding_id=finding.finding_id,
+        file_path=str(finding.file_path),
+        phase="applying",
+        completed=completed,
+        total=total,
+        t0=started,
+        stats=stats,
+    )
+
     for attempt in range(max_retries + 1):
         # Check for interrupt signal
         if _shutdown_requested:
@@ -471,6 +627,22 @@ def _process_single_finding(
             )
             return ("interrupted", False, interrupt_msg)
 
+        phase_label = (
+            f"quality-checks {iteration}/{max_iterations}"
+            if not report_only
+            else "quality-checks (report-only)"
+        )
+        _emit_phase(
+            on_phase,
+            finding_id=finding.finding_id,
+            file_path=str(finding.file_path),
+            phase=phase_label,
+            completed=completed,
+            total=total,
+            t0=started,
+            stats=stats,
+        )
+
         modified = _exclude_output_dir(get_modified_files(repo), md_file.parent)
         matched = match_profiles(checks_cfg, modified, repo_root)
         prog_failures = new_failures(
@@ -545,6 +717,16 @@ def _process_single_finding(
 
     # Commit changes
     try:
+        _emit_phase(
+            on_phase,
+            finding_id=finding.finding_id,
+            file_path=str(finding.file_path),
+            phase="committing",
+            completed=completed,
+            total=total,
+            t0=started,
+            stats=stats,
+        )
         comment_snippet = finding.review_comment[:50]
         suffix = (
             "..." if len(finding.review_comment) > 50 else ""
@@ -607,6 +789,55 @@ def _process_single_finding(
         )
 
 
+def _file_ref_for_finding(md_file: Path) -> str:
+    """Best-effort target file path from a finding markdown (for progress UI)."""
+    try:
+        content = md_file.read_text(encoding="utf-8")
+    except OSError:
+        return md_file.name
+    match = re.search(r"-?\s*\*\*File\*\*:?\s*(.+)", content)
+    if match:
+        return match.group(1).strip()
+    finding = parse_markdown_finding(md_file)
+    if finding is not None:
+        return str(finding.file_path)
+    return md_file.name
+
+
+def _emit_result(
+    on_result: Callable[[ProgressEvent], None] | None,
+    *,
+    completed: int,
+    total: int,
+    finding_id: str,
+    file_path: str,
+    outcome: str,
+    summary: str,
+    commit_sha: str | None,
+    t0: float,
+    stats: dict[str, int],
+) -> None:
+    if on_result is None:
+        return
+    on_result(
+        ProgressEvent(
+            completed=completed,
+            total=total,
+            finding_id=finding_id,
+            file_path=file_path,
+            outcome=outcome,
+            summary=summary,
+            commit_sha=commit_sha,
+            elapsed_s=time.monotonic() - t0,
+            stats={
+                k: int(v) if not isinstance(v, bool) else int(v)
+                for k, v in stats.items()
+                if k != "interrupted"
+            },
+        )
+    )
+
+
 def process_findings(
     output_dir: Path,
     agent: CodingAgent,
@@ -621,12 +852,18 @@ def process_findings(
     *,
     run_started_at: str | None = None,
     coding_agent: str | None = None,
+    on_result: Callable[[ProgressEvent], None] | None = None,
+    on_phase: Callable[[ProgressEvent], None] | None = None,
 ) -> dict[str, int]:
     """Process all VALID findings in the output directory.
 
     Already-processed findings (those with a ## Action Taken section) are
     skipped unless force=True.  Findings previously marked "error" are
     retried unless skip_errors=True.
+
+    *on_result* is invoked after each finding is considered (including
+    restores/skips/rejects). *on_phase* is invoked for mid-finding phases
+    such as applying a fix or running quality checks.
     """
     if run_started_at is None:
         run_started_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -664,6 +901,8 @@ def process_findings(
 
     total = stats["total_findings"]
     finding_index = 0
+    completed = 0
+    t0 = time.monotonic()
 
     for md_file in markdown_files:
         # Check for interrupt signal
@@ -677,6 +916,7 @@ def process_findings(
 
         finding_index += 1
         pct = round(finding_index / total * 100) if total else 0
+        file_path = _file_ref_for_finding(md_file)
         logger.info(
             "Addressing Review %d/%d (%d%%): %s",
             finding_index,
@@ -701,8 +941,21 @@ def process_findings(
                     existing.commit_sha or "unknown",
                 )
                 stats["restored"] += 1
+                completed += 1
                 write_summary_file(
                     stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
+                )
+                _emit_result(
+                    on_result,
+                    completed=completed,
+                    total=total,
+                    finding_id=md_file.stem,
+                    file_path=file_path,
+                    outcome="restored",
+                    summary=f"already {existing.status}",
+                    commit_sha=existing.commit_sha,
+                    t0=t0,
+                    stats=stats,
                 )
                 continue
             elif existing and existing.status == "error" and skip_errors:
@@ -712,8 +965,21 @@ def process_findings(
                 )
                 logger.info("  -> Skipped (previous error)")
                 stats["skipped"] += 1
+                completed += 1
                 write_summary_file(
                     stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
+                )
+                _emit_result(
+                    on_result,
+                    completed=completed,
+                    total=total,
+                    finding_id=md_file.stem,
+                    file_path=file_path,
+                    outcome="skipped",
+                    summary="previous error (--skip-errors)",
+                    commit_sha=None,
+                    t0=t0,
+                    stats=stats,
                 )
                 continue
             elif existing:
@@ -735,16 +1001,30 @@ def process_findings(
             )
             logger.info("  -> Rejected (verdict %s)", verdict_label)
             stats["skipped"] += 1
+            summary = f"Verdict {verdict_label} — not actioned"
             write_action_taken(
                 md_file,
                 FindingStatus(
                     status="rejected",
                     timestamp=_now_iso(),
-                    summary=f"Verdict {verdict_label} — not actioned",
+                    summary=summary,
                 ),
             )
+            completed += 1
             write_summary_file(
                 stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
+            )
+            _emit_result(
+                on_result,
+                completed=completed,
+                total=total,
+                finding_id=md_file.stem,
+                file_path=file_path,
+                outcome="rejected",
+                summary=summary,
+                commit_sha=None,
+                t0=t0,
+                stats=stats,
             )
             continue
 
@@ -757,23 +1037,56 @@ def process_findings(
             harness_config,
             skip_llm_checks=skip_llm_checks,
             quality_checks_override=quality_checks_override,
+            on_phase=on_phase,
+            completed=completed,
+            total=total,
+            t0=t0,
+            stats=stats,
         )
+
+        action = read_action_taken(md_file)
+        commit_sha = action.commit_sha if action else None
+        summary = (action.summary if action else None) or error or status
 
         if status == "error":
             logger.error("%s", error or f"Unknown error processing {md_file.name}")
             logger.info("  -> Error: %s", error or "unknown error")
             stats["errors"] += 1
+            outcome = "error"
+        elif status == "interrupted":
+            stats["interrupted"] = True
+            outcome = "interrupted"
         elif status == "skipped":
             logger.warning("%s", error or f"Skipped {md_file.name}")
             logger.info("  -> Skipped (no change committed)")
             stats["skipped"] += 1
+            outcome = "skipped"
         elif committed:
             logger.info("  -> Change applied and committed")
             stats["committed"] += 1
+            outcome = "dry-run" if dry_run else "completed"
+        else:
+            outcome = status
 
+        completed += 1
         write_summary_file(
             stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
         )
+        _emit_result(
+            on_result,
+            completed=completed,
+            total=total,
+            finding_id=md_file.stem,
+            file_path=file_path,
+            outcome=outcome,
+            summary=summary,
+            commit_sha=commit_sha,
+            t0=t0,
+            stats=stats,
+        )
+
+        if status == "interrupted":
+            break
 
     return stats
 
@@ -857,7 +1170,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Explicit path to a .quality-checks.toml file (overrides auto-discovery)",
     )
+    tui_group = parser.add_mutually_exclusive_group()
+    tui_group.add_argument(
+        "--tui",
+        action="store_true",
+        help="Force the interactive Rich Live dashboard",
+    )
+    tui_group.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="Force plain-text progress (disable TUI auto-detect)",
+    )
     return parser.parse_args(argv)
+
+
+def _force_tui_from_args(args: argparse.Namespace) -> bool | None:
+    """Map ``--tui`` / ``--no-tui`` to a force flag for :func:`should_use_tui`."""
+    if getattr(args, "tui", False):
+        return True
+    if getattr(args, "no_tui", False):
+        return False
+    return None
+
+
+def _make_reporter(force_tui: bool | None) -> ProgressReporter:
+    """Select the plain or Rich Live progress reporter."""
+    if should_use_tui(force_tui=force_tui):
+        # Lazy import keeps plain mode free of Rich Live dependencies at import time.
+        from deep_architect.review_action_tui import TuiReporter  # noqa: PLC0415
+
+        return TuiReporter()
+    return PlainReporter()
 
 
 _OUTCOME_LABELS = {
@@ -1031,7 +1374,13 @@ def main(argv: list[str] | None = None) -> int:
     _shutdown_requested = False
     signal.signal(signal.SIGINT, _sigint_handler)
 
+    force_tui = _force_tui_from_args(args)
+    use_tui = should_use_tui(force_tui=force_tui)
+
     log_level = logging.DEBUG if args.verbose else logging.INFO
+    # Under TUI, suppress INFO progress logs so they don't scramble Live output.
+    if use_tui and not args.verbose:
+        log_level = logging.WARNING
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -1093,21 +1442,59 @@ def main(argv: list[str] | None = None) -> int:
 
     run_stats = init_run_stats()
 
-    # Process findings
-    stats = process_findings(
-        args.output_dir,
-        agent,
-        agent_config.max_retries,
-        agent_config.retry_delay,
-        harness_config,
-        args.dry_run,
+    # Count findings for RunMeta before processing (cheap directory scan).
+    total_findings = 0
+    if args.output_dir.exists():
+        total_findings = sum(
+            1
+            for p in args.output_dir.glob("*.md")
+            if p.name not in _NON_FINDING_FILES
+        )
+
+    meta = RunMeta(
+        output_dir=args.output_dir,
+        provider=provider,
+        model=model,
+        dry_run=args.dry_run,
         force=args.force,
         skip_errors=args.skip_errors,
-        skip_llm_checks=args.skip_llm_checks,
-        quality_checks_override=args.quality_checks,
-        run_started_at=run_started_at,
+        total_findings=total_findings,
         coding_agent=coding_agent,
     )
+    reporter = _make_reporter(force_tui)
+    reporter.start(meta)
+
+    stats: dict[str, int] = {
+        "processed": 0,
+        "committed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "restored": 0,
+        "total_findings": total_findings,
+        "interrupted": False,
+    }
+    try:
+        stats = process_findings(
+            args.output_dir,
+            agent,
+            agent_config.max_retries,
+            agent_config.retry_delay,
+            harness_config,
+            args.dry_run,
+            force=args.force,
+            skip_errors=args.skip_errors,
+            skip_llm_checks=args.skip_llm_checks,
+            quality_checks_override=args.quality_checks,
+            run_started_at=run_started_at,
+            coding_agent=coding_agent,
+            on_result=reporter.on_result,
+            on_phase=reporter.on_phase,
+        )
+    except BaseException:
+        reporter.finish(stats)
+        raise
+    else:
+        reporter.finish(stats)
 
     print_summary(
         stats, args.output_dir, run_stats, run_started_at=run_started_at, coding_agent=coding_agent

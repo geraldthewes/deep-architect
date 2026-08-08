@@ -570,6 +570,19 @@ Defaults to `feedback/` if no directory is specified.
 | `--max-check-iterations <n>` | (from config) | Post-fix quality-check retry cap; `0` = run checks but never block or retry |
 | `--skip-llm-checks` | off | Run programmatic quality checks only, skip the LLM style-rule judge |
 | `--quality-checks <path>` | (auto-discovered) | Explicit path to a `.quality-checks.toml` file |
+| `--tui` | auto | Force the interactive Rich Live dashboard |
+| `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
+
+### Interactive TUI
+
+When stdout is a TTY, `review-action` shows a live Rich dashboard instead of sparse progress lines:
+
+- **Header** — feedback directory, coding agent/model, finding count, and active flags (`dry-run`, `force`, `skip-errors`)
+- **Progress** — bar with completed/total, elapsed time, ETA, throughput, plus the current finding phase (`applying`, `quality-checks N/M`, `committing`)
+- **Summary stats** — live counters for Fixed, Skipped, Errors, Restored, and pending
+- **Results list** — scrolling window of each finished finding (outcome, id, file, summary/commit)
+
+Piped or CI runs (non-TTY) keep plain-text progress. Use `--tui` / `--no-tui` to override auto-detect. Disk output (`## Action Taken` blocks, `review-action_summary.md`, git commits) is the same in TUI and plain mode.
 
 ### Example
 
@@ -585,6 +598,9 @@ uv run review-action feedback/ --provider claude --model sonnet
 
 # Use Grok Build (xAI) instead of opencode
 uv run review-action feedback/ --provider grok --model grok-build
+
+# Force plain progress in a terminal (e.g. for log capture)
+uv run review-action feedback/ --no-tui
 ```
 
 ### Workflow
