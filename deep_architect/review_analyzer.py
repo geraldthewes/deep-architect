@@ -10,11 +10,11 @@ import sys
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, TextIO
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,83 @@ class AnalysisResult:
     verdict: Verdict
     analysis: str
     raw_response: str
+
+
+@dataclass(frozen=True)
+class RunMeta:
+    """Immutable metadata describing a review-analyzer run (for progress UIs)."""
+
+    ocr_file: Path
+    model: str
+    concurrency: int
+    output_dir: Path | None
+    summary_only: bool
+    total_findings: int
+    raw_findings: int
+    ocr_status: str | None = None
+    ocr_summary: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """One completed finding during concurrent analysis."""
+
+    completed: int
+    total: int
+    finding: dict[str, Any]
+    analysis: AnalysisResult
+    elapsed_s: float
+
+
+class ProgressReporter(Protocol):
+    """Progress sink used by the analysis pipeline (plain text or TUI)."""
+
+    def start(self, meta: RunMeta) -> None:
+        """Called once before processing begins."""
+
+    def on_result(self, event: ProgressEvent) -> None:
+        """Called on the main thread after each finding completes."""
+
+    def finish(self, counts: dict[str, int]) -> None:
+        """Called after all findings are processed (before or after summary write)."""
+
+
+def should_use_tui(
+    *,
+    force_tui: bool | None = None,
+    stream: TextIO | None = None,
+) -> bool:
+    """Return whether the live TUI should be used.
+
+    *force_tui* is ``True`` for ``--tui``, ``False`` for ``--no-tui``, and
+    ``None`` for auto-detect via ``stream.isatty()`` (default: stdout).
+    """
+    if force_tui is True:
+        return True
+    if force_tui is False:
+        return False
+    target = stream if stream is not None else sys.stdout
+    return bool(target.isatty())
+
+
+class PlainReporter:
+    """Plain-text progress reporter for non-interactive terminals and CI."""
+
+    def start(self, meta: RunMeta) -> None:
+        print(
+            f"Analyzing {meta.total_findings} findings "
+            f"(model={meta.model}, concurrency={meta.concurrency})…"
+        )
+        if meta.output_dir is not None and not meta.summary_only:
+            print(f"Writing reports to {meta.output_dir}/")
+
+    def on_result(self, event: ProgressEvent) -> None:
+        if event.completed % 5 == 0 or event.completed == event.total:
+            print(f"  Processed {event.completed}/{event.total} findings...")
+
+    def finish(self, counts: dict[str, int]) -> None:
+        # Summary is printed by the pipeline after files are written.
+        _ = counts
 
 
 def load_ocr_json(file_path: Path) -> dict[str, Any]:
@@ -359,16 +436,21 @@ def process_findings_concurrently(
     model: str,
     max_workers: int,
     output_dir: Path | None = None,
+    on_result: Callable[[ProgressEvent], None] | None = None,
 ) -> list[tuple[dict[str, Any], AnalysisResult]]:
     """Process findings through LLM with controlled concurrency, writing
     each result to disk immediately (when *output_dir* is given) so progress
-    is preserved on crash."""
+    is preserved on crash.
+
+    *on_result* is invoked on the main thread after each finding completes.
+    """
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Writing reports to {output_dir}/")
 
     breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
     results: list[tuple[dict[str, Any], AnalysisResult]] = []
+    total = len(findings)
+    t0 = time.monotonic()
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_finding = {
@@ -400,9 +482,16 @@ def process_findings_concurrently(
                     log.error("Failed to write %s: %s", output_path, exc)
                     print(f"Error writing {output_path}: {exc}", file=sys.stderr)
 
-            # Progress indicator (every 5 findings)
-            if i % 5 == 0:
-                print(f"  Processed {i}/{len(findings)} findings...")
+            if on_result is not None:
+                on_result(
+                    ProgressEvent(
+                        completed=i,
+                        total=total,
+                        finding=finding,
+                        analysis=analysis,
+                        elapsed_s=time.monotonic() - t0,
+                    )
+                )
 
     return results
 
@@ -573,12 +662,34 @@ def generate_index_report(
     return "\n".join(lines) + "\n"
 
 
+def _force_tui_from_args(args: argparse.Namespace) -> bool | None:
+    """Map ``--tui`` / ``--no-tui`` to a force flag for :func:`should_use_tui`."""
+    if getattr(args, "tui", False):
+        return True
+    if getattr(args, "no_tui", False):
+        return False
+    return None
+
+
+def _make_reporter(force_tui: bool | None) -> ProgressReporter:
+    """Select the plain or Rich Live progress reporter."""
+    if should_use_tui(force_tui=force_tui):
+        # Lazy import avoids a module cycle and keeps plain mode free of Rich.
+        from deep_architect.review_analyzer_tui import TuiReporter  # noqa: PLC0415
+
+        return TuiReporter()
+    return PlainReporter()
+
+
 def _run_analysis(
     findings: list[dict[str, Any]],
     model: str,
     concurrency: int,
     output_dir: Path,
     summary_only: bool,
+    *,
+    meta: RunMeta,
+    reporter: ProgressReporter,
 ) -> None:
     """End-to-end analysis pipeline: process → write → summary."""
     log.info(
@@ -587,18 +698,27 @@ def _run_analysis(
         model,
         concurrency,
     )
-    print(
-        f"Analyzing {len(findings)} findings "
-        f"(model={model}, concurrency={concurrency})…"
-    )
 
-    results = process_findings_concurrently(
-        findings, model, concurrency, output_dir if not summary_only else None
-    )
+    reporter.start(meta)
+    try:
+        results = process_findings_concurrently(
+            findings,
+            model,
+            concurrency,
+            output_dir if not summary_only else None,
+            on_result=reporter.on_result,
+        )
+    except BaseException:
+        # Ensure Live is torn down on Ctrl-C / unexpected errors.
+        counts_partial: dict[str, int] = {v.value: 0 for v in Verdict}
+        reporter.finish(counts_partial)
+        raise
 
     counts: dict[str, int] = {v.value: 0 for v in Verdict}
     for _, analysis in results:
         counts[analysis.verdict.value] += 1
+
+    reporter.finish(counts)
 
     if not summary_only:
         log.info("Per-finding reports written to %s", output_dir)
@@ -669,6 +789,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print summary counts without writing per-finding files",
     )
+    tui_group = parser.add_mutually_exclusive_group()
+    tui_group.add_argument(
+        "--tui",
+        action="store_true",
+        help="Force the interactive Rich Live dashboard",
+    )
+    tui_group.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="Force plain-text progress (disable TUI auto-detect)",
+    )
     return parser.parse_args(argv)
 
 
@@ -691,12 +822,32 @@ def main(argv: list[str] | None = None) -> None:
         print("No findings to process after filtering.")
         return
 
+    ocr_summary_raw = ocr_data.get("summary")
+    ocr_summary: dict[str, Any] = (
+        ocr_summary_raw if isinstance(ocr_summary_raw, dict) else {}
+    )
+    ocr_status = ocr_data.get("status")
+    meta = RunMeta(
+        ocr_file=args.ocr_file,
+        model=args.model,
+        concurrency=args.concurrency,
+        output_dir=None if args.summary_only else args.output_dir,
+        summary_only=args.summary_only,
+        total_findings=len(filtered),
+        raw_findings=len(findings),
+        ocr_status=str(ocr_status) if ocr_status is not None else None,
+        ocr_summary=ocr_summary,
+    )
+    reporter = _make_reporter(_force_tui_from_args(args))
+
     _run_analysis(
         filtered,
         args.model,
         args.concurrency,
         args.output_dir,
         args.summary_only,
+        meta=meta,
+        reporter=reporter,
     )
 
 

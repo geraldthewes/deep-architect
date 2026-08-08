@@ -472,6 +472,19 @@ uv run review-analyzer <ocr-file.json> [options]
 | `--concurrency <n>` | `5` | Maximum parallel LLM requests |
 | `--output-dir <dir>` | `feedback/` | Directory for per-finding Markdown reports |
 | `--summary-only` | off | Print summary counts without writing individual files |
+| `--tui` | auto | Force the interactive Rich Live dashboard |
+| `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
+
+### Interactive TUI
+
+When stdout is a TTY, `review-analyzer` shows a live Rich dashboard instead of sparse progress lines:
+
+- **Header** — OCR path, model, concurrency, output dir, filtered finding count, plus OCR `status` / `summary` fields when present
+- **Progress** — bar with completed/total, elapsed time, ETA, and throughput
+- **Summary stats** — live counters for `VALID`, `REJECTED`, `BACKLOG`, and pending
+- **Results list** — scrolling window of each completed finding (verdict, location, analysis preview)
+
+Piped or CI runs (non-TTY) keep plain-text progress. Use `--tui` / `--no-tui` to override auto-detect.
 
 ### Example
 
@@ -484,7 +497,7 @@ uv run review-analyzer code-review.json \
 
 ### Output
 
-The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to the output directory, plus a `SUMMARY.md` with the coding agent/model used (`opencode` + `--model`), verdict counts, and percentages.
+The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to the output directory, plus a `SUMMARY.md` with the coding agent/model used (`opencode` + `--model`), verdict counts, and percentages. Disk output is the same in TUI and plain mode.
 
 ### Configuration
 

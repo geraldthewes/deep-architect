@@ -12,6 +12,9 @@ import pytest
 from deep_architect.review_analyzer import (
     AnalysisResult,
     CircuitBreaker,
+    PlainReporter,
+    ProgressEvent,
+    RunMeta,
     Verdict,
     _finding_lines,
     _finding_path,
@@ -26,7 +29,10 @@ from deep_architect.review_analyzer import (
     generate_summary_report,
     get_filepath_hash,
     load_ocr_json,
+    process_findings_concurrently,
+    should_use_tui,
 )
+from deep_architect.review_analyzer_tui import format_duration, render_dashboard
 
 # ---------------------------------------------------------------------------
 # load_ocr_json
@@ -584,6 +590,208 @@ class TestGenerateIndexReport:
         ]
         report = generate_index_report(results)
         assert "…" in report
+
+
+# ---------------------------------------------------------------------------
+# should_use_tui / PlainReporter / progress callbacks
+# ---------------------------------------------------------------------------
+
+
+class TestShouldUseTui:
+
+    def test_force_true(self) -> None:
+        assert should_use_tui(force_tui=True) is True
+
+    def test_force_false(self) -> None:
+        assert should_use_tui(force_tui=False) is False
+
+    def test_auto_tty(self) -> None:
+        stream = MagicMock()
+        stream.isatty.return_value = True
+        assert should_use_tui(force_tui=None, stream=stream) is True
+
+    def test_auto_non_tty(self) -> None:
+        stream = MagicMock()
+        stream.isatty.return_value = False
+        assert should_use_tui(force_tui=None, stream=stream) is False
+
+
+class TestPlainReporter:
+
+    def test_start_and_on_result_prints(self, capsys: pytest.CaptureFixture[str]) -> None:
+        meta = RunMeta(
+            ocr_file=Path("review.json"),
+            model="standard/coder",
+            concurrency=3,
+            output_dir=Path("feedback"),
+            summary_only=False,
+            total_findings=10,
+            raw_findings=12,
+        )
+        reporter = PlainReporter()
+        reporter.start(meta)
+        finding = {
+            "type": "comment",
+            "path": "a.py",
+            "start_line": 1,
+            "end_line": 1,
+            "index": 0,
+            "content": "x",
+        }
+        analysis = AnalysisResult(Verdict.VALID, "ok", "")
+        reporter.on_result(
+            ProgressEvent(
+                completed=5,
+                total=10,
+                finding=finding,
+                analysis=analysis,
+                elapsed_s=1.0,
+            )
+        )
+        reporter.finish({"valid": 1, "rejected": 0, "backlog": 0})
+        out = capsys.readouterr().out
+        assert "Analyzing 10 findings" in out
+        assert "Writing reports to feedback/" in out
+        assert "Processed 5/10" in out
+
+
+class TestProcessFindingsCallback:
+
+    def test_on_result_called_per_finding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        findings = [
+            {
+                "type": "comment",
+                "path": f"f{i}.py",
+                "start_line": 1,
+                "end_line": 1,
+                "index": i,
+                "content": "c",
+            }
+            for i in range(3)
+        ]
+        events: list[ProgressEvent] = []
+
+        def fake_analyze(
+            finding: dict[str, Any], model: str, breaker: Any
+        ) -> AnalysisResult:
+            return AnalysisResult(Verdict.VALID, f"ok-{finding['index']}", "")
+
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer.analyze_finding", fake_analyze
+        )
+
+        results = process_findings_concurrently(
+            findings,
+            model="m",
+            max_workers=2,
+            output_dir=tmp_path,
+            on_result=events.append,
+        )
+        assert len(results) == 3
+        assert len(events) == 3
+        assert {e.completed for e in events} == {1, 2, 3}
+        assert all(e.total == 3 for e in events)
+        # Files written
+        assert len(list(tmp_path.glob("*.md"))) == 3
+
+
+# ---------------------------------------------------------------------------
+# TUI render_dashboard / format_duration
+# ---------------------------------------------------------------------------
+
+
+class TestFormatDuration:
+
+    def test_seconds(self) -> None:
+        assert format_duration(5) == "5s"
+
+    def test_minutes(self) -> None:
+        assert format_duration(65) == "1m05s"
+
+    def test_hours(self) -> None:
+        assert format_duration(3661) == "1h01m01s"
+
+
+class TestRenderDashboard:
+
+    def _meta(self) -> RunMeta:
+        return RunMeta(
+            ocr_file=Path("code-review.json"),
+            model="standard/coder",
+            concurrency=5,
+            output_dir=Path("feedback"),
+            summary_only=False,
+            total_findings=2,
+            raw_findings=4,
+            ocr_status="success",
+            ocr_summary={"files_reviewed": 3, "comments": 4},
+        )
+
+    def test_renders_key_fields(self) -> None:
+        from rich.console import Console
+
+        finding = {
+            "type": "comment",
+            "path": "src/foo.py",
+            "start_line": 10,
+            "end_line": 12,
+            "index": 0,
+            "content": "rename",
+        }
+        results = [
+            (finding, AnalysisResult(Verdict.VALID, "Real bug in naming", "")),
+            (
+                {
+                    "type": "warning",
+                    "file": "src/bar.py",
+                    "message": "timeout",
+                    "index": 0,
+                },
+                AnalysisResult(Verdict.REJECTED, "False positive timeout", ""),
+            ),
+        ]
+        counts = {"valid": 1, "rejected": 1, "backlog": 0}
+        renderable = render_dashboard(
+            self._meta(),
+            counts,
+            completed=2,
+            total=2,
+            elapsed_s=12.5,
+            results=results,
+            console_height=40,
+            console_width=100,
+        )
+        console = Console(record=True, force_terminal=True, width=100, height=40)
+        console.print(renderable)
+        text = console.export_text()
+        assert "Review Analyzer" in text
+        assert "code-review.json" in text
+        assert "standard/coder" in text
+        assert "files_reviewed: 3" in text
+        assert "VALID" in text
+        assert "REJECTED" in text
+        assert "src/foo.py" in text
+        assert "Real bug" in text
+
+    def test_empty_results_waiting(self) -> None:
+        from rich.console import Console
+
+        renderable = render_dashboard(
+            self._meta(),
+            {v.value: 0 for v in Verdict},
+            completed=0,
+            total=2,
+            elapsed_s=0.0,
+            results=[],
+            console_height=40,
+            console_width=80,
+        )
+        console = Console(record=True, force_terminal=True, width=80, height=40)
+        console.print(renderable)
+        text = console.export_text()
+        assert "waiting for results" in text
 
 
 # ---------------------------------------------------------------------------
