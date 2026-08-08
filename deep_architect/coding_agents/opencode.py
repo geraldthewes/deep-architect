@@ -405,12 +405,22 @@ class OpencodeAgent:
 def _parse_opencode_ndjson(raw_stdout: str) -> tuple[bool, str | None]:
     """Parse opencode NDJSON output; (True, last_text) if the agent completed.
 
-    opencode streams NDJSON events; we check for a ResultMessage-like event
-    that indicates completion without error. Along the way we track the
-    most recent "text" event's content, so callers can log the agent's own
-    response when file verification later shows no change was made.
+    opencode 1.17+ streams events such as ``step_start``, ``tool_use``,
+    ``text``, and ``step_finish``. A finished turn ends with
+    ``{"type": "step_finish", "part": {"reason": "stop", ...}}`` — intermediate
+    steps use ``reason: "tool-calls"`` and must not be treated as completion.
+
+    Older builds emitted ``{"type": "result", "is_error": false}``; that shape
+    is still accepted for compatibility.
+
+    Along the way we keep the most recent text payload so callers can log the
+    agent's own response when disk verification later shows no change.
     """
     last_text: str | None = None
+    saw_stop = False
+    saw_error = False
+    error_detail: object = None
+
     for line in raw_stdout.splitlines():
         line = line.strip()
         if not line:
@@ -420,25 +430,46 @@ def _parse_opencode_ndjson(raw_stdout: str) -> tuple[bool, str | None]:
         except json.JSONDecodeError:
             continue
 
-        if event.get("type") == "text":
-            part = event.get("part", {})
-            if part.get("type") == "text":
-                last_text = part.get("text", last_text)
+        event_type = event.get("type")
 
-        # ResultMessage in NDJSON: {"type": "result", ...}
-        if event.get("type") == "result":
+        if event_type == "text":
+            part = event.get("part", {})
+            if isinstance(part, dict) and part.get("type") == "text":
+                last_text = part.get("text", last_text)
+            continue
+
+        # Current format (opencode 1.17+): final step ends with reason "stop".
+        if event_type == "step_finish":
+            part = event.get("part", {})
+            if isinstance(part, dict) and part.get("reason") == "stop":
+                saw_stop = True
+            continue
+
+        # Legacy format: {"type": "result", "is_error": false, ...}
+        if event_type == "result":
             is_error = event.get("is_error", False)
             if is_error:
                 error_detail = event.get("errors", ["Unknown error"])
-                logger.error(
-                    "OpencodeAgent: result error: %s", error_detail
-                )
+                logger.error("OpencodeAgent: result error: %s", error_detail)
                 return False, last_text
             return True, last_text
 
-    # No result event found — fallback: check stderr for clues
+        if event_type == "error":
+            saw_error = True
+            error_data = event.get("error", event.get("message", "Unknown error"))
+            error_detail = error_data
+            continue
+
+    if saw_error:
+        logger.error("OpencodeAgent: error event: %s", error_detail)
+        return False, last_text
+
+    if saw_stop:
+        return True, last_text
+
     if raw_stdout.strip():
         logger.warning(
-            "OpencodeAgent: no result event in output, assuming partial"
+            "OpencodeAgent: no completion event in output "
+            "(expected step_finish reason=stop or type=result), assuming partial"
         )
     return False, last_text

@@ -18,6 +18,136 @@ from deep_architect.coding_agents import (
 )
 from deep_architect.coding_agents.base import _file_reflects_fix, finding_already_satisfied
 from deep_architect.coding_agents.grok import _parse_grok_json
+from deep_architect.coding_agents.opencode import _parse_opencode_ndjson
+
+# ---------------------------------------------------------------------------
+# opencode NDJSON fixtures / parser
+# ---------------------------------------------------------------------------
+
+
+def _opencode_success_ndjson(text: str = "ok") -> str:
+    """Modern opencode 1.17+ completion stream (step_finish reason=stop)."""
+    return "\n".join(
+        [
+            json.dumps({"type": "step_start", "timestamp": 1}),
+            json.dumps(
+                {"type": "text", "part": {"type": "text", "text": text}}
+            ),
+            json.dumps(
+                {
+                    "type": "step_finish",
+                    "part": {
+                        "type": "step-finish",
+                        "reason": "stop",
+                        "messageID": "msg_test",
+                    },
+                }
+            ),
+        ]
+    )
+
+
+def _opencode_tool_then_stop_ndjson(text: str = "done") -> str:
+    """Multi-step run: intermediate tool-calls then final stop."""
+    return "\n".join(
+        [
+            json.dumps({"type": "step_start", "timestamp": 1}),
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "type": "tool_use",
+                        "state": {"status": "completed"},
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "step_finish",
+                    "part": {
+                        "type": "step-finish",
+                        "reason": "tool-calls",
+                    },
+                }
+            ),
+            json.dumps({"type": "step_start", "timestamp": 2}),
+            json.dumps(
+                {"type": "text", "part": {"type": "text", "text": text}}
+            ),
+            json.dumps(
+                {
+                    "type": "step_finish",
+                    "part": {
+                        "type": "step-finish",
+                        "reason": "stop",
+                    },
+                }
+            ),
+        ]
+    )
+
+
+class TestParseOpencodeNdjson:
+
+    def test_modern_step_finish_stop_is_success(self) -> None:
+        ok, text = _parse_opencode_ndjson(_opencode_success_ndjson("hello"))
+        assert ok is True
+        assert text == "hello"
+
+    def test_tool_calls_then_stop_is_success(self) -> None:
+        ok, text = _parse_opencode_ndjson(_opencode_tool_then_stop_ndjson("fixed"))
+        assert ok is True
+        assert text == "fixed"
+
+    def test_tool_calls_only_without_stop_is_failure(self) -> None:
+        raw = "\n".join(
+            [
+                json.dumps({"type": "step_start"}),
+                json.dumps(
+                    {
+                        "type": "step_finish",
+                        "part": {"type": "step-finish", "reason": "tool-calls"},
+                    }
+                ),
+            ]
+        )
+        ok, _ = _parse_opencode_ndjson(raw)
+        assert ok is False
+
+    def test_legacy_result_event_still_accepted(self) -> None:
+        raw = json.dumps({"type": "result", "is_error": False, "result": "ok"})
+        ok, _ = _parse_opencode_ndjson(raw)
+        assert ok is True
+
+    def test_legacy_result_error_is_failure(self) -> None:
+        raw = json.dumps(
+            {"type": "result", "is_error": True, "errors": ["boom"]}
+        )
+        ok, _ = _parse_opencode_ndjson(raw)
+        assert ok is False
+
+    def test_error_event_is_failure(self) -> None:
+        raw = "\n".join(
+            [
+                json.dumps(
+                    {"type": "error", "error": {"message": "provider down"}}
+                ),
+                json.dumps(
+                    {
+                        "type": "step_finish",
+                        "part": {"type": "step-finish", "reason": "stop"},
+                    }
+                ),
+            ]
+        )
+        ok, _ = _parse_opencode_ndjson(raw)
+        assert ok is False
+
+    def test_empty_stdout_is_failure(self) -> None:
+        ok, text = _parse_opencode_ndjson("")
+        assert ok is False
+        assert text is None
+
 
 # ---------------------------------------------------------------------------
 # OpencodeAgent
@@ -46,10 +176,9 @@ class TestOpencodeAgent:
 
     @patch("deep_architect.coding_agents.opencode.subprocess.run")
     async def test_timeout_passed_to_subprocess(self, mock_run: MagicMock) -> None:
-        import json as _json
-
-        ndjson = _json.dumps({"type": "result", "is_error": False, "result": "ok"})
-        mock_run.return_value = MagicMock(returncode=0, stdout=ndjson, stderr="")
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=_opencode_success_ndjson(), stderr=""
+        )
 
         agent = OpencodeAgent(timeout_seconds=42.0)
         await agent.apply_fix(Path("test.py"), "old code", "new code")
@@ -58,11 +187,8 @@ class TestOpencodeAgent:
 
     @patch("deep_architect.coding_agents.opencode.subprocess.run")
     async def test_apply_fix_success(self, mock_run: MagicMock) -> None:
-        import json as _json
-
-        ndjson = _json.dumps({"type": "result", "is_error": False, "result": "ok"})
         mock_run.return_value = MagicMock(
-            returncode=0, stdout=ndjson, stderr=""
+            returncode=0, stdout=_opencode_success_ndjson(), stderr=""
         )
 
         agent = OpencodeAgent()
@@ -114,10 +240,9 @@ class TestOpencodeAgent:
 
     @patch("deep_architect.coding_agents.opencode.subprocess.run")
     async def test_fix_check_failures_success(self, mock_run: MagicMock) -> None:
-        import json as _json
-
-        ndjson = _json.dumps({"type": "result", "is_error": False, "result": "ok"})
-        mock_run.return_value = MagicMock(returncode=0, stdout=ndjson, stderr="")
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=_opencode_success_ndjson(), stderr=""
+        )
 
         agent = OpencodeAgent()
         result = await agent.fix_check_failures(
@@ -156,11 +281,11 @@ class TestOpencodeAgent:
 
     @patch("deep_architect.coding_agents.opencode.subprocess.run")
     async def test_run_structured_success(self, mock_run: MagicMock) -> None:
-        events = "\n".join([
-            json.dumps({"type": "text", "part": {"type": "text", "text": '{"ok": true}'}}),
-            json.dumps({"type": "result", "is_error": False, "result": "ok"}),
-        ])
-        mock_run.return_value = MagicMock(returncode=0, stdout=events, stderr="")
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=_opencode_success_ndjson('{"ok": true}'),
+            stderr="",
+        )
 
         agent = OpencodeAgent(timeout_seconds=42.0)
         result = await agent.run_structured("system", "prompt", label="test")
@@ -178,7 +303,13 @@ class TestOpencodeAgent:
 
     @patch("deep_architect.coding_agents.opencode.subprocess.run")
     async def test_run_structured_empty_text_raises(self, mock_run: MagicMock) -> None:
-        ndjson = json.dumps({"type": "result", "is_error": False, "result": "ok"})
+        # Completed with stop but no text payload
+        ndjson = json.dumps(
+            {
+                "type": "step_finish",
+                "part": {"type": "step-finish", "reason": "stop"},
+            }
+        )
         mock_run.return_value = MagicMock(returncode=0, stdout=ndjson, stderr="")
 
         agent = OpencodeAgent()
