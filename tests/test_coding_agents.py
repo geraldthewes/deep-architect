@@ -16,7 +16,11 @@ from deep_architect.coding_agents import (
     OpencodeAgent,
     create_agent,
 )
-from deep_architect.coding_agents.base import _file_reflects_fix, finding_already_satisfied
+from deep_architect.coding_agents.base import (
+    _agent_reports_already_done,
+    _file_reflects_fix,
+    finding_already_satisfied,
+)
 from deep_architect.coding_agents.grok import _parse_grok_json
 from deep_architect.coding_agents.opencode import _parse_opencode_ndjson
 
@@ -355,6 +359,42 @@ class TestFileReflectsFix:
         target.write_text("old code\n", encoding="utf-8")
         assert _file_reflects_fix(target, "new code\n", "old code\n") is False
 
+    def test_unchanged_but_agent_reports_already_done(self, tmp_path: Path) -> None:
+        target = tmp_path / "f.py"
+        target.write_text("old code\n", encoding="utf-8")
+        assert (
+            _file_reflects_fix(
+                target,
+                "new code\n",
+                "old code\n",
+                agent_response_text=(
+                    "Already fixed. The tests were renamed. No changes needed."
+                ),
+            )
+            is True
+        )
+
+    def test_unchanged_but_finding_structurally_satisfied(
+        self, tmp_path: Path
+    ) -> None:
+        # Suggested introduces a new test already present; existing anchor still
+        # there — no disk delta required.
+        body = (
+            "def test_old():\n    pass\n\n"
+            "def test_new_direct_ctor():\n    pass\n"
+        )
+        target = tmp_path / "f.py"
+        target.write_text(body, encoding="utf-8")
+        assert (
+            _file_reflects_fix(
+                target,
+                "def test_old():\n    pass\n\ndef test_new_direct_ctor():\n    pass\n",
+                body,
+                existing_code="def test_old():\n    pass\n",
+            )
+            is True
+        )
+
     def test_missing_file_trusts_agent(self, tmp_path: Path) -> None:
         target = tmp_path / "missing.py"
         assert _file_reflects_fix(target, "new code\n", "old code\n") is True
@@ -374,6 +414,23 @@ class TestFileReflectsFix:
         target = tmp_path / "f.py"
         target.write_text("   \n", encoding="utf-8")
         assert _file_reflects_fix(target, "", "   \n") is False
+
+
+class TestAgentReportsAlreadyDone:
+
+    def test_common_phrases(self) -> None:
+        assert _agent_reports_already_done("Already fixed. All tests pass.")
+        assert _agent_reports_already_done("No changes needed — already applied.")
+        assert _agent_reports_already_done(
+            "The tests are already renamed to the recommended names."
+        )
+        assert _agent_reports_already_done("This feedback has already been addressed.")
+
+    def test_negative_and_empty(self) -> None:
+        assert _agent_reports_already_done(None) is False
+        assert _agent_reports_already_done("") is False
+        assert _agent_reports_already_done("I will apply the fix now.") is False
+        assert _agent_reports_already_done("Done.") is False
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +473,39 @@ class TestFindingAlreadySatisfied:
     def test_empty_existing_code_addition_never_stale(self) -> None:
         file_content = "def foo():\n    pass\n"
         assert finding_already_satisfied(file_content, "", "def bar():\n    pass\n") is None
+
+    def test_new_def_from_suggested_already_in_file(self) -> None:
+        # Suggested is a sketch (not an exact file match) but introduces a new
+        # def that is already on disk.
+        file_content = (
+            "def test_invalid_death_reason(self):\n"
+            "    assert True\n\n"
+            "def test_invalid_death_reason_direct_ctor(self):\n"
+            "    with pytest.raises(ValueError):\n"
+            "        Plant(death_reason='nope')\n"
+        )
+        reason = finding_already_satisfied(
+            file_content,
+            "def test_invalid_death_reason(self):\n    assert True\n",
+            (
+                "def test_invalid_death_reason(self):\n    pass\n\n"
+                "def test_invalid_death_reason_direct_ctor(self):\n"
+                "    Plant(..., death_reason='x')  # or document if unsupported\n"
+            ),
+        )
+        assert reason is not None
+        assert "already" in reason.lower()
+        assert "direct_ctor" in reason
+
+    def test_placeholder_suggested_does_not_false_positive(self) -> None:
+        # Sketch with `{ ... }` / ellipsis must not count as applied.
+        file_content = "def test_old(self):\n    pass\n"
+        reason = finding_already_satisfied(
+            file_content,
+            "def test_old(self):\n    pass\n",
+            "def test_old(self):\n    Plant.create_from_dict({ ... })\n",
+        )
+        assert reason is None
 
     def test_indentation_only_difference_still_matches(self) -> None:
         file_content = "class C:\n    def foo():\n        pass\n"
@@ -499,11 +589,14 @@ class TestClaudeSDKAgent:
         mock_run_agent: AsyncMock,
         tmp_path: Path,
     ) -> None:
-        # run_agent reports success, but the file on disk was never touched.
+        # run_agent reports success, but the file on disk was never touched and
+        # the agent did not claim the fix was already present.
         target = tmp_path / "example.py"
         target.write_text("old code\n", encoding="utf-8")
         mock_make_options.return_value = MagicMock()
-        mock_run_agent.return_value = MagicMock(is_error=False)
+        mock_run_agent.return_value = MagicMock(
+            is_error=False, result="I looked at the file."
+        )
 
         agent = ClaudeSDKAgent()
         result = await agent.apply_fix(
@@ -515,6 +608,33 @@ class TestClaudeSDKAgent:
         )
 
         assert result is False
+
+    @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
+    @patch("deep_architect.agents.client.make_agent_options")
+    async def test_apply_fix_no_op_already_done_returns_true(
+        self,
+        mock_make_options: MagicMock,
+        mock_run_agent: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "example.py"
+        target.write_text("old code\n", encoding="utf-8")
+        mock_make_options.return_value = MagicMock()
+        mock_run_agent.return_value = MagicMock(
+            is_error=False,
+            result="Already fixed. No changes needed.",
+        )
+
+        agent = ClaudeSDKAgent()
+        result = await agent.apply_fix(
+            target,
+            "old code",
+            "new code",
+            "context",
+            original_content="old code\n",
+        )
+
+        assert result is True
 
     @patch("deep_architect.agents.client.run_agent", new_callable=AsyncMock)
     @patch("deep_architect.agents.client.make_agent_options")

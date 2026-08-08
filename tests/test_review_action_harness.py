@@ -1060,6 +1060,83 @@ class TestAlreadySatisfiedPreflight:
         assert error is not None and "stale" in error.lower()
         agent.apply_fix.assert_not_called()
 
+    def test_agent_noop_success_skips_without_quality_or_retries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When apply_fix succeeds but the file is unchanged (already done),
+        the finding is skipped once — not retried, not quality-checked."""
+        repo, target = self._setup(tmp_path, monkeypatch)
+        # Existing anchor present, suggested not yet exact-match → preflight
+        # does not skip; agent reports success without editing.
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "BETTER"))
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        agent.fix_check_failures = AsyncMock()  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=repo,
+            ),
+            patch(
+                "deep_architect.review_action_harness.run_checks",
+            ) as mock_checks,
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, max_retries=5, retry_delay=0.0, dry_run=False,
+                harness_config=HarnessConfig(),
+            )
+
+        assert status == "skipped"
+        assert committed is False
+        assert error is not None
+        agent.apply_fix.assert_called_once()
+        agent.fix_check_failures.assert_not_called()
+        mock_checks.assert_not_called()
+        result = read_action_taken(md_file)
+        assert result is not None
+        assert result.status == "skipped"
+
+    def test_agent_false_unchanged_with_new_symbol_skips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """apply_fix returns False but file already has suggested def → skip."""
+        repo, _target = self._setup(tmp_path, monkeypatch)
+        target = tmp_path / "target.py"
+        target.write_text(
+            "def test_old():\n    pass\n\ndef test_new():\n    pass\n",
+            encoding="utf-8",
+        )
+        repo.index.add(["target.py"])
+        repo.index.commit("update target")
+
+        md_file = tmp_path / "finding-0.md"
+        md_file.write_text(
+            _finding_markdown(
+                "target.py",
+                "def test_old():\n    pass\n",
+                "def test_old():\n    pass\n\ndef test_new():\n    pass\n",
+            )
+        )
+
+        agent = OpencodeAgent()
+        # Preflight should catch this now (new def present) — agent not called.
+        agent.apply_fix = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+        with patch(
+            "deep_architect.review_action_harness.validate_git_repo", return_value=repo
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 2, 0.0, False, HarnessConfig()
+            )
+
+        assert status == "skipped"
+        assert committed is False
+        agent.apply_fix.assert_not_called()
+        assert error is not None and "already" in error.lower()
+
 
 # ---------------------------------------------------------------------------
 # Finding Status Persistence

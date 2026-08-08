@@ -128,6 +128,7 @@ class OpencodeAgent:
                         suggested_code,
                         original_content,
                         agent_response_text=opencode_text,
+                        existing_code=existing_code,
                     )
                 except Exception as e:
                     logger.error(

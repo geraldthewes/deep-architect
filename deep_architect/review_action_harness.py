@@ -574,6 +574,40 @@ def _process_single_finding(
                 break
             last_error = "Agent.apply_fix returned False"
 
+            # File still identical after a failed apply: re-check whether the
+            # finding is already resolved (agent no-op / prior fix). Avoids
+            # burning remaining retries when nothing can change on disk.
+            if original_content is not None:
+                try:
+                    current_after = finding.file_path.read_text(encoding="utf-8")
+                except OSError:
+                    current_after = None
+                if (
+                    current_after is not None
+                    and current_after.replace("\r\n", "\n")
+                    == original_content.replace("\r\n", "\n")
+                ):
+                    reason = finding_already_satisfied(
+                        current_after,
+                        finding.existing_code,
+                        finding.suggested_code,
+                    )
+                    if reason is not None:
+                        logger.info(
+                            "Skipping %s after no-op apply: %s",
+                            finding.finding_id,
+                            reason,
+                        )
+                        write_action_taken(
+                            md_file,
+                            FindingStatus(
+                                status="skipped",
+                                timestamp=_now_iso(),
+                                summary=reason,
+                            ),
+                        )
+                        return ("skipped", False, reason)
+
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -591,16 +625,19 @@ def _process_single_finding(
                 )
 
     if not success:
+        # If every attempt left the file untouched, report a clear no-op error
+        # (still an error: agent completed without applying a needed fix).
+        attempts_used = max_retries + 1
         error_msg = (
             f"Failed to apply fix for {finding.file_path} "
-            f"after {max_retries + 1} attempts: {last_error}"
+            f"after {attempts_used} attempts: {last_error}"
         )
         write_action_taken(
             md_file,
             FindingStatus(
                 status="error",
                 timestamp=_now_iso(),
-                summary=f"Fix failed after {max_retries + 1} attempts",
+                summary=f"Fix failed after {attempts_used} attempts",
                 error_message=error_msg,
             ),
         )
@@ -609,6 +646,35 @@ def _process_single_finding(
             False,
             error_msg,
         )
+
+    # Successful apply that left the target file byte-identical is an
+    # intentional no-op (already satisfied / agent reported already done).
+    # Skip quality checks and commit — there is nothing to verify or ship.
+    if original_content is not None:
+        try:
+            post_content = finding.file_path.read_text(encoding="utf-8")
+        except OSError:
+            post_content = None
+        if (
+            post_content is not None
+            and post_content.replace("\r\n", "\n")
+            == original_content.replace("\r\n", "\n")
+        ):
+            reason = finding_already_satisfied(
+                post_content, finding.existing_code, finding.suggested_code
+            ) or "Already addressed — agent completed with no file changes"
+            logger.info(
+                "Skipping %s: successful no-op (%s)", finding.finding_id, reason
+            )
+            write_action_taken(
+                md_file,
+                FindingStatus(
+                    status="skipped",
+                    timestamp=_now_iso(),
+                    summary=reason,
+                ),
+            )
+            return ("skipped", False, reason)
 
     # Quality-check fix loop: check → feedback → fix until clean or the
     # iteration cap is hit. Fail-closed: a finding is never committed while
