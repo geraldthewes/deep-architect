@@ -226,19 +226,25 @@ class OpencodeAgent:
                         except json.JSONDecodeError:
                             pass
 
+                # Keep ERROR short for terminals / TUI log panes; dump full
+                # diagnostics at DEBUG for post-mortem (and review-action.log).
                 logger.error(
-                    "OpencodeAgent: failed to apply fix for %s: returncode=%d, error=%s, "
-                    "stdout_preview=%s, stderr_preview=%s, error_details=%s, full_stdout=%s, "
-                    "full_stderr=%s, model=%s",
+                    "OpencodeAgent: failed to apply fix for %s: returncode=%d, error=%s",
                     file_path,
                     result.returncode,
                     last_error,
+                )
+                logger.debug(
+                    "OpencodeAgent: failure details for %s: model=%s, "
+                    "stdout_preview=%s, stderr_preview=%s, error_details=%s, "
+                    "full_stdout=%s, full_stderr=%s",
+                    file_path,
+                    self.model,
                     stdout_preview or "(empty)",
                     stderr_preview or "(empty)",
                     " | ".join(error_details[:3]) if error_details else "(none)",
                     full_stdout_for_debug,
                     full_stderr_for_debug,
-                    self.model,
                 )
                 return False
         except FileNotFoundError:

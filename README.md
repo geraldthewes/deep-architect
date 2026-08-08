@@ -570,17 +570,19 @@ Defaults to `feedback/` if no directory is specified.
 | `--max-check-iterations <n>` | (from config) | Post-fix quality-check retry cap; `0` = run checks but never block or retry |
 | `--skip-llm-checks` | off | Run programmatic quality checks only, skip the LLM style-rule judge |
 | `--quality-checks <path>` | (auto-discovered) | Explicit path to a `.quality-checks.toml` file |
-| `--tui` | auto | Force the interactive Rich Live dashboard |
+| `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
 ### Interactive TUI
 
-When stdout is a TTY, `review-action` shows a live Rich dashboard instead of sparse progress lines:
+When stdout is a TTY, `review-action` opens a **full-screen Textual app** (alternate screen) instead of sparse progress lines. Logging and agent diagnostics stay inside a dedicated Log pane so they never scroll the dashboard off-screen.
 
 - **Header** — feedback directory, coding agent/model, finding count, and active flags (`dry-run`, `force`, `skip-errors`)
 - **Progress** — bar with completed/total, elapsed time, ETA, throughput, plus the current finding phase (`applying`, `quality-checks N/M`, `committing`)
 - **Summary stats** — live counters for Fixed, Skipped, Errors, Restored, and pending
-- **Results list** — scrolling window of each finished finding (outcome, id, file, summary/commit)
+- **Results list** — scrollable list of each finished finding (outcome, id, file, summary/commit)
+- **Log pane** — harness and coding-agent log lines (truncated for display); full detail is also written to `<output-dir>/review-action.log`
+- **Keys** — `q` / Ctrl-C request a graceful stop after the current finding; `l` focuses the Log pane; `r` focuses Results
 
 Piped or CI runs (non-TTY) keep plain-text progress. Use `--tui` / `--no-tui` to override auto-detect. Disk output (`## Action Taken` blocks, `review-action_summary.md`, git commits) is the same in TUI and plain mode.
 

@@ -55,10 +55,18 @@ logger = get_logger(__name__)
 _shutdown_requested = False
 
 
-def _sigint_handler(signum: int, frame: object) -> None:
-    """Signal handler for SIGINT (CTRL-C). Sets shutdown flag and logs."""
+def request_shutdown() -> None:
+    """Request a graceful stop after the current finding finishes.
+
+    Used by the SIGINT handler and the full-screen TUI stop binding.
+    """
     global _shutdown_requested
     _shutdown_requested = True
+
+
+def _sigint_handler(signum: int, frame: object) -> None:
+    """Signal handler for SIGINT (CTRL-C). Sets shutdown flag and logs."""
+    request_shutdown()
     logger.info("CTRL-C received, finishing current finding before shutdown...")
 
 
@@ -99,7 +107,7 @@ class FindingStatus:
 
 
 # ---------------------------------------------------------------------------
-# Progress reporting (plain text or Rich Live TUI)
+# Progress reporting (plain text or full-screen Textual TUI)
 # ---------------------------------------------------------------------------
 
 
@@ -1174,7 +1182,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     tui_group.add_argument(
         "--tui",
         action="store_true",
-        help="Force the interactive Rich Live dashboard",
+        help="Force the interactive full-screen TUI dashboard",
     )
     tui_group.add_argument(
         "--no-tui",
@@ -1191,16 +1199,6 @@ def _force_tui_from_args(args: argparse.Namespace) -> bool | None:
     if getattr(args, "no_tui", False):
         return False
     return None
-
-
-def _make_reporter(force_tui: bool | None) -> ProgressReporter:
-    """Select the plain or Rich Live progress reporter."""
-    if should_use_tui(force_tui=force_tui):
-        # Lazy import keeps plain mode free of Rich Live dependencies at import time.
-        from deep_architect.review_action_tui import TuiReporter  # noqa: PLC0415
-
-        return TuiReporter()
-    return PlainReporter()
 
 
 _OUTCOME_LABELS = {
@@ -1378,9 +1376,9 @@ def main(argv: list[str] | None = None) -> int:
     use_tui = should_use_tui(force_tui=force_tui)
 
     log_level = logging.DEBUG if args.verbose else logging.INFO
-    # Under TUI, suppress INFO progress logs so they don't scramble Live output.
-    if use_tui and not args.verbose:
-        log_level = logging.WARNING
+    # Console handlers stay until the Textual app mounts, so early setup errors
+    # remain visible. The app then detaches stream handlers and routes logs
+    # into its Log pane (and review-action.log).
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -1461,20 +1459,12 @@ def main(argv: list[str] | None = None) -> int:
         total_findings=total_findings,
         coding_agent=coding_agent,
     )
-    reporter = _make_reporter(force_tui)
-    reporter.start(meta)
 
-    stats: dict[str, int] = {
-        "processed": 0,
-        "committed": 0,
-        "skipped": 0,
-        "errors": 0,
-        "restored": 0,
-        "total_findings": total_findings,
-        "interrupted": False,
-    }
-    try:
-        stats = process_findings(
+    def _run_pipeline(
+        on_result: Callable[[ProgressEvent], None],
+        on_phase: Callable[[ProgressEvent], None],
+    ) -> dict[str, int]:
+        return process_findings(
             args.output_dir,
             agent,
             agent_config.max_retries,
@@ -1487,14 +1477,41 @@ def main(argv: list[str] | None = None) -> int:
             quality_checks_override=args.quality_checks,
             run_started_at=run_started_at,
             coding_agent=coding_agent,
-            on_result=reporter.on_result,
-            on_phase=reporter.on_phase,
+            on_result=on_result,
+            on_phase=on_phase,
         )
-    except BaseException:
-        reporter.finish(stats)
-        raise
+
+    stats: dict[str, int]
+    if use_tui:
+        # Lazy import keeps plain mode free of Textual at import time.
+        from deep_architect.review_action_tui import run_review_action_tui  # noqa: PLC0415
+
+        log_file = args.output_dir / "review-action.log"
+        stats = run_review_action_tui(
+            meta,
+            _run_pipeline,
+            log_level=log_level,
+            log_file=log_file,
+        )
     else:
-        reporter.finish(stats)
+        reporter: ProgressReporter = PlainReporter()
+        reporter.start(meta)
+        stats = {
+            "processed": 0,
+            "committed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "restored": 0,
+            "total_findings": total_findings,
+            "interrupted": 0,
+        }
+        try:
+            stats = _run_pipeline(reporter.on_result, reporter.on_phase)
+        except BaseException:
+            reporter.finish(stats)
+            raise
+        else:
+            reporter.finish(stats)
 
     print_summary(
         stats, args.output_dir, run_stats, run_started_at=run_started_at, coding_agent=coding_agent
