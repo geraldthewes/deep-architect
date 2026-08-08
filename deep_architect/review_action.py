@@ -9,13 +9,15 @@ from deep_architect.coding_agents import (
     OpencodeAgent,
     create_agent,
 )
+from deep_architect.feedback_report import (
+    ReviewFinding,
+    is_valid_finding,
+    parse_markdown_finding,
+)
 from deep_architect.review_action_harness import (
     FindingStatus,
-    ReviewFinding,
     has_action_taken,
-    is_valid_finding,
     main,
-    parse_markdown_finding,
     process_findings,
     read_action_taken,
     write_action_taken,

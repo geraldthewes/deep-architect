@@ -38,7 +38,7 @@ just install    # or: uv sync && uv tool install --editable .
 
 `just install` does two things:
 - `uv sync` — sets up `deep-architect/.venv` for local development (tests, lint, type check)
-- `uv tool install --editable .` — installs `adversarial-architect`, `review-analyzer`, and `review-action` into `~/.local/bin` (via `uv`'s isolated tool environments), so they're on your `PATH` in **any** terminal, in **any** repository. This matters because `review-action` and `review-analyzer` are meant to be run from inside the repo you're applying fixes to, not from inside `deep-architect` itself.
+- `uv tool install --editable .` — installs `adversarial-architect`, `review-analyzer`, `review-feedback-browse`, and `review-action` into `~/.local/bin` (via `uv`'s isolated tool environments), so they're on your `PATH` in **any** terminal, in **any** repository. This matters because `review-action` and `review-analyzer` are meant to be run from inside the repo you're applying fixes to, not from inside `deep-architect` itself.
 
 `--editable` means source edits in `deep-architect/` are picked up immediately, with no reinstall needed. If you only ran `uv sync` (no `uv tool install`), the commands only exist inside `deep-architect/.venv/bin/` and must be invoked with `uv run <command>` from inside this directory — running them bare from another repo will fail with `command not found`.
 
@@ -47,6 +47,7 @@ Verify the install:
 ```bash
 adversarial-architect --help
 review-analyzer --help
+review-feedback-browse --help
 review-action --help
 ```
 
@@ -509,6 +510,40 @@ export OPENCODE_BIN=/path/to/your/opencode
 
 ---
 
+## Review Feedback Browse
+
+`review-feedback-browse` is a view-only Textual TUI for navigating the Markdown output of `review-analyzer`. Use it after analysis (and before or instead of `review-action`) to inspect verdicts and read full finding reports without grepping flat files.
+
+### Usage
+
+```bash
+uv run review-feedback-browse [feedback_dir]
+```
+
+Defaults to `feedback/` if no directory is specified (same convention as `review-action`).
+
+### Navigation
+
+| Key | Action |
+|-----|--------|
+| Enter | Drill into selected verdict or finding |
+| Esc | Go back one level |
+| n / p | Next / previous finding (on the detail screen, within the current verdict) |
+| q | Quit |
+
+Drill-down order: **summary** (counts by verdict) → **finding list** for a verdict → **detail** (comment, existing/suggested code, LLM analysis).
+
+### Example
+
+```bash
+# After review-analyzer wrote feedback-proj-0013/
+uv run review-feedback-browse feedback-proj-0013/
+```
+
+This tool does not modify findings, apply fixes, or replace `INDEX.md` / per-finding Markdown files — it only browses them.
+
+---
+
 ## Review Action Harness
 
 `review-action` consumes the Markdown output of `review-analyzer` and automatically applies the suggested fixes for `VALID` findings. It processes each finding sequentially through a coding agent, validates the changes, and creates an atomic git commit.
@@ -563,7 +598,10 @@ opencode --ocr code-review.json
 # 2. Analyze and triage findings
 uv run review-analyzer code-review.json --output-dir feedback/
 
-# 3. Apply VALID fixes automatically
+# 3. (Optional) Browse triage results interactively
+uv run review-feedback-browse feedback/
+
+# 4. Apply VALID fixes automatically
 uv run review-action feedback/
 ```
 

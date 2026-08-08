@@ -16,12 +16,14 @@ dependencies = [
     "gitpython>=3.1",
     "rich>=13.0",
     "pathspec>=1.1",
+    "textual>=8.2",
 ]
 
 [project.scripts]
 adversarial-architect = "deep_architect.cli:app"
 review-action = "deep_architect.review_action_harness:main"
 review-analyzer = "deep_architect.review_analyzer:main"
+review-feedback-browse = "deep_architect.review_feedback_browse:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["deep_architect"]

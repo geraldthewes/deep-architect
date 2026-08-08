@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from deep_architect import feedback_report as _feedback_report
 from deep_architect.coding_agents import (
     CodingAgent,
     CodingAgentConfig,
@@ -39,6 +40,13 @@ from deep_architect.quality_checks import (
 if TYPE_CHECKING:
     from deep_architect.agents.client import RunStats
 
+# Re-export parse helpers for tests and public API compatibility.
+ReviewFinding = _feedback_report.ReviewFinding
+get_verdict = _feedback_report.get_verdict
+is_valid_finding = _feedback_report.is_valid_finding
+parse_markdown_finding = _feedback_report.parse_markdown_finding
+_NON_FINDING_FILES = _feedback_report.NON_FINDING_FILES
+
 logger = get_logger(__name__)
 
 # Global flag for graceful shutdown on SIGINT
@@ -57,11 +65,6 @@ def _sigint_handler(signum: int, frame: object) -> None:
 # ---------------------------------------------------------------------------
 
 DEFAULT_OUTPUT_DIR = Path("feedback")
-
-# Files in the output dir that are not findings and must never be processed
-# or written back to as if they were one (includes review-action's own
-# summary file, which lives alongside the findings it reports on).
-_NON_FINDING_FILES = frozenset({"SUMMARY.md", "INDEX.md", "review-action_summary.md"})
 
 
 def _exclude_output_dir(paths: list[Path], output_dir: Path) -> list[Path]:
@@ -83,20 +86,6 @@ def _exclude_output_dir(paths: list[Path], output_dir: Path) -> list[Path]:
 
 
 @dataclass
-class ReviewFinding:
-    """Represents a single review finding from review-analyzer output."""
-
-    file_path: Path
-    line_start: int | None
-    line_end: int | None
-    existing_code: str
-    suggested_code: str
-    review_comment: str
-    analysis: str
-    finding_id: str
-
-
-@dataclass
 class FindingStatus:
     """Persistent status for a finding — written to the .md file after each run."""
 
@@ -105,100 +94,6 @@ class FindingStatus:
     summary: str = ""
     commit_sha: str | None = None
     error_message: str | None = None
-
-
-def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:
-    """Parse a review-analyzer markdown file into a ReviewFinding."""
-    try:
-        content = file_path.read_text(encoding="utf-8")
-    except Exception as e:
-        logger.error("Failed to read %s: %s", file_path, e)
-        return None
-
-    finding_id = file_path.stem
-
-    file_match = re.search(r"-?\s*\*\*File\*\*:?\s*(.+)", content)
-    lines_match = re.search(r"-?\s*\*\*Lines\*\*:?\s*(.+)", content)
-    existing_code_match = re.search(
-        r"\*\*Existing Code\*\*:?\s*```[a-zA-Z]*\s*\n(.*?)\n```",
-        content,
-        re.DOTALL,
-    )
-    suggested_code_match = re.search(
-        r"\*\*Suggested Code\*\*:?\s*```[a-zA-Z]*\s*\n(.*?)\n```",
-        content,
-        re.DOTALL,
-    )
-    review_comment_match = re.search(
-        r"-?\s*\*\*Review Comment\*\*:?\s*(.+?)(?:\n|$)", content
-    )
-    analysis_match = re.search(
-        r"\*\*Analysis\*\*:?\s*\n(.*?)(?:\n---|\n\*Generated|\Z)",
-        content,
-        re.DOTALL,
-    )
-
-    if file_match is None or existing_code_match is None or review_comment_match is None:
-        missing = [
-            name
-            for name, match in (
-                ("File", file_match),
-                ("Existing Code", existing_code_match),
-                ("Review Comment", review_comment_match),
-            )
-            if match is None
-        ]
-        logger.warning("Missing required sections in %s: %s", file_path, ", ".join(missing))
-        return None
-
-    file_str = file_match.group(1).strip()
-    try:
-        full_path = Path(file_str)
-    except Exception as e:
-        logger.error(
-            "Invalid file path '%s' in %s: %s", file_str, file_path, e
-        )
-        return None
-
-    line_start: int | None = None
-    line_end: int | None = None
-    if lines_match:
-        lines_str = lines_match.group(1).strip()
-        if lines_str and "-" in lines_str:
-            try:
-                parts = lines_str.split("-")
-                line_start = int(parts[0].strip())
-                line_end = int(parts[1].strip())
-            except ValueError:
-                pass
-
-    return ReviewFinding(
-        file_path=full_path,
-        line_start=line_start,
-        line_end=line_end,
-        existing_code=existing_code_match.group(1).strip(),
-        suggested_code=suggested_code_match.group(1).strip() if suggested_code_match else "",
-        review_comment=review_comment_match.group(1).strip(),
-        analysis=analysis_match.group(1).strip() if analysis_match else "",
-        finding_id=finding_id,
-    )
-
-
-def get_verdict(file_path: Path) -> str | None:
-    """Return the finding's verdict ("VALID"/"REJECTED"/"BACKLOG"), or None."""
-    try:
-        content = file_path.read_text(encoding="utf-8")
-        verdict_match = re.search(
-            r"\*\*Verdict\*\*:?\s*(VALID|REJECTED|BACKLOG)", content
-        )
-        return verdict_match.group(1) if verdict_match else None
-    except Exception:
-        return None
-
-
-def is_valid_finding(file_path: Path) -> bool:
-    """Check if a markdown file contains a VALID verdict."""
-    return get_verdict(file_path) == "VALID"
 
 
 # ---------------------------------------------------------------------------
