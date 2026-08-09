@@ -629,10 +629,12 @@ Defaults to `feedback/` if no directory is specified.
 
 When stdout is a TTY, `review-action` opens a **full-screen Textual app** (alternate screen) instead of sparse progress lines. Logging and agent diagnostics stay inside a dedicated Log pane so they never scroll the dashboard off-screen.
 
-- **Header** — feedback directory, coding agent/model, finding count, and active flags (`dry-run`, `force`, `skip-errors`)
-- **Progress** — bar with completed/total, elapsed time, ETA, throughput, plus the current finding phase (`applying`, `quality-checks N/M`, `committing`)
+Live progress counts **VALID findings only**. Analyzer verdicts of `REJECTED`, `BACKLOG`, or `TIMEOUT` are not auto-fixed; they do not appear in the progress bar or results list. They are still stamped with an Action Taken record, listed in `review-action_summary.md`, and visible in `review-feedback-browse`.
+
+- **Header** — feedback directory, coding agent/model, VALID finding count, and active flags (`dry-run`, `force`, `skip-errors`)
+- **Progress** — bar with completed/total (VALID only), elapsed time, ETA, throughput, plus the current finding phase (`applying`, `quality-checks N/M`, `committing`)
 - **Summary stats** — live counters for Fixed, Skipped, Errors, Restored, and pending
-- **Results list** — scrollable list of each finished finding (outcome, id, file, summary/commit)
+- **Results list** — scrollable list of each finished VALID finding (outcome, id, file, summary/commit)
 - **Log pane** — harness and coding-agent log lines (truncated for display); full detail is also written to `<output-dir>/review-action.log`
 - **Keys** — `q` / Ctrl-C request a graceful stop after the current finding; `l` focuses the Log pane; `r` focuses Results
 
@@ -680,9 +682,12 @@ uv run review-feedback-browse feedback/
 
 ### Output
 
-`review-action` prints a summary of items processed, committed, skipped, and errors, and
-writes the same counters plus a per-finding table to `<output-dir>/review-action_summary.md`
-(updated after every finding, so a crash mid-run still leaves an accurate record). Each run
+`review-action` prints a summary of items processed, committed, skipped, and errors (plus
+a `Not actioned (non-VALID)` count when present), and writes the same counters plus a
+per-finding table to `<output-dir>/review-action_summary.md` (updated after every finding,
+so a crash mid-run still leaves an accurate record). The Findings table includes every
+finding file — Fixed, Error, Skipped, and Rejected (BACKLOG/REJECTED/…) — so non-VALID
+triage results remain auditable even though they never enter the live fix loop. Each run
 writes its own timestamped block — tagged with the coding agent/model that was used — and
 **appends** it below any prior runs' blocks rather than overwriting the file, so
 `review-action_summary.md` accumulates a history of every invocation against that output

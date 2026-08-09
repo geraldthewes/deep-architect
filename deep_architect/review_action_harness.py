@@ -788,6 +788,64 @@ def _emit_result(
     )
 
 
+def count_actionable_findings(output_dir: Path) -> int:
+    """Count VALID finding markdown files (excludes summary/index and non-VALID).
+
+    Used for live progress totals — REJECTED/BACKLOG/TIMEOUT findings are never
+    auto-fixed and must not inflate the UI denominator.
+    """
+    if not output_dir.exists():
+        return 0
+    return sum(
+        1
+        for p in output_dir.glob("*.md")
+        if p.name not in _NON_FINDING_FILES and is_valid_finding(p)
+    )
+
+
+def _stamp_non_valid_findings(
+    non_valid_files: list[Path],
+    *,
+    force: bool,
+) -> int:
+    """Write Action Taken for non-VALID findings without live progress events.
+
+    Returns the number of non-VALID findings considered (for summary counters).
+    Already-stamped rejected findings are left alone unless *force* is set.
+    """
+    stamped_or_seen = 0
+    for md_file in non_valid_files:
+        stamped_or_seen += 1
+        existing = read_action_taken(md_file) if has_action_taken(md_file) else None
+        if (
+            not force
+            and existing is not None
+            and existing.status == "rejected"
+        ):
+            logger.debug(
+                "Non-VALID finding already marked rejected: %s",
+                md_file.name,
+            )
+            continue
+
+        verdict_label = get_verdict(md_file) or "unknown"
+        summary = f"Verdict {verdict_label} — not actioned"
+        logger.info(
+            "Not actioning non-VALID finding: %s (verdict: %s)",
+            md_file.name,
+            verdict_label,
+        )
+        write_action_taken(
+            md_file,
+            FindingStatus(
+                status="rejected",
+                timestamp=_now_iso(),
+                summary=summary,
+            ),
+        )
+    return stamped_or_seen
+
+
 def process_findings(
     output_dir: Path,
     agent: CodingAgent,
@@ -807,13 +865,18 @@ def process_findings(
 ) -> dict[str, int]:
     """Process all VALID findings in the output directory.
 
-    Already-processed findings (those with a ## Action Taken section) are
+    Non-VALID findings (REJECTED, BACKLOG, TIMEOUT, unknown) are stamped with
+    an Action Taken ``rejected`` record for the summary table and
+    review-feedback-browse, but they do not appear in live progress events or
+    inflate Fixed/Skipped/Restored counters.
+
+    Already-processed VALID findings (those with a ## Action Taken section) are
     skipped unless force=True.  Findings previously marked "error" are
     retried unless skip_errors=True.
 
-    *on_result* is invoked after each finding is considered (including
-    restores/skips/rejects). *on_phase* is invoked for mid-finding phases
-    such as applying a fix or running quality checks.
+    *on_result* is invoked after each **VALID** finding is considered (including
+    restores/skips). *on_phase* is invoked for mid-finding phases such as
+    applying a fix or running quality checks.
     """
     if run_started_at is None:
         run_started_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -829,6 +892,7 @@ def process_findings(
         "skipped": 0,
         "errors": 0,
         "restored": 0,
+        "not_actioned": 0,
         "total_findings": 0,
         "interrupted": False,
     }
@@ -842,27 +906,36 @@ def process_findings(
         logger.warning("No markdown files found in %s", output_dir)
         return stats
 
-    logger.info("Found %d markdown files to process", len(markdown_files))
+    finding_files = [p for p in markdown_files if p.name not in _NON_FINDING_FILES]
+    logger.info("Found %d finding markdown files", len(finding_files))
 
-    # Count eligible findings first
-    for md_file in markdown_files:
-        if md_file.name not in _NON_FINDING_FILES:
-            stats["total_findings"] += 1
+    actionable: list[Path] = []
+    non_valid: list[Path] = []
+    for md_file in finding_files:
+        if is_valid_finding(md_file):
+            actionable.append(md_file)
+        else:
+            non_valid.append(md_file)
 
+    # Quiet stamp: summary + browse still see Rejected rows; live UI does not.
+    stats["not_actioned"] = _stamp_non_valid_findings(non_valid, force=force)
+
+    stats["total_findings"] = len(actionable)
     total = stats["total_findings"]
     finding_index = 0
     completed = 0
     t0 = time.monotonic()
 
-    for md_file in markdown_files:
+    if non_valid:
+        write_summary_file(
+            stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
+        )
+
+    for md_file in actionable:
         # Check for interrupt signal
         if _shutdown_requested:
             stats["interrupted"] = True
             break
-
-        # Skip summary/index files
-        if md_file.name in _NON_FINDING_FILES:
-            continue
 
         finding_index += 1
         pct = round(finding_index / total * 100) if total else 0
@@ -875,10 +948,10 @@ def process_findings(
             md_file.stem,
         )
 
-        # Skip already-processed findings unless forced
+        # Skip already-processed VALID findings unless forced
         if not force and has_action_taken(md_file):
             existing = read_action_taken(md_file)
-            if existing and existing.status in ("completed", "rejected", "skipped"):
+            if existing and existing.status in ("completed", "skipped"):
                 logger.info(
                     "Skipping %s finding: %s (commit: %s)",
                     existing.status,
@@ -940,43 +1013,6 @@ def process_findings(
                 )
 
         stats["processed"] += 1
-
-        verdict = get_verdict(md_file)
-        if verdict != "VALID":
-            verdict_label = verdict or "unknown"
-            logger.info(
-                "Skipping non-VALID finding: %s (verdict: %s)",
-                md_file.name,
-                verdict_label,
-            )
-            logger.info("  -> Rejected (verdict %s)", verdict_label)
-            stats["skipped"] += 1
-            summary = f"Verdict {verdict_label} — not actioned"
-            write_action_taken(
-                md_file,
-                FindingStatus(
-                    status="rejected",
-                    timestamp=_now_iso(),
-                    summary=summary,
-                ),
-            )
-            completed += 1
-            write_summary_file(
-                stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
-            )
-            _emit_result(
-                on_result,
-                completed=completed,
-                total=total,
-                finding_id=md_file.stem,
-                file_path=file_path,
-                outcome="rejected",
-                summary=summary,
-                commit_sha=None,
-                t0=t0,
-                stats=stats,
-            )
-            continue
 
         status, committed, error = _process_single_finding(
             md_file,
@@ -1236,14 +1272,17 @@ def write_summary_file(
         f"Skipped:    {stats['skipped']}",
         f"Errors:     {stats['errors']}",
     ]
+    not_actioned = int(stats.get("not_actioned", 0))
+    if not_actioned:
+        lines.append(f"Not actioned (non-VALID): {not_actioned}")
     if run_stats is not None:
         lines.append(
             f"Total cost: ${run_stats.total_cost_usd:.4f} "
             f"across {run_stats.num_calls} agent call(s)"
         )
     lines.append(f"Interrupted: {'yes' if stats['interrupted'] else 'no'}")
-    processed = stats['processed']
-    total = stats['total_findings']
+    processed = stats["processed"]
+    total = stats["total_findings"]
     lines.append(f"Progress: {processed} out of {total} findings processed")
     lines.append("")
     lines.append(build_detailed_summary(output_dir))
@@ -1274,6 +1313,9 @@ def print_summary(
     print(f"Committed:  {stats['committed']}")
     print(f"Skipped:    {stats['skipped']}")
     print(f"Errors:     {stats['errors']}")
+    not_actioned = int(stats.get("not_actioned", 0))
+    if not_actioned:
+        print(f"Not actioned (non-VALID): {not_actioned}")
     if run_stats is not None:
         print(
             f"Total cost: ${run_stats.total_cost_usd:.4f} "
@@ -1362,14 +1404,8 @@ def main(argv: list[str] | None = None) -> int:
 
     run_stats = init_run_stats()
 
-    # Count findings for RunMeta before processing (cheap directory scan).
-    total_findings = 0
-    if args.output_dir.exists():
-        total_findings = sum(
-            1
-            for p in args.output_dir.glob("*.md")
-            if p.name not in _NON_FINDING_FILES
-        )
+    # Count VALID findings only for RunMeta (non-VALID never appear in live UI).
+    total_findings = count_actionable_findings(args.output_dir)
 
     meta = RunMeta(
         output_dir=args.output_dir,
@@ -1424,6 +1460,7 @@ def main(argv: list[str] | None = None) -> int:
             "skipped": 0,
             "errors": 0,
             "restored": 0,
+            "not_actioned": 0,
             "total_findings": total_findings,
             "interrupted": 0,
         }

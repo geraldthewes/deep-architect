@@ -437,21 +437,29 @@ class TestProcessFindings:
         assert stats["errors"] == 0
 
     def test_skips_non_valid_findings(self, tmp_path: Path) -> None:
-        """Test that non-VALID findings are skipped."""
+        """Non-VALID findings are stamped but do not inflate live counters."""
         output_dir = tmp_path / "feedback"
         output_dir.mkdir()
 
-        (output_dir / "rejected-0.md").write_text(REJECTED_MARKDOWN)
-        (output_dir / "backlog-0.md").write_text(BACKLOG_MARKDOWN)
+        rejected = output_dir / "rejected-0.md"
+        backlog = output_dir / "backlog-0.md"
+        rejected.write_text(REJECTED_MARKDOWN)
+        backlog.write_text(BACKLOG_MARKDOWN)
 
         agent = OpencodeAgent()
         stats = process_findings(
             output_dir, agent, 0, 0.0, HarnessConfig()
         )
 
-        assert stats["processed"] == 2
-        assert stats["skipped"] == 2
+        assert stats["total_findings"] == 0
+        assert stats["processed"] == 0
+        assert stats["skipped"] == 0
         assert stats["committed"] == 0
+        assert stats["not_actioned"] == 2
+        assert read_action_taken(rejected) is not None
+        assert read_action_taken(rejected).status == "rejected"  # type: ignore[union-attr]
+        assert read_action_taken(backlog) is not None
+        assert read_action_taken(backlog).status == "rejected"  # type: ignore[union-attr]
 
     def test_skips_summary_and_index(self, tmp_path: Path) -> None:
         """Test that SUMMARY.md and INDEX.md are skipped."""
@@ -1350,7 +1358,7 @@ class TestProcessFindingsPersistence:
 
         'skipped' is deterministically terminal (warning-type, already
         satisfied, or stale anchor) — replaying it re-skips it identically
-        every run, so it belongs with completed/rejected in the restore set.
+        every run, so it belongs with completed in the restore set.
         """
         output_dir = tmp_path / "feedback"
         output_dir.mkdir()
@@ -1652,7 +1660,7 @@ class TestProcessFindingsPersistence:
         self, tmp_path: Path
     ) -> None:
         """A REJECTED/BACKLOG finding gets a persisted "rejected" record and
-        must not be re-evaluated (and re-counted) on every rerun."""
+        must not re-inflate live counters or restored on every rerun."""
         output_dir = tmp_path / "feedback"
         output_dir.mkdir()
 
@@ -1664,19 +1672,26 @@ class TestProcessFindingsPersistence:
             output_dir, agent, 0, 0.0, HarnessConfig()
         )
 
-        assert stats["processed"] == 1
-        assert stats["skipped"] == 1
+        assert stats["processed"] == 0
+        assert stats["skipped"] == 0
+        assert stats["not_actioned"] == 1
+        assert stats["total_findings"] == 0
 
         status = read_action_taken(md_file)
         assert status is not None
         assert status.status == "rejected"
         assert "REJECTED" in status.summary
+        first_ts = status.timestamp
 
         stats2 = process_findings(
             output_dir, agent, 0, 0.0, HarnessConfig()
         )
         assert stats2["processed"] == 0
-        assert stats2["restored"] == 1
+        assert stats2["restored"] == 0
+        assert stats2["not_actioned"] == 1
+        status2 = read_action_taken(md_file)
+        assert status2 is not None
+        assert status2.timestamp == first_ts
 
     def test_dry_run_status_is_replayed_on_real_run(
         self, tmp_path: Path
@@ -1902,10 +1917,14 @@ class TestSummaryFile:
         assert "Run started:  2026-01-01 00:00:00 UTC" in summary_text
         assert "Coding agent: opencode (sonnet)" in summary_text
         assert "Committed:  1" in summary_text
+        assert "Not actioned (non-VALID): 1" in summary_text
+        assert "Progress: 1 out of 1 findings processed" in summary_text
         assert "## Findings" in summary_text
         assert "[valid-0](./valid-0.md)" in summary_text
         assert "[rejected-0](./rejected-0.md)" in summary_text
         assert "Rejected (REJECTED)" in summary_text
+        assert stats["total_findings"] == 1
+        assert stats["not_actioned"] == 1
 
     def test_summary_file_survives_crash_mid_run(
         self, tmp_path: Path
@@ -2075,12 +2094,14 @@ class TestPlainReporter:
 
 class TestProcessFindingsCallback:
 
-    def test_on_result_called_for_rejected_and_restored(
+    def test_on_result_not_called_for_non_valid_but_restored_valid(
         self, tmp_path: Path
     ) -> None:
+        """Non-VALID findings stamp silently; only VALID emit progress events."""
         output_dir = tmp_path / "feedback"
         output_dir.mkdir()
-        (output_dir / "rejected-0.md").write_text(REJECTED_MARKDOWN)
+        rejected = output_dir / "rejected-0.md"
+        rejected.write_text(REJECTED_MARKDOWN)
         completed = output_dir / "done-0.md"
         completed.write_text(VALID_COMMENT_MARKDOWN)
         write_action_taken(
@@ -2104,12 +2125,16 @@ class TestProcessFindingsCallback:
             on_result=events.append,
         )
 
-        assert stats["processed"] == 1  # rejected counts as processed
+        assert stats["processed"] == 0
         assert stats["restored"] == 1
-        assert stats["skipped"] == 1
-        assert len(events) == 2
-        outcomes = {e.outcome for e in events}
-        assert outcomes == {"rejected", "restored"}
-        assert {e.completed for e in events} == {1, 2}
-        assert all(e.total == 2 for e in events)
+        assert stats["skipped"] == 0
+        assert stats["not_actioned"] == 1
+        assert stats["total_findings"] == 1
+        assert len(events) == 1
+        assert events[0].outcome == "restored"
+        assert events[0].finding_id == "done-0"
+        assert events[0].completed == 1
+        assert events[0].total == 1
+        assert read_action_taken(rejected) is not None
+        assert read_action_taken(rejected).status == "rejected"  # type: ignore[union-attr]
 
