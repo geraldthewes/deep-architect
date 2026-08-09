@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import deep_architect.review_analyzer as review_analyzer_mod
 from deep_architect.review_analyzer import (
     AnalysisResult,
     CircuitBreaker,
@@ -30,9 +32,9 @@ from deep_architect.review_analyzer import (
     get_filepath_hash,
     load_ocr_json,
     process_findings_concurrently,
+    request_shutdown,
     should_use_tui,
 )
-from deep_architect.review_analyzer_tui import format_duration, render_dashboard
 
 # ---------------------------------------------------------------------------
 # load_ocr_json
@@ -698,100 +700,58 @@ class TestProcessFindingsCallback:
 
 
 # ---------------------------------------------------------------------------
-# TUI render_dashboard / format_duration
+# Graceful shutdown during concurrent processing
 # ---------------------------------------------------------------------------
 
 
-class TestFormatDuration:
+class TestProcessFindingsShutdown:
 
-    def test_seconds(self) -> None:
-        assert format_duration(5) == "5s"
-
-    def test_minutes(self) -> None:
-        assert format_duration(65) == "1m05s"
-
-    def test_hours(self) -> None:
-        assert format_duration(3661) == "1h01m01s"
-
-
-class TestRenderDashboard:
-
-    def _meta(self) -> RunMeta:
-        return RunMeta(
-            ocr_file=Path("code-review.json"),
-            model="standard/coder",
-            concurrency=5,
-            output_dir=Path("feedback"),
-            summary_only=False,
-            total_findings=2,
-            raw_findings=4,
-            ocr_status="success",
-            ocr_summary={"files_reviewed": 3, "comments": 4},
-        )
-
-    def test_renders_key_fields(self) -> None:
-        from rich.console import Console
-
-        finding = {
-            "type": "comment",
-            "path": "src/foo.py",
-            "start_line": 10,
-            "end_line": 12,
-            "index": 0,
-            "content": "rename",
-        }
-        results = [
-            (finding, AnalysisResult(Verdict.VALID, "Real bug in naming", "")),
-            (
-                {
-                    "type": "warning",
-                    "file": "src/bar.py",
-                    "message": "timeout",
-                    "index": 0,
-                },
-                AnalysisResult(Verdict.REJECTED, "False positive timeout", ""),
-            ),
+    def test_skips_pending_after_shutdown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After request_shutdown, remaining findings are not analyzed."""
+        review_analyzer_mod._shutdown_requested = False
+        findings = [
+            {
+                "type": "comment",
+                "path": f"f{i}.py",
+                "start_line": 1,
+                "end_line": 1,
+                "index": i,
+                "content": "c",
+            }
+            for i in range(8)
         ]
-        counts = {"valid": 1, "rejected": 1, "backlog": 0}
-        renderable = render_dashboard(
-            self._meta(),
-            counts,
-            completed=2,
-            total=2,
-            elapsed_s=12.5,
-            results=results,
-            console_height=40,
-            console_width=100,
-        )
-        console = Console(record=True, force_terminal=True, width=100, height=40)
-        console.print(renderable)
-        text = console.export_text()
-        assert "Review Analyzer" in text
-        assert "code-review.json" in text
-        assert "standard/coder" in text
-        assert "files_reviewed: 3" in text
-        assert "VALID" in text
-        assert "REJECTED" in text
-        assert "src/foo.py" in text
-        assert "Real bug" in text
+        started = 0
+        lock = threading.Lock()
 
-    def test_empty_results_waiting(self) -> None:
-        from rich.console import Console
+        def fake_analyze(
+            finding: dict[str, Any], model: str, breaker: Any
+        ) -> AnalysisResult:
+            nonlocal started
+            with lock:
+                started += 1
+                n = started
+            # First analysis requests stop; later submissions see the flag
+            # in _analyze_one and never call analyze_finding.
+            if n == 1:
+                request_shutdown()
+            return AnalysisResult(Verdict.VALID, f"ok-{finding['index']}", "")
 
-        renderable = render_dashboard(
-            self._meta(),
-            {v.value: 0 for v in Verdict},
-            completed=0,
-            total=2,
-            elapsed_s=0.0,
-            results=[],
-            console_height=40,
-            console_width=80,
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer.analyze_finding", fake_analyze
         )
-        console = Console(record=True, force_terminal=True, width=80, height=40)
-        console.print(renderable)
-        text = console.export_text()
-        assert "waiting for results" in text
+
+        results = process_findings_concurrently(
+            findings,
+            model="m",
+            max_workers=1,  # serial: after first completes, rest skip
+            output_dir=tmp_path,
+        )
+        assert len(results) == 1
+        assert started == 1
+        assert results[0][1].verdict == Verdict.VALID
+        review_analyzer_mod._shutdown_requested = False
 
 
 # ---------------------------------------------------------------------------

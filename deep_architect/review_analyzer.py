@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -21,6 +22,26 @@ log = logging.getLogger(__name__)
 __OPENCODE_BIN = os.environ.get(
     "OPENCODE_BIN", "/home/gerald/.opencode/bin/opencode"
 )
+
+# Global flag for graceful shutdown on SIGINT / TUI stop.
+_shutdown_requested = False
+
+
+def request_shutdown() -> None:
+    """Request a graceful stop after in-flight analyses finish.
+
+    Used by the SIGINT handler and the full-screen TUI stop binding.
+    """
+    global _shutdown_requested
+    _shutdown_requested = True
+
+
+def _sigint_handler(signum: int, frame: object) -> None:
+    """Signal handler for SIGINT (CTRL-C). Sets shutdown flag and logs."""
+    request_shutdown()
+    log.info(
+        "CTRL-C received, finishing in-flight analyses before shutdown..."
+    )
 
 
 class Verdict(StrEnum):
@@ -67,13 +88,13 @@ class ProgressEvent:
 
 
 class ProgressReporter(Protocol):
-    """Progress sink used by the analysis pipeline (plain text or TUI)."""
+    """Progress sink used by the plain-text analysis pipeline."""
 
     def start(self, meta: RunMeta) -> None:
         """Called once before processing begins."""
 
     def on_result(self, event: ProgressEvent) -> None:
-        """Called on the main thread after each finding completes."""
+        """Called after each finding completes (may be from a worker thread)."""
 
     def finish(self, counts: dict[str, int]) -> None:
         """Called after all findings are processed (before or after summary write)."""
@@ -442,7 +463,12 @@ def process_findings_concurrently(
     each result to disk immediately (when *output_dir* is given) so progress
     is preserved on crash.
 
-    *on_result* is invoked on the main thread after each finding completes.
+    *on_result* is invoked after each finding completes (caller thread of
+    :func:`as_completed` — typically a worker thread when the Textual TUI
+    runs the pipeline).
+
+    When :func:`request_shutdown` has been called, pending (not-yet-started)
+    futures are cancelled; in-flight analyses are still collected.
     """
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -451,14 +477,24 @@ def process_findings_concurrently(
     results: list[tuple[dict[str, Any], AnalysisResult]] = []
     total = len(findings)
     t0 = time.monotonic()
+    cancel_pending = False
+
+    def _analyze_one(finding: dict[str, Any]) -> AnalysisResult | None:
+        # Skip work queued after a graceful stop (cancel alone is not always
+        # enough for ThreadPoolExecutor work still sitting in the queue).
+        if _shutdown_requested:
+            return None
+        return analyze_finding(finding, model, breaker)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_finding = {
-            executor.submit(analyze_finding, finding, model, breaker): finding
-            for finding in findings
+            executor.submit(_analyze_one, finding): finding for finding in findings
         }
 
-        for i, future in enumerate(as_completed(future_to_finding), 1):
+        for future in as_completed(future_to_finding):
+            if future.cancelled():
+                continue
+
             finding = future_to_finding[future]
             try:
                 analysis = future.result(timeout=180)
@@ -468,6 +504,10 @@ def process_findings_concurrently(
                     analysis=f"Task exception: {exc}",
                     raw_response="",
                 )
+
+            if analysis is None:
+                # Worker saw the shutdown flag before starting the LLM call.
+                continue
 
             results.append((finding, analysis))
 
@@ -485,13 +525,24 @@ def process_findings_concurrently(
             if on_result is not None:
                 on_result(
                     ProgressEvent(
-                        completed=i,
+                        completed=len(results),
                         total=total,
                         finding=finding,
                         analysis=analysis,
                         elapsed_s=time.monotonic() - t0,
                     )
                 )
+
+            if _shutdown_requested and not cancel_pending:
+                cancel_pending = True
+                log.info(
+                    "Shutdown requested — cancelling pending analyses "
+                    "(%d completed so far)",
+                    len(results),
+                )
+                for pending in future_to_finding:
+                    if not pending.done():
+                        pending.cancel()
 
     return results
 
@@ -671,59 +722,33 @@ def _force_tui_from_args(args: argparse.Namespace) -> bool | None:
     return None
 
 
-def _make_reporter(force_tui: bool | None) -> ProgressReporter:
-    """Select the plain or Rich Live progress reporter."""
-    if should_use_tui(force_tui=force_tui):
-        # Lazy import avoids a module cycle and keeps plain mode free of Rich.
-        from deep_architect.review_analyzer_tui import TuiReporter  # noqa: PLC0415
-
-        return TuiReporter()
-    return PlainReporter()
-
-
-def _run_analysis(
-    findings: list[dict[str, Any]],
-    model: str,
-    concurrency: int,
-    output_dir: Path,
-    summary_only: bool,
-    *,
-    meta: RunMeta,
-    reporter: ProgressReporter,
-) -> None:
-    """End-to-end analysis pipeline: process → write → summary."""
-    log.info(
-        "Processing %d findings (model=%s, concurrency=%d)",
-        len(findings),
-        model,
-        concurrency,
-    )
-
-    reporter.start(meta)
-    try:
-        results = process_findings_concurrently(
-            findings,
-            model,
-            concurrency,
-            output_dir if not summary_only else None,
-            on_result=reporter.on_result,
-        )
-    except BaseException:
-        # Ensure Live is torn down on Ctrl-C / unexpected errors.
-        counts_partial: dict[str, int] = {v.value: 0 for v in Verdict}
-        reporter.finish(counts_partial)
-        raise
-
+def _tally_counts(
+    results: list[tuple[dict[str, Any], AnalysisResult]],
+) -> dict[str, int]:
+    """Count results by verdict."""
     counts: dict[str, int] = {v.value: 0 for v in Verdict}
     for _, analysis in results:
-        counts[analysis.verdict.value] += 1
+        counts[analysis.verdict.value] = counts.get(analysis.verdict.value, 0) + 1
+    return counts
 
-    reporter.finish(counts)
 
+def _emit_summary_outputs(
+    results: list[tuple[dict[str, Any], AnalysisResult]],
+    counts: dict[str, int],
+    *,
+    model: str,
+    output_dir: Path,
+    summary_only: bool,
+    total_findings: int,
+) -> None:
+    """Print and optionally write SUMMARY.md / INDEX.md after analysis."""
     if not summary_only:
         log.info("Per-finding reports written to %s", output_dir)
 
-    summary = generate_summary_report(counts, len(findings), model=model)
+    processed = sum(counts.get(v.value, 0) for v in Verdict)
+    # Prefer actual processed count (partial run on interrupt) over planned total.
+    summary_total = processed if processed else total_findings
+    summary = generate_summary_report(counts, summary_total, model=model)
     print("\n" + summary)
 
     if not summary_only:
@@ -793,7 +818,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     tui_group.add_argument(
         "--tui",
         action="store_true",
-        help="Force the interactive Rich Live dashboard",
+        help="Force the interactive full-screen TUI dashboard",
     )
     tui_group.add_argument(
         "--no-tui",
@@ -803,9 +828,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> None:
-    """Entry point for ``review-analyzer``."""
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for ``review-analyzer``.
+
+    Returns 0 on success, 130 if interrupted, 1 on other failures that still
+    produce partial output (reserved for future use).
+    """
+    global _shutdown_requested
+    _shutdown_requested = False
+    signal.signal(signal.SIGINT, _sigint_handler)
+
     args = parse_args(argv)
+
+    force_tui = _force_tui_from_args(args)
+    use_tui = should_use_tui(force_tui=force_tui)
+
+    log_level = logging.INFO
+    # Console handlers stay until the Textual app mounts, so early setup
+    # messages remain visible. The app then detaches stream handlers and
+    # routes logs into its Log pane (and review-analyzer.log).
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
 
     ocr_data = load_ocr_json(args.ocr_file)
     findings = extract_findings(ocr_data)
@@ -820,7 +865,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not filtered:
         print("No findings to process after filtering.")
-        return
+        return 0
 
     ocr_summary_raw = ocr_data.get("summary")
     ocr_summary: dict[str, Any] = (
@@ -838,18 +883,84 @@ def main(argv: list[str] | None = None) -> None:
         ocr_status=str(ocr_status) if ocr_status is not None else None,
         ocr_summary=ocr_summary,
     )
-    reporter = _make_reporter(_force_tui_from_args(args))
 
-    _run_analysis(
-        filtered,
-        args.model,
-        args.concurrency,
-        args.output_dir,
-        args.summary_only,
-        meta=meta,
-        reporter=reporter,
+    output_dir_for_write: Path | None = (
+        None if args.summary_only else args.output_dir
     )
+    results_box: list[tuple[dict[str, Any], AnalysisResult]] = []
+
+    def _run_pipeline(
+        on_result: Callable[[ProgressEvent], None],
+    ) -> dict[str, int]:
+        log.info(
+            "Processing %d findings (model=%s, concurrency=%d)",
+            len(filtered),
+            args.model,
+            args.concurrency,
+        )
+        results = process_findings_concurrently(
+            filtered,
+            args.model,
+            args.concurrency,
+            output_dir_for_write,
+            on_result=on_result,
+        )
+        results_box[:] = results
+        counts = _tally_counts(results)
+        counts["total_findings"] = meta.total_findings
+        if _shutdown_requested:
+            counts["interrupted"] = 1
+        return counts
+
+    if use_tui:
+        # Lazy import keeps plain mode free of Textual at import time.
+        from deep_architect.review_analyzer_tui import (  # noqa: PLC0415
+            run_review_analyzer_tui,
+        )
+
+        log_file = (
+            None
+            if args.summary_only
+            else args.output_dir / "review-analyzer.log"
+        )
+        counts = run_review_analyzer_tui(
+            meta,
+            _run_pipeline,
+            log_level=log_level,
+            log_file=log_file,
+        )
+        results = list(results_box)
+        # Prefer authoritative pipeline tallies when available; fall back to
+        # UI-tracked counts from the app return value.
+        if results:
+            counts = _tally_counts(results)
+            counts["total_findings"] = meta.total_findings
+            if _shutdown_requested or counts.get("interrupted"):
+                counts["interrupted"] = 1
+    else:
+        reporter: ProgressReporter = PlainReporter()
+        reporter.start(meta)
+        try:
+            counts = _run_pipeline(reporter.on_result)
+        except BaseException:
+            reporter.finish({v.value: 0 for v in Verdict})
+            raise
+        else:
+            reporter.finish(counts)
+        results = list(results_box)
+
+    _emit_summary_outputs(
+        results,
+        counts,
+        model=args.model,
+        output_dir=args.output_dir,
+        summary_only=args.summary_only,
+        total_findings=meta.total_findings,
+    )
+
+    return 130 if counts.get("interrupted") else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
+

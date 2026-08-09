@@ -473,19 +473,21 @@ uv run review-analyzer <ocr-file.json> [options]
 | `--concurrency <n>` | `5` | Maximum parallel LLM requests |
 | `--output-dir <dir>` | `feedback/` | Directory for per-finding Markdown reports |
 | `--summary-only` | off | Print summary counts without writing individual files |
-| `--tui` | auto | Force the interactive Rich Live dashboard |
+| `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
 ### Interactive TUI
 
-When stdout is a TTY, `review-analyzer` shows a live Rich dashboard instead of sparse progress lines:
+When stdout is a TTY, `review-analyzer` opens a **full-screen Textual app** (alternate screen) instead of sparse progress lines. Logging and opencode diagnostics stay inside a dedicated Log pane so they never scroll the dashboard off-screen.
 
 - **Header** — OCR path, model, concurrency, output dir, filtered finding count, plus OCR `status` / `summary` fields when present
 - **Progress** — bar with completed/total, elapsed time, ETA, and throughput
 - **Summary stats** — live counters for `VALID`, `REJECTED`, `BACKLOG`, and pending
-- **Results list** — scrolling window of each completed finding (verdict, location, analysis preview)
+- **Results list** — scrollable list of each completed finding (verdict, location, analysis preview)
+- **Log pane** — harness and opencode log lines (truncated for display); full detail is also written to `<output-dir>/review-analyzer.log`
+- **Keys** — `q` / Ctrl-C request a graceful stop after in-flight analyses finish; `l` focuses the Log pane; `r` focuses Results
 
-Piped or CI runs (non-TTY) keep plain-text progress. Use `--tui` / `--no-tui` to override auto-detect.
+Piped or CI runs (non-TTY) keep plain-text progress. Use `--tui` / `--no-tui` to override auto-detect. Disk output (per-finding reports, `SUMMARY.md`, `INDEX.md`) is the same in TUI and plain mode.
 
 ### Example
 
