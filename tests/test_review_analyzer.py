@@ -35,6 +35,7 @@ from deep_architect.review_analyzer import (
     load_ocr_json,
     process_findings_concurrently,
     request_shutdown,
+    resolve_opencode_timeout,
     select_timeout_findings_for_retry,
     should_use_tui,
     tally_output_dir_verdicts,
@@ -357,7 +358,7 @@ class TestCallOpendencodeAnalysis:
         result = call_opencode_analysis("prompt", "model")
         assert result.verdict == Verdict.VALID
         mock_run.assert_called_once()
-        assert mock_run.call_args.kwargs["timeout"] == 120
+        assert mock_run.call_args.kwargs["timeout"] == 300
 
     @patch("deep_architect.review_analyzer.subprocess.run")
     def test_custom_timeout_passed(self, mock_run: MagicMock) -> None:
@@ -468,17 +469,45 @@ class TestDefaultOpencodeTimeout:
 
     def test_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("REVIEW_ANALYZER_TIMEOUT", raising=False)
-        assert default_opencode_timeout() == 120
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer._timeout_from_config",
+            lambda: None,
+        )
+        assert default_opencode_timeout() == 300
 
     def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("REVIEW_ANALYZER_TIMEOUT", "90")
         assert default_opencode_timeout() == 90
 
-    def test_invalid_env_falls_back(
+    def test_invalid_env_falls_back_to_config_or_default(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("REVIEW_ANALYZER_TIMEOUT", "nope")
-        assert default_opencode_timeout() == 120
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer._timeout_from_config",
+            lambda: None,
+        )
+        assert default_opencode_timeout() == 300
+
+    def test_config_used_when_env_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("REVIEW_ANALYZER_TIMEOUT", raising=False)
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer._timeout_from_config",
+            lambda: 240,
+        )
+        assert default_opencode_timeout() == 240
+
+    def test_cli_wins_over_env_and_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REVIEW_ANALYZER_TIMEOUT", "90")
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer._timeout_from_config",
+            lambda: 240,
+        )
+        assert resolve_opencode_timeout(45) == 45
 
 
 # ---------------------------------------------------------------------------

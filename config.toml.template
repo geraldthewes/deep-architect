@@ -48,3 +48,6 @@ check_max_fix_iterations     = 3    # Retry cap for the check-fix loop; 0 = run 
 check_command_timeout        = 120  # Default per-command timeout (seconds) for auto-detected checks
 # coding_agent_timeout       = 300  # Per coding-agent call timeout (seconds); omit for per-agent default (opencode 120, claude/grok 300)
 judge_parse_retries          = 2    # LLM style-judge JSON parse retries (attempts = retries + 1)
+# review-analyzer: per-attempt opencode wall-clock limit (seconds).
+# Override with CLI --timeout or env REVIEW_ANALYZER_TIMEOUT (those win over this).
+review_analyzer_timeout      = 300

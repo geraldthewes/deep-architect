@@ -44,6 +44,9 @@ class ThresholdConfig(BaseModel):
     coding_agent_max_turns: int | None = None
     # review-action: LLM style-judge JSON parse-and-retry cap (attempts = retries + 1)
     judge_parse_retries: int = 2
+    # review-analyzer: wall-clock limit per opencode attempt (seconds);
+    # CLI --timeout and env REVIEW_ANALYZER_TIMEOUT override this when set
+    review_analyzer_timeout: int = 300
 
 
 def _default_generator() -> AgentConfig:

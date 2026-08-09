@@ -24,8 +24,9 @@ __OPENCODE_BIN = os.environ.get(
 )
 
 # Default wall-clock limit for a single ``opencode run`` attempt (seconds).
-# Overridable via ``REVIEW_ANALYZER_TIMEOUT`` env or ``--timeout`` CLI flag.
-DEFAULT_OPENCODE_TIMEOUT = 120
+# Precedence when resolving: CLI --timeout > REVIEW_ANALYZER_TIMEOUT env >
+# config.toml [thresholds] review_analyzer_timeout > this constant.
+DEFAULT_OPENCODE_TIMEOUT = 300
 # Extra attempts after the first timeout (1 = one retry → two total attempts).
 DEFAULT_TIMEOUT_RETRIES = 1
 
@@ -33,32 +34,74 @@ DEFAULT_TIMEOUT_RETRIES = 1
 _shutdown_requested = False
 
 
-def default_opencode_timeout() -> int:
-    """Resolve the default opencode timeout from the environment.
-
-    Reads ``REVIEW_ANALYZER_TIMEOUT`` (positive integer seconds). Falls back to
-    :data:`DEFAULT_OPENCODE_TIMEOUT` when unset or invalid.
-    """
+def _timeout_from_env() -> int | None:
+    """Parse ``REVIEW_ANALYZER_TIMEOUT``; return None if unset or invalid."""
     raw = os.environ.get("REVIEW_ANALYZER_TIMEOUT")
     if raw is None or raw.strip() == "":
-        return DEFAULT_OPENCODE_TIMEOUT
+        return None
     try:
         value = int(raw)
     except ValueError:
         log.warning(
-            "Invalid REVIEW_ANALYZER_TIMEOUT=%r; using default %ds",
+            "Invalid REVIEW_ANALYZER_TIMEOUT=%r; ignoring",
             raw,
-            DEFAULT_OPENCODE_TIMEOUT,
         )
-        return DEFAULT_OPENCODE_TIMEOUT
+        return None
     if value < 1:
         log.warning(
-            "REVIEW_ANALYZER_TIMEOUT=%d must be >= 1; using default %ds",
+            "REVIEW_ANALYZER_TIMEOUT=%d must be >= 1; ignoring",
             value,
-            DEFAULT_OPENCODE_TIMEOUT,
         )
-        return DEFAULT_OPENCODE_TIMEOUT
+        return None
     return value
+
+
+def _timeout_from_config() -> int | None:
+    """Load ``thresholds.review_analyzer_timeout`` from config.toml if present."""
+    try:
+        from deep_architect.config import load_config  # noqa: PLC0415
+
+        cfg = load_config()
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        log.warning(
+            "Could not load config for review_analyzer_timeout: %s",
+            exc,
+        )
+        return None
+
+    value = int(cfg.thresholds.review_analyzer_timeout)
+    if value < 1:
+        log.warning(
+            "thresholds.review_analyzer_timeout=%d must be >= 1; ignoring",
+            value,
+        )
+        return None
+    return value
+
+
+def resolve_opencode_timeout(cli_timeout: int | None = None) -> int:
+    """Resolve opencode timeout: CLI > env > config.toml > hard-coded default."""
+    if cli_timeout is not None:
+        if cli_timeout < 1:
+            raise ValueError(f"timeout must be >= 1, got {cli_timeout}")
+        return cli_timeout
+
+    env_value = _timeout_from_env()
+    if env_value is not None:
+        return env_value
+
+    config_value = _timeout_from_config()
+    if config_value is not None:
+        return config_value
+
+    return DEFAULT_OPENCODE_TIMEOUT
+
+
+def default_opencode_timeout() -> int:
+    """Resolve timeout without a CLI override (env > config > default)."""
+    return resolve_opencode_timeout(None)
 
 
 def request_shutdown() -> None:
@@ -1104,7 +1147,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="SECONDS",
         help=(
             "Wall-clock limit per opencode attempt in seconds "
-            f"(default: env REVIEW_ANALYZER_TIMEOUT or {DEFAULT_OPENCODE_TIMEOUT}; "
+            f"(default: CLI unset → env REVIEW_ANALYZER_TIMEOUT → "
+            f"config review_analyzer_timeout → {DEFAULT_OPENCODE_TIMEOUT}; "
             f"timed-out calls retry once by default)"
         ),
     )
@@ -1165,14 +1209,10 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    timeout_seconds = (
-        args.timeout if args.timeout is not None else default_opencode_timeout()
-    )
-    if timeout_seconds < 1:
-        print(
-            f"Error: --timeout must be >= 1 (got {timeout_seconds})",
-            file=sys.stderr,
-        )
+    try:
+        timeout_seconds = resolve_opencode_timeout(args.timeout)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
     ocr_data = load_ocr_json(args.ocr_file)

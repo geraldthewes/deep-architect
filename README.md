@@ -471,7 +471,7 @@ uv run review-analyzer <ocr-file.json> [options]
 | `--exclude <glob>` | (none) | Skip findings matching this path pattern (repeatable) |
 | `--model <name>` | `standard/coder` | LLM model for analysis |
 | `--concurrency <n>` | `5` | Maximum parallel LLM requests |
-| `--timeout <seconds>` | `120` (or `REVIEW_ANALYZER_TIMEOUT`) | Wall-clock limit per opencode attempt; timed-out calls retry once by default |
+| `--timeout <seconds>` | `300` (config / env) | Wall-clock limit per opencode attempt; timed-out calls retry once by default |
 | `--output-dir <dir>` | `feedback/` | Directory for per-finding Markdown reports |
 | `--summary-only` | off | Print summary counts without writing individual files |
 | `--retry-timeouts` | off | Re-analyze only findings whose prior report is `TIMEOUT` (or legacy timed-out `BACKLOG`) |
@@ -502,8 +502,7 @@ uv run review-analyzer code-review.json \
 # Re-triage only findings that previously timed out (same OCR + output dir)
 uv run review-analyzer code-review.json \
     --output-dir feedback/ \
-    --retry-timeouts \
-    --timeout 300
+    --retry-timeouts
 ```
 
 ### Output
@@ -518,8 +517,18 @@ The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to 
 
 ```bash
 export OPENCODE_BIN=/path/to/your/opencode
-# Optional: default per-attempt timeout in seconds (CLI --timeout wins when set)
-export REVIEW_ANALYZER_TIMEOUT=180
+```
+
+Per-attempt timeout resolution (highest wins):
+
+1. CLI `--timeout SECONDS`
+2. Env `REVIEW_ANALYZER_TIMEOUT`
+3. Config `~/.config/deep-architect/config.toml` → `[thresholds] review_analyzer_timeout` (default **300**)
+4. Built-in default **300**
+
+```toml
+[thresholds]
+review_analyzer_timeout = 300  # seconds per opencode attempt
 ```
 
 ---

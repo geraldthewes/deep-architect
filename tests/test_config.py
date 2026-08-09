@@ -172,6 +172,27 @@ def test_threshold_coding_agent_timeout_default() -> None:
     assert cfg.coding_agent_timeout is None
 
 
+def test_threshold_review_analyzer_timeout_default() -> None:
+    from deep_architect.config import ThresholdConfig
+
+    cfg = ThresholdConfig()
+    assert cfg.review_analyzer_timeout == 300
+
+
+def test_load_config_with_review_analyzer_timeout(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text("""
+[generator]
+model = "sonnet"
+[critic]
+model = "sonnet"
+[thresholds]
+review_analyzer_timeout = 180
+""")
+    cfg = load_config(cfg_file)
+    assert cfg.thresholds.review_analyzer_timeout == 180
+
+
 def test_load_config_with_coding_agent_timeout(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text("""
