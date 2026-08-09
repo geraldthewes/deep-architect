@@ -20,7 +20,13 @@ logger = get_logger(__name__)
 NON_FINDING_FILES = frozenset({"SUMMARY.md", "INDEX.md", "review-action_summary.md"})
 
 # Preferred display / sort order for known verdicts.
-VERDICT_ORDER: tuple[str, ...] = ("VALID", "REJECTED", "BACKLOG", "UNKNOWN")
+VERDICT_ORDER: tuple[str, ...] = (
+    "VALID",
+    "REJECTED",
+    "BACKLOG",
+    "TIMEOUT",
+    "UNKNOWN",
+)
 
 DEFAULT_FEEDBACK_DIR = Path("feedback")
 
@@ -144,7 +150,10 @@ def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:
 
 
 def get_verdict(file_path: Path) -> str | None:
-    """Return the finding's verdict (\"VALID\"/\"REJECTED\"/\"BACKLOG\"), or None."""
+    """Return the finding's verdict, or None if missing.
+
+    Recognized values: VALID, REJECTED, BACKLOG, TIMEOUT.
+    """
     try:
         content = file_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -152,7 +161,7 @@ def get_verdict(file_path: Path) -> str | None:
         return None
 
     verdict_match = re.search(
-        r"\*\*Verdict\*\*:?\s*(VALID|REJECTED|BACKLOG)", content
+        r"\*\*Verdict\*\*:?\s*(VALID|REJECTED|BACKLOG|TIMEOUT)", content
     )
     return verdict_match.group(1) if verdict_match else None
 

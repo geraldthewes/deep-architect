@@ -106,6 +106,10 @@ class TestGetVerdict:
         md = _write_finding(tmp_path, "b.md", _finding_md(verdict="BACKLOG"))
         assert get_verdict(md) == "BACKLOG"
 
+    def test_timeout(self, tmp_path: Path) -> None:
+        md = _write_finding(tmp_path, "t.md", _finding_md(verdict="TIMEOUT"))
+        assert get_verdict(md) == "TIMEOUT"
+
     def test_missing_verdict(self, tmp_path: Path) -> None:
         path = _write_finding(tmp_path, "n.md", "# no verdict\n")
         assert get_verdict(path) is None
@@ -237,7 +241,7 @@ class TestLoadFeedbackDir:
         content = (
             "# OCR Review Analysis\n\n"
             "## LLM Analysis\n\n"
-            "**Verdict**: BACKLOG\n\n"
+            "**Verdict**: TIMEOUT\n\n"
             "**Analysis**:\n"
             "opencode execution timed out (>120s)\n"
         )
@@ -245,7 +249,7 @@ class TestLoadFeedbackDir:
         report = load_feedback_dir(tmp_path)
         assert len(report.findings) == 1
         f = report.findings[0]
-        assert f.verdict == "BACKLOG"
+        assert f.verdict == "TIMEOUT"
         assert f.source_file == "(unknown)"
         assert "timed out" in f.raw_markdown
 

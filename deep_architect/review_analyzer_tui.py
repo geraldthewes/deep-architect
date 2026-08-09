@@ -38,12 +38,14 @@ _VERDICT_STYLE: dict[Verdict, str] = {
     Verdict.VALID: "bold green",
     Verdict.REJECTED: "bold red",
     Verdict.BACKLOG: "bold yellow",
+    Verdict.TIMEOUT: "bold magenta",
 }
 
 _VERDICT_ICON: dict[Verdict, str] = {
     Verdict.VALID: "✓",
     Verdict.REJECTED: "✗",
     Verdict.BACKLOG: "◷",
+    Verdict.TIMEOUT: "⌛",
 }
 
 _LEVEL_STYLE: dict[int, str] = {
@@ -158,11 +160,13 @@ def format_summary(counts: dict[str, int], total: int, completed: int) -> str:
     valid = counts.get(Verdict.VALID.value, 0)
     rejected = counts.get(Verdict.REJECTED.value, 0)
     backlog = counts.get(Verdict.BACKLOG.value, 0)
+    timeout = counts.get(Verdict.TIMEOUT.value, 0)
     pending = max(total - completed, 0)
     return (
         f"[bold green]✓ VALID {valid}[/bold green]    "
         f"[bold red]✗ REJECTED {rejected}[/bold red]    "
         f"[bold yellow]◷ BACKLOG {backlog}[/bold yellow]    "
+        f"[bold magenta]⌛ TIMEOUT {timeout}[/bold magenta]    "
         f"[dim]pending {pending}[/dim]"
     )
 
@@ -381,6 +385,7 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
             Verdict.VALID.value: 0,
             Verdict.REJECTED.value: 0,
             Verdict.BACKLOG.value: 0,
+            Verdict.TIMEOUT.value: 0,
             "interrupted": 0,
             "total_findings": meta.total_findings,
         }
@@ -540,6 +545,7 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
             Verdict.VALID.value: int(self._counts.get(Verdict.VALID.value, 0)),
             Verdict.REJECTED.value: int(self._counts.get(Verdict.REJECTED.value, 0)),
             Verdict.BACKLOG.value: int(self._counts.get(Verdict.BACKLOG.value, 0)),
+            Verdict.TIMEOUT.value: int(self._counts.get(Verdict.TIMEOUT.value, 0)),
             "total_findings": self._total,
             "interrupted": int(bool(self._counts.get("interrupted"))),
         }
@@ -571,12 +577,14 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
                 Verdict.VALID.value,
                 Verdict.REJECTED.value,
                 Verdict.BACKLOG.value,
+                Verdict.TIMEOUT.value,
             ):
                 self._counts[key] = int(value)
         finished = (
             int(self._counts.get(Verdict.VALID.value, 0))
             + int(self._counts.get(Verdict.REJECTED.value, 0))
             + int(self._counts.get(Verdict.BACKLOG.value, 0))
+            + int(self._counts.get(Verdict.TIMEOUT.value, 0))
         )
         if finished:
             self._completed = max(self._completed, finished)
@@ -613,7 +621,7 @@ def run_review_analyzer_tui(
     """Run the full-screen TUI and return final verdict counts from the pipeline.
 
     *pipeline* is called on a worker thread as ``pipeline(on_result)`` and must
-    return a counts dict (valid/rejected/backlog keys, plus optional
+    return a counts dict (valid/rejected/backlog/timeout keys, plus optional
     ``interrupted`` / ``total_findings``).
     """
     app = ReviewAnalyzerApp(
@@ -629,6 +637,7 @@ def run_review_analyzer_tui(
             Verdict.VALID.value: 0,
             Verdict.REJECTED.value: 0,
             Verdict.BACKLOG.value: 0,
+            Verdict.TIMEOUT.value: 0,
             "total_findings": meta.total_findings,
             "interrupted": 1,
         }

@@ -23,8 +23,42 @@ __OPENCODE_BIN = os.environ.get(
     "OPENCODE_BIN", "/home/gerald/.opencode/bin/opencode"
 )
 
+# Default wall-clock limit for a single ``opencode run`` attempt (seconds).
+# Overridable via ``REVIEW_ANALYZER_TIMEOUT`` env or ``--timeout`` CLI flag.
+DEFAULT_OPENCODE_TIMEOUT = 120
+# Extra attempts after the first timeout (1 = one retry → two total attempts).
+DEFAULT_TIMEOUT_RETRIES = 1
+
 # Global flag for graceful shutdown on SIGINT / TUI stop.
 _shutdown_requested = False
+
+
+def default_opencode_timeout() -> int:
+    """Resolve the default opencode timeout from the environment.
+
+    Reads ``REVIEW_ANALYZER_TIMEOUT`` (positive integer seconds). Falls back to
+    :data:`DEFAULT_OPENCODE_TIMEOUT` when unset or invalid.
+    """
+    raw = os.environ.get("REVIEW_ANALYZER_TIMEOUT")
+    if raw is None or raw.strip() == "":
+        return DEFAULT_OPENCODE_TIMEOUT
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning(
+            "Invalid REVIEW_ANALYZER_TIMEOUT=%r; using default %ds",
+            raw,
+            DEFAULT_OPENCODE_TIMEOUT,
+        )
+        return DEFAULT_OPENCODE_TIMEOUT
+    if value < 1:
+        log.warning(
+            "REVIEW_ANALYZER_TIMEOUT=%d must be >= 1; using default %ds",
+            value,
+            DEFAULT_OPENCODE_TIMEOUT,
+        )
+        return DEFAULT_OPENCODE_TIMEOUT
+    return value
 
 
 def request_shutdown() -> None:
@@ -45,11 +79,17 @@ def _sigint_handler(signum: int, frame: object) -> None:
 
 
 class Verdict(StrEnum):
-    """LLM verdict categories for a review finding."""
+    """LLM / infrastructure verdict categories for a review finding.
+
+    ``TIMEOUT`` is infrastructure-only: the opencode subprocess hit the wall-
+    clock limit (after retries). It is not an intentional LLM triage decision
+    and must not be conflated with ``BACKLOG``.
+    """
 
     VALID = "valid"
     REJECTED = "rejected"
     BACKLOG = "backlog"
+    TIMEOUT = "timeout"
 
 
 @dataclass
@@ -390,8 +430,8 @@ def _parse_opencode_json(raw_stdout: str) -> AnalysisResult:
     )
 
 
-def call_opencode_analysis(prompt: str, model: str) -> AnalysisResult:
-    """Invoke ``opencode run`` and return a structured analysis result."""
+def _run_opencode_once(prompt: str, model: str, *, timeout: int) -> AnalysisResult:
+    """Single ``opencode run`` attempt with a wall-clock *timeout* (seconds)."""
     try:
         result = subprocess.run(
             [
@@ -405,7 +445,7 @@ def call_opencode_analysis(prompt: str, model: str) -> AnalysisResult:
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=timeout,
         )
     except FileNotFoundError:
         return AnalysisResult(
@@ -415,31 +455,86 @@ def call_opencode_analysis(prompt: str, model: str) -> AnalysisResult:
         )
     except subprocess.TimeoutExpired:
         return AnalysisResult(
-            verdict=Verdict.BACKLOG,
-            analysis="opencode execution timed out (>120s)",
+            verdict=Verdict.TIMEOUT,
+            analysis=f"opencode execution timed out (>{timeout}s)",
             raw_response="",
         )
 
     if result.returncode != 0:
         return AnalysisResult(
             verdict=Verdict.BACKLOG,
-            analysis=f"opencode exited with code {result.returncode}: {result.stderr[:300]}",
+            analysis=(
+                f"opencode exited with code {result.returncode}: "
+                f"{result.stderr[:300]}"
+            ),
             raw_response=result.stderr,
         )
 
     return _parse_opencode_json(result.stdout)
 
 
+def call_opencode_analysis(
+    prompt: str,
+    model: str,
+    *,
+    timeout: int = DEFAULT_OPENCODE_TIMEOUT,
+    timeout_retries: int = DEFAULT_TIMEOUT_RETRIES,
+) -> AnalysisResult:
+    """Invoke ``opencode run`` and return a structured analysis result.
+
+    On timeout, retries up to *timeout_retries* extra times (default: once).
+    Exhausted timeouts yield :attr:`Verdict.TIMEOUT` rather than BACKLOG.
+    """
+    if timeout < 1:
+        raise ValueError(f"timeout must be >= 1, got {timeout}")
+    retries = max(0, timeout_retries)
+    attempts = 1 + retries
+    last: AnalysisResult | None = None
+
+    for attempt in range(1, attempts + 1):
+        result = _run_opencode_once(prompt, model, timeout=timeout)
+        if result.verdict != Verdict.TIMEOUT:
+            return result
+        last = result
+        if attempt < attempts:
+            log.warning(
+                "opencode timed out after %ds (attempt %d/%d); retrying",
+                timeout,
+                attempt,
+                attempts,
+            )
+
+    assert last is not None
+    if attempts > 1:
+        return AnalysisResult(
+            verdict=Verdict.TIMEOUT,
+            analysis=(
+                f"opencode execution timed out (>{timeout}s) "
+                f"after {attempts} attempts"
+            ),
+            raw_response=last.raw_response,
+        )
+    return last
+
+
 def analyze_finding(
     finding: dict[str, Any],
     model: str,
     breaker: CircuitBreaker,
+    *,
+    timeout: int = DEFAULT_OPENCODE_TIMEOUT,
+    timeout_retries: int = DEFAULT_TIMEOUT_RETRIES,
 ) -> AnalysisResult:
     """Analyze a single finding through opencode with circuit-breaker protection."""
     prompt = construct_analysis_prompt(finding)
 
     def _invoke() -> AnalysisResult:
-        return call_opencode_analysis(prompt, model)
+        return call_opencode_analysis(
+            prompt,
+            model,
+            timeout=timeout,
+            timeout_retries=timeout_retries,
+        )
 
     try:
         result: AnalysisResult = breaker.call(_invoke)
@@ -458,6 +553,9 @@ def process_findings_concurrently(
     max_workers: int,
     output_dir: Path | None = None,
     on_result: Callable[[ProgressEvent], None] | None = None,
+    *,
+    timeout: int = DEFAULT_OPENCODE_TIMEOUT,
+    timeout_retries: int = DEFAULT_TIMEOUT_RETRIES,
 ) -> list[tuple[dict[str, Any], AnalysisResult]]:
     """Process findings through LLM with controlled concurrency, writing
     each result to disk immediately (when *output_dir* is given) so progress
@@ -478,13 +576,21 @@ def process_findings_concurrently(
     total = len(findings)
     t0 = time.monotonic()
     cancel_pending = False
+    # Allow wall time for all attempts plus a small grace period for process teardown.
+    future_wait = timeout * (1 + max(0, timeout_retries)) + 60
 
     def _analyze_one(finding: dict[str, Any]) -> AnalysisResult | None:
         # Skip work queued after a graceful stop (cancel alone is not always
         # enough for ThreadPoolExecutor work still sitting in the queue).
         if _shutdown_requested:
             return None
-        return analyze_finding(finding, model, breaker)
+        return analyze_finding(
+            finding,
+            model,
+            breaker,
+            timeout=timeout,
+            timeout_retries=timeout_retries,
+        )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_finding = {
@@ -497,7 +603,7 @@ def process_findings_concurrently(
 
             finding = future_to_finding[future]
             try:
-                analysis = future.result(timeout=180)
+                analysis = future.result(timeout=future_wait)
             except Exception as exc:
                 analysis = AnalysisResult(
                     verdict=Verdict.BACKLOG,
@@ -561,6 +667,85 @@ def generate_output_filename(finding: dict[str, Any]) -> str:
         filepath = finding["file"]
         item_index = finding["index"]
     return f"{get_filepath_hash(filepath)}-{item_index}.md"
+
+
+def is_timeout_report(file_path: Path) -> bool:
+    """Return True if *file_path* is a timeout analysis report.
+
+    Matches:
+    - Current format: ``**Verdict**: TIMEOUT``
+    - Legacy format: ``BACKLOG`` whose analysis text mentions opencode timed out
+    """
+    # Local import avoids a circular dependency at module load time.
+    from deep_architect.feedback_report import (  # noqa: PLC0415
+        NON_FINDING_FILES,
+        get_verdict,
+    )
+
+    if file_path.name in NON_FINDING_FILES:
+        return False
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.error("Failed to read %s for timeout check: %s", file_path, exc)
+        return False
+
+    verdict = get_verdict(file_path)
+    if verdict == "TIMEOUT":
+        return True
+    if verdict == "BACKLOG":
+        lower = content.lower()
+        return "timed out" in lower and "opencode" in lower
+    return False
+
+
+def select_timeout_findings_for_retry(
+    findings: list[dict[str, Any]],
+    output_dir: Path,
+) -> list[dict[str, Any]]:
+    """Return OCR findings whose prior report in *output_dir* timed out.
+
+    Matching is by output filename (``{hash}-{index}.md``), so include/exclude
+    filters applied to *findings* still apply.
+    """
+    if not output_dir.is_dir():
+        return []
+
+    timeout_names: set[str] = set()
+    for md_path in output_dir.glob("*.md"):
+        if is_timeout_report(md_path):
+            timeout_names.add(md_path.name)
+
+    if not timeout_names:
+        return []
+
+    return [
+        finding
+        for finding in findings
+        if generate_output_filename(finding) in timeout_names
+    ]
+
+
+def tally_output_dir_verdicts(output_dir: Path) -> dict[str, int]:
+    """Count verdicts from all finding markdown files in *output_dir*."""
+    from deep_architect.feedback_report import (  # noqa: PLC0415
+        NON_FINDING_FILES,
+        get_verdict,
+    )
+
+    counts: dict[str, int] = {v.value: 0 for v in Verdict}
+    if not output_dir.is_dir():
+        return counts
+
+    for md_path in sorted(output_dir.glob("*.md")):
+        if md_path.name in NON_FINDING_FILES:
+            continue
+        verdict = get_verdict(md_path)
+        if verdict is None:
+            continue
+        key = verdict.lower()
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def generate_markdown_content(
@@ -741,14 +926,37 @@ def _emit_summary_outputs(
     summary_only: bool,
     total_findings: int,
 ) -> None:
-    """Print and optionally write SUMMARY.md / INDEX.md after analysis."""
+    """Print and optionally write SUMMARY.md / INDEX.md after analysis.
+
+    When writing to *output_dir*, SUMMARY counts are tallied from disk so a
+    ``--retry-timeouts`` pass still reflects the full feedback directory.
+    INDEX uses the in-memory *results* for a full run; on partial/retry runs
+    remaining files stay on disk and INDEX is rebuilt from the current
+    *results* union is not attempted — INDEX lists only the just-processed
+    batch when results are a subset. Prefer disk tally for SUMMARY always
+    when files were written.
+    """
     if not summary_only:
         log.info("Per-finding reports written to %s", output_dir)
 
-    processed = sum(counts.get(v.value, 0) for v in Verdict)
-    # Prefer actual processed count (partial run on interrupt) over planned total.
-    summary_total = processed if processed else total_findings
-    summary = generate_summary_report(counts, summary_total, model=model)
+    if not summary_only and output_dir.is_dir():
+        disk_counts = tally_output_dir_verdicts(output_dir)
+        # Prefer disk when it has at least as many findings as this run.
+        disk_total = sum(disk_counts.get(v.value, 0) for v in Verdict)
+        run_total = sum(counts.get(v.value, 0) for v in Verdict)
+        if disk_total >= run_total and disk_total > 0:
+            summary_counts = disk_counts
+            summary_total = disk_total
+        else:
+            summary_counts = counts
+            summary_total = run_total if run_total else total_findings
+    else:
+        summary_counts = counts
+        processed = sum(counts.get(v.value, 0) for v in Verdict)
+        # Prefer actual processed count (partial run on interrupt) over planned total.
+        summary_total = processed if processed else total_findings
+
+    summary = generate_summary_report(summary_counts, summary_total, model=model)
     print("\n" + summary)
 
     if not summary_only:
@@ -760,7 +968,12 @@ def _emit_summary_outputs(
             log.error("Failed to write summary: %s", summary_path, exc)
             print(f"Error writing summary: {exc}", file=sys.stderr)
 
-        index = generate_index_report(results)
+        # For INDEX: when the run covered only a subset (retry), rebuild from
+        # every on-disk finding by reusing filename stems + verdict text.
+        if results and len(results) >= summary_total:
+            index = generate_index_report(results)
+        else:
+            index = generate_index_report_from_output_dir(output_dir, results)
         index_path = output_dir / "INDEX.md"
         try:
             index_path.write_text(index, encoding="utf-8")
@@ -768,6 +981,87 @@ def _emit_summary_outputs(
         except OSError as exc:
             log.error("Failed to write index: %s", index_path, exc)
             print(f"Error writing index: {exc}", file=sys.stderr)
+
+
+def generate_index_report_from_output_dir(
+    output_dir: Path,
+    fresh_results: list[tuple[dict[str, Any], AnalysisResult]] | None = None,
+) -> str:
+    """Build INDEX.md from existing feedback files, preferring *fresh_results*.
+
+    Used after ``--retry-timeouts`` so INDEX covers the whole directory while
+    still using full finding metadata for just-reprocessed items.
+    """
+    from deep_architect.feedback_report import (  # noqa: PLC0415
+        NON_FINDING_FILES,
+        get_verdict,
+        parse_markdown_finding,
+    )
+
+    fresh_by_name: dict[str, tuple[dict[str, Any], AnalysisResult]] = {}
+    if fresh_results:
+        for fresh_finding, fresh_analysis in fresh_results:
+            name = generate_output_filename(fresh_finding)
+            fresh_by_name[name] = (fresh_finding, fresh_analysis)
+
+    combined: list[tuple[dict[str, Any], AnalysisResult]] = []
+    if not output_dir.is_dir():
+        return generate_index_report(list(fresh_by_name.values()))
+
+    for md_path in sorted(output_dir.glob("*.md")):
+        if md_path.name in NON_FINDING_FILES:
+            continue
+        if md_path.name in fresh_by_name:
+            combined.append(fresh_by_name[md_path.name])
+            continue
+
+        verdict_str = get_verdict(md_path)
+        if verdict_str is None:
+            continue
+        try:
+            verdict = Verdict(verdict_str.lower())
+        except ValueError:
+            verdict = Verdict.BACKLOG
+
+        parsed = parse_markdown_finding(md_path)
+        disk_finding: dict[str, Any]
+        if parsed is not None:
+            disk_finding = {
+                "type": "comment",
+                "path": str(parsed.file_path),
+                "start_line": parsed.line_start,
+                "end_line": parsed.line_end,
+                "index": 0,
+                "content": parsed.review_comment,
+            }
+            # Recover index from filename stem when possible (hash-index).
+            stem = md_path.stem
+            if "-" in stem:
+                maybe_idx = stem.rsplit("-", 1)[-1]
+                if maybe_idx.isdigit():
+                    disk_finding["index"] = int(maybe_idx)
+            disk_analysis = AnalysisResult(
+                verdict=verdict,
+                analysis=parsed.analysis,
+                raw_response="",
+            )
+        else:
+            disk_finding = {
+                "type": "comment",
+                "path": "(unknown)",
+                "start_line": None,
+                "end_line": None,
+                "index": 0,
+                "content": "",
+            }
+            disk_analysis = AnalysisResult(
+                verdict=verdict,
+                analysis="",
+                raw_response="",
+            )
+        combined.append((disk_finding, disk_analysis))
+
+    return generate_index_report(combined)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -804,6 +1098,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Maximum concurrent LLM requests (default: 5)",
     )
     parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Wall-clock limit per opencode attempt in seconds "
+            f"(default: env REVIEW_ANALYZER_TIMEOUT or {DEFAULT_OPENCODE_TIMEOUT}; "
+            f"timed-out calls retry once by default)"
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("feedback"),
@@ -813,6 +1118,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--summary-only",
         action="store_true",
         help="Print summary counts without writing per-finding files",
+    )
+    parser.add_argument(
+        "--retry-timeouts",
+        action="store_true",
+        help=(
+            "Re-analyze only findings whose prior report in --output-dir is "
+            "TIMEOUT (or legacy timed-out BACKLOG); requires existing reports"
+        ),
     )
     tui_group = parser.add_mutually_exclusive_group()
     tui_group.add_argument(
@@ -852,6 +1165,16 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
+    timeout_seconds = (
+        args.timeout if args.timeout is not None else default_opencode_timeout()
+    )
+    if timeout_seconds < 1:
+        print(
+            f"Error: --timeout must be >= 1 (got {timeout_seconds})",
+            file=sys.stderr,
+        )
+        return 1
+
     ocr_data = load_ocr_json(args.ocr_file)
     findings = extract_findings(ocr_data)
     log.info("Loaded %d findings from %s", len(findings), args.ocr_file)
@@ -863,8 +1186,38 @@ def main(argv: list[str] | None = None) -> int:
     log.info("After filtering: %d findings", len(filtered))
     print(f"After filtering: {len(filtered)} findings")
 
+    if args.retry_timeouts:
+        if args.summary_only:
+            print(
+                "Error: --retry-timeouts requires writing to --output-dir "
+                "(incompatible with --summary-only)",
+                file=sys.stderr,
+            )
+            return 1
+        if not args.output_dir.is_dir():
+            print(
+                f"Error: --retry-timeouts needs existing reports in "
+                f"{args.output_dir}/ (directory missing)",
+                file=sys.stderr,
+            )
+            return 1
+        before_retry = len(filtered)
+        filtered = select_timeout_findings_for_retry(filtered, args.output_dir)
+        log.info(
+            "Retry-timeouts: %d of %d filtered findings timed out previously",
+            len(filtered),
+            before_retry,
+        )
+        print(
+            f"Retry-timeouts: re-analyzing {len(filtered)} timed-out finding(s) "
+            f"(of {before_retry} after path filters)"
+        )
+
     if not filtered:
-        print("No findings to process after filtering.")
+        if args.retry_timeouts:
+            print("No timed-out findings to re-analyze.")
+        else:
+            print("No findings to process after filtering.")
         return 0
 
     ocr_summary_raw = ocr_data.get("summary")
@@ -893,10 +1246,11 @@ def main(argv: list[str] | None = None) -> int:
         on_result: Callable[[ProgressEvent], None],
     ) -> dict[str, int]:
         log.info(
-            "Processing %d findings (model=%s, concurrency=%d)",
+            "Processing %d findings (model=%s, concurrency=%d, timeout=%ds)",
             len(filtered),
             args.model,
             args.concurrency,
+            timeout_seconds,
         )
         results = process_findings_concurrently(
             filtered,
@@ -904,6 +1258,8 @@ def main(argv: list[str] | None = None) -> int:
             args.concurrency,
             output_dir_for_write,
             on_result=on_result,
+            timeout=timeout_seconds,
+            timeout_retries=DEFAULT_TIMEOUT_RETRIES,
         )
         results_box[:] = results
         counts = _tally_counts(results)

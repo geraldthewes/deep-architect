@@ -23,6 +23,7 @@ from deep_architect.review_analyzer import (
     _parse_opencode_json,
     call_opencode_analysis,
     construct_analysis_prompt,
+    default_opencode_timeout,
     extract_findings,
     filter_findings_by_path,
     generate_index_report,
@@ -30,10 +31,13 @@ from deep_architect.review_analyzer import (
     generate_output_filename,
     generate_summary_report,
     get_filepath_hash,
+    is_timeout_report,
     load_ocr_json,
     process_findings_concurrently,
     request_shutdown,
+    select_timeout_findings_for_retry,
     should_use_tui,
+    tally_output_dir_verdicts,
 )
 
 # ---------------------------------------------------------------------------
@@ -353,6 +357,19 @@ class TestCallOpendencodeAnalysis:
         result = call_opencode_analysis("prompt", "model")
         assert result.verdict == Verdict.VALID
         mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs["timeout"] == 120
+
+    @patch("deep_architect.review_analyzer.subprocess.run")
+    def test_custom_timeout_passed(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {"content": '{"verdict":"valid","analysis":"ok"}'}
+            ),
+            stderr="",
+        )
+        call_opencode_analysis("prompt", "model", timeout=45, timeout_retries=0)
+        assert mock_run.call_args.kwargs["timeout"] == 45
 
     @patch("deep_architect.review_analyzer.subprocess.run")
     def test_failure_returncode(self, mock_run: MagicMock) -> None:
@@ -364,13 +381,50 @@ class TestCallOpendencodeAnalysis:
         assert "model not found" in result.analysis
 
     @patch("deep_architect.review_analyzer.subprocess.run")
-    def test_timeout(self, mock_run: MagicMock) -> None:
+    def test_timeout_retries_once_then_timeout_verdict(
+        self, mock_run: MagicMock
+    ) -> None:
         mock_run.side_effect = subprocess.TimeoutExpired(
-            cmd="opencode", timeout=120
+            cmd="opencode", timeout=30
         )
-        result = call_opencode_analysis("prompt", "model")
-        assert result.verdict == Verdict.BACKLOG
+        result = call_opencode_analysis(
+            "prompt", "model", timeout=30, timeout_retries=1
+        )
+        assert result.verdict == Verdict.TIMEOUT
         assert "timed out" in result.analysis
+        assert "2 attempts" in result.analysis
+        assert mock_run.call_count == 2
+
+    @patch("deep_architect.review_analyzer.subprocess.run")
+    def test_timeout_no_retry(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = subprocess.TimeoutExpired(
+            cmd="opencode", timeout=10
+        )
+        result = call_opencode_analysis(
+            "prompt", "model", timeout=10, timeout_retries=0
+        )
+        assert result.verdict == Verdict.TIMEOUT
+        assert ">10s" in result.analysis
+        assert mock_run.call_count == 1
+
+    @patch("deep_architect.review_analyzer.subprocess.run")
+    def test_timeout_then_success_on_retry(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = [
+            subprocess.TimeoutExpired(cmd="opencode", timeout=20),
+            MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    {"content": '{"verdict":"valid","analysis":"recovered"}'}
+                ),
+                stderr="",
+            ),
+        ]
+        result = call_opencode_analysis(
+            "prompt", "model", timeout=20, timeout_retries=1
+        )
+        assert result.verdict == Verdict.VALID
+        assert "recovered" in result.analysis
+        assert mock_run.call_count == 2
 
     def test_binary_not_found(
         self, monkeypatch: pytest.MonkeyPatch
@@ -394,13 +448,37 @@ class TestVerdict:
         assert Verdict.VALID.value == "valid"
         assert Verdict.REJECTED.value == "rejected"
         assert Verdict.BACKLOG.value == "backlog"
+        assert Verdict.TIMEOUT.value == "timeout"
 
     def test_from_string(self) -> None:
         assert Verdict("valid") == Verdict.VALID
+        assert Verdict("timeout") == Verdict.TIMEOUT
 
     def test_invalid_raises(self) -> None:
         with pytest.raises(ValueError):
             Verdict("not_a_verdict")
+
+
+# ---------------------------------------------------------------------------
+# default_opencode_timeout
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultOpencodeTimeout:
+
+    def test_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("REVIEW_ANALYZER_TIMEOUT", raising=False)
+        assert default_opencode_timeout() == 120
+
+    def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("REVIEW_ANALYZER_TIMEOUT", "90")
+        assert default_opencode_timeout() == 90
+
+    def test_invalid_env_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REVIEW_ANALYZER_TIMEOUT", "nope")
+        assert default_opencode_timeout() == 120
 
 
 # ---------------------------------------------------------------------------
@@ -469,13 +547,14 @@ class TestGenerateMarkdownContent:
 class TestGenerateSummaryReport:
 
     def test_basic(self) -> None:
-        counts = {"valid": 2, "rejected": 1, "backlog": 0}
+        counts = {"valid": 2, "rejected": 1, "backlog": 0, "timeout": 0}
         report = generate_summary_report(counts, 3, model="standard/coder")
         assert "Coding agent: opencode (standard/coder)" in report
         assert "Total findings processed: 3" in report
         assert "VALID: 2 (66.7%)" in report
         assert "REJECTED: 1 (33.3%)" in report
         assert "BACKLOG: 0 (0.0%)" in report
+        assert "TIMEOUT: 0 (0.0%)" in report
 
     def test_zero_total(self) -> None:
         report = generate_summary_report({}, 0, model="standard/coder")
@@ -676,7 +755,10 @@ class TestProcessFindingsCallback:
         events: list[ProgressEvent] = []
 
         def fake_analyze(
-            finding: dict[str, Any], model: str, breaker: Any
+            finding: dict[str, Any],
+            model: str,
+            breaker: Any,
+            **kwargs: Any,
         ) -> AnalysisResult:
             return AnalysisResult(Verdict.VALID, f"ok-{finding['index']}", "")
 
@@ -726,7 +808,10 @@ class TestProcessFindingsShutdown:
         lock = threading.Lock()
 
         def fake_analyze(
-            finding: dict[str, Any], model: str, breaker: Any
+            finding: dict[str, Any],
+            model: str,
+            breaker: Any,
+            **kwargs: Any,
         ) -> AnalysisResult:
             nonlocal started
             with lock:
@@ -752,6 +837,108 @@ class TestProcessFindingsShutdown:
         assert started == 1
         assert results[0][1].verdict == Verdict.VALID
         review_analyzer_mod._shutdown_requested = False
+
+
+# ---------------------------------------------------------------------------
+# Timeout report detection / retry selection
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutReportHelpers:
+
+    def test_is_timeout_report_timeout_verdict(self, tmp_path: Path) -> None:
+        md = tmp_path / "abc-0.md"
+        md.write_text(
+            "# OCR Review Analysis\n\n"
+            "**Verdict**: TIMEOUT\n\n"
+            "**Analysis**:\n\nopencode execution timed out (>120s)\n",
+            encoding="utf-8",
+        )
+        assert is_timeout_report(md) is True
+
+    def test_is_timeout_report_legacy_backlog(self, tmp_path: Path) -> None:
+        md = tmp_path / "abc-1.md"
+        md.write_text(
+            "# OCR Review Analysis\n\n"
+            "**Verdict**: BACKLOG\n\n"
+            "**Analysis**:\n\nopencode execution timed out (>120s)\n",
+            encoding="utf-8",
+        )
+        assert is_timeout_report(md) is True
+
+    def test_is_timeout_report_normal_backlog(self, tmp_path: Path) -> None:
+        md = tmp_path / "abc-2.md"
+        md.write_text(
+            "# OCR Review Analysis\n\n"
+            "**Verdict**: BACKLOG\n\n"
+            "**Analysis**:\n\nNice-to-have refactor later\n",
+            encoding="utf-8",
+        )
+        assert is_timeout_report(md) is False
+
+    def test_is_timeout_report_valid(self, tmp_path: Path) -> None:
+        md = tmp_path / "abc-3.md"
+        md.write_text(
+            "# OCR Review Analysis\n\n"
+            "**Verdict**: VALID\n\n"
+            "**Analysis**:\n\nReal issue\n",
+            encoding="utf-8",
+        )
+        assert is_timeout_report(md) is False
+
+    def test_select_timeout_findings_for_retry(self, tmp_path: Path) -> None:
+        findings = [
+            {
+                "type": "comment",
+                "path": "a.py",
+                "start_line": 1,
+                "end_line": 1,
+                "index": 0,
+                "content": "c0",
+            },
+            {
+                "type": "comment",
+                "path": "b.py",
+                "start_line": 1,
+                "end_line": 1,
+                "index": 1,
+                "content": "c1",
+            },
+            {
+                "type": "comment",
+                "path": "c.py",
+                "start_line": 1,
+                "end_line": 1,
+                "index": 2,
+                "content": "c2",
+            },
+        ]
+        # Write timeout report only for finding 0
+        name0 = generate_output_filename(findings[0])
+        (tmp_path / name0).write_text(
+            "**Verdict**: TIMEOUT\n\n**Analysis**:\n\nopencode timed out\n",
+            encoding="utf-8",
+        )
+        # Valid report for finding 1
+        name1 = generate_output_filename(findings[1])
+        (tmp_path / name1).write_text(
+            "**Verdict**: VALID\n\n**Analysis**:\n\nok\n",
+            encoding="utf-8",
+        )
+        selected = select_timeout_findings_for_retry(findings, tmp_path)
+        assert len(selected) == 1
+        assert selected[0]["path"] == "a.py"
+
+    def test_tally_output_dir_verdicts(self, tmp_path: Path) -> None:
+        (tmp_path / "a-0.md").write_text("**Verdict**: VALID\n", encoding="utf-8")
+        (tmp_path / "b-1.md").write_text("**Verdict**: TIMEOUT\n", encoding="utf-8")
+        (tmp_path / "c-2.md").write_text("**Verdict**: BACKLOG\n", encoding="utf-8")
+        (tmp_path / "SUMMARY.md").write_text("# summary\n", encoding="utf-8")
+        counts = tally_output_dir_verdicts(tmp_path)
+        assert counts["valid"] == 1
+        assert counts["timeout"] == 1
+        assert counts["backlog"] == 1
+        assert counts["rejected"] == 0
 
 
 # ---------------------------------------------------------------------------

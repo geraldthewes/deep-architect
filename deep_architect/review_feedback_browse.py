@@ -56,6 +56,7 @@ _VERDICT_STYLE: dict[str, str] = {
     "VALID": "bold green",
     "REJECTED": "bold red",
     "BACKLOG": "bold yellow",
+    "TIMEOUT": "bold magenta",
     "UNKNOWN": "bold dim",
 }
 

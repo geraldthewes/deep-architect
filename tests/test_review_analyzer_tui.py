@@ -108,14 +108,15 @@ class TestFormatHelpers:
 
     def test_summary_counts(self) -> None:
         text = format_summary(
-            {"valid": 1, "rejected": 2, "backlog": 3},
+            {"valid": 1, "rejected": 2, "backlog": 3, "timeout": 1},
             total=10,
-            completed=6,
+            completed=7,
         )
         assert "VALID 1" in text
         assert "REJECTED 2" in text
         assert "BACKLOG 3" in text
-        assert "pending 4" in text
+        assert "TIMEOUT 1" in text
+        assert "pending 3" in text
 
     def test_progress_label(self) -> None:
         text = format_progress_label(1, 4, 12.0)

@@ -455,7 +455,7 @@ The file exists but failed TOML parsing or Pydantic validation. Compare against
 
 ## Review Analyzer
 
-`review-analyzer` takes an OCR (Open Code Review) JSON file and uses an LLM to triage each finding, classifying it as `VALID`, `REJECTED`, or `BACKLOG` with detailed reasoning. This is useful when OCR produces a large volume of findings and you need a second LLM opinion to separate real issues from false positives.
+`review-analyzer` takes an OCR (Open Code Review) JSON file and uses an LLM to triage each finding, classifying it as `VALID`, `REJECTED`, or `BACKLOG` with detailed reasoning. Infrastructure failures that hit the opencode wall-clock limit are classified separately as `TIMEOUT` (not conflated with intentional `BACKLOG`). This is useful when OCR produces a large volume of findings and you need a second LLM opinion to separate real issues from false positives.
 
 ### Usage
 
@@ -471,8 +471,10 @@ uv run review-analyzer <ocr-file.json> [options]
 | `--exclude <glob>` | (none) | Skip findings matching this path pattern (repeatable) |
 | `--model <name>` | `standard/coder` | LLM model for analysis |
 | `--concurrency <n>` | `5` | Maximum parallel LLM requests |
+| `--timeout <seconds>` | `120` (or `REVIEW_ANALYZER_TIMEOUT`) | Wall-clock limit per opencode attempt; timed-out calls retry once by default |
 | `--output-dir <dir>` | `feedback/` | Directory for per-finding Markdown reports |
 | `--summary-only` | off | Print summary counts without writing individual files |
+| `--retry-timeouts` | off | Re-analyze only findings whose prior report is `TIMEOUT` (or legacy timed-out `BACKLOG`) |
 | `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
@@ -482,7 +484,7 @@ When stdout is a TTY, `review-analyzer` opens a **full-screen Textual app** (alt
 
 - **Header** — OCR path, model, concurrency, output dir, filtered finding count, plus OCR `status` / `summary` fields when present
 - **Progress** — bar with completed/total, elapsed time, ETA, and throughput
-- **Summary stats** — live counters for `VALID`, `REJECTED`, `BACKLOG`, and pending
+- **Summary stats** — live counters for `VALID`, `REJECTED`, `BACKLOG`, `TIMEOUT`, and pending
 - **Results list** — scrollable list of each completed finding (verdict, location, analysis preview)
 - **Log pane** — harness and opencode log lines (truncated for display); full detail is also written to `<output-dir>/review-analyzer.log`
 - **Keys** — `q` / Ctrl-C request a graceful stop after in-flight analyses finish; `l` focuses the Log pane; `r` focuses Results
@@ -496,11 +498,19 @@ uv run review-analyzer code-review.json \
     --exclude '.agents/*' --exclude '.claude/*' \
     --model standard/coder \
     --output-dir feedback/
+
+# Re-triage only findings that previously timed out (same OCR + output dir)
+uv run review-analyzer code-review.json \
+    --output-dir feedback/ \
+    --retry-timeouts \
+    --timeout 300
 ```
 
 ### Output
 
 The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to the output directory, plus a `SUMMARY.md` with the coding agent/model used (`opencode` + `--model`), verdict counts, and percentages. Disk output is the same in TUI and plain mode.
+
+`TIMEOUT` means the opencode subprocess exceeded `--timeout` (after one automatic retry). Those findings were **not** LLM-triaged; re-run with `--retry-timeouts` (and optionally a higher `--timeout`) to obtain a real verdict. `review-action` only auto-fixes `VALID` findings, so `TIMEOUT` items are skipped until re-triaged.
 
 ### Configuration
 
@@ -508,6 +518,8 @@ The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to 
 
 ```bash
 export OPENCODE_BIN=/path/to/your/opencode
+# Optional: default per-attempt timeout in seconds (CLI --timeout wins when set)
+export REVIEW_ANALYZER_TIMEOUT=180
 ```
 
 ---
