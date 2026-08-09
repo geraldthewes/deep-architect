@@ -274,12 +274,19 @@ class TestBrowseCli:
 
         args = parse_args([])
         assert args.feedback_dir == Path("feedback")
+        assert args.mode == "auto"
 
     def test_parse_args_path(self) -> None:
         from deep_architect.review_feedback_browse import parse_args
 
         args = parse_args(["/tmp/feedback-proj"])
         assert args.feedback_dir == Path("/tmp/feedback-proj")
+
+    def test_parse_args_mode(self) -> None:
+        from deep_architect.review_feedback_browse import parse_args
+
+        args = parse_args(["feedback/", "--mode", "action"])
+        assert args.mode == "action"
 
     def test_main_missing_dir(self, tmp_path: Path) -> None:
         from deep_architect.review_feedback_browse import main
@@ -292,3 +299,70 @@ class TestBrowseCli:
 
         rc = main([str(tmp_path)])
         assert rc == 1
+
+    def test_resolve_browse_mode_auto(self, tmp_path: Path) -> None:
+        from deep_architect.action_report import FindingStatus, write_action_taken
+        from deep_architect.review_feedback_browse import resolve_browse_mode
+
+        md = tmp_path / "a-0.md"
+        md.write_text("# x\n", encoding="utf-8")
+        assert resolve_browse_mode("auto", tmp_path) == "verdict"
+        write_action_taken(
+            md,
+            FindingStatus(status="skipped", timestamp="t", summary="stale"),
+        )
+        assert resolve_browse_mode("auto", tmp_path) == "action"
+        assert resolve_browse_mode("verdict", tmp_path) == "verdict"
+
+    def test_format_action_helpers(self, tmp_path: Path) -> None:
+        from deep_architect.action_report import (
+            ActionFindingRow,
+            ActionRunBlock,
+        )
+        from deep_architect.review_feedback_browse import (
+            format_action_detail,
+            format_action_row,
+            format_action_stats,
+        )
+
+        run = ActionRunBlock(
+            started_at="2026-08-08 19:53:57 UTC",
+            coding_agent="opencode (opus)",
+            restored=1,
+            processed=28,
+            committed=8,
+            skipped=14,
+            errors=6,
+            interrupted=False,
+            progress="28 out of 29 findings processed",
+            total_findings=29,
+            cost_line=None,
+        )
+        stats = format_action_stats(run, 29)
+        assert "Committed" in stats
+        assert "8" in stats
+
+        row = ActionFindingRow(
+            finding_id="abc-0",
+            path=tmp_path / "abc-0.md",
+            source_file="src/x.py",
+            status="completed",
+            outcome_label="Fixed",
+            summary="Fix applied",
+            commit_sha="deadbeef",
+            error_message=None,
+            timestamp="t",
+        )
+        (tmp_path / "abc-0.md").write_text(
+            "# OCR\n- **File**: src/x.py\n"
+            "- **Existing Code**:\n```\nold\n```\n"
+            "- **Review Comment**: fix\n"
+            "**Verdict**: VALID\n",
+            encoding="utf-8",
+        )
+        line = format_action_row(row, 1)
+        assert "Fixed" in line
+        assert "deadbeef" in line
+        detail = format_action_detail(row)
+        assert "Action Taken" in detail
+        assert "deadbeef" in detail

@@ -512,23 +512,48 @@ export OPENCODE_BIN=/path/to/your/opencode
 
 ## Review Feedback Browse
 
-`review-feedback-browse` is a view-only Textual TUI for navigating the Markdown output of `review-analyzer`. Use it after analysis (and before or instead of `review-action`) to inspect verdicts and read full finding reports without grepping flat files.
+`review-feedback-browse` is a view-only Textual TUI for navigating review feedback directories. It has two modes:
+
+| Mode | When | What you see |
+|------|------|--------------|
+| **Action** (default after `review-action`) | `review-action_summary.md` or any `## Action Taken` block is present | Run stats + list of Fixed / Error / Skipped / Rejected; git log and diffs for commits |
+| **Verdict** | Pre-action analyzer output only | Counts by VALID / REJECTED / BACKLOG → finding detail |
 
 ### Usage
 
 ```bash
 uv run review-feedback-browse [feedback_dir]
+uv run review-feedback-browse feedback-proj-0013/ --mode action   # force post-run view
+uv run review-feedback-browse feedback/ --mode verdict            # force analyzer triage
 ```
 
-Defaults to `feedback/` if no directory is specified (same convention as `review-action`).
+Defaults to `feedback/` if no directory is specified (same convention as `review-action`). `--mode` is `auto` by default (action when post-run data exists).
 
-### Navigation
+### Action mode (after `review-action`)
+
+Shows the same information as `review-action_summary.md`: committed / skipped / errors counters and a filterable list of every finding outcome. Drill into a row for Action Taken details; when a commit SHA is present, open git views (repo root is discovered from the feedback directory’s parents, so this works even if you launch the tool from another checkout).
+
+| Key | Where | Action |
+|-----|-------|--------|
+| Enter | List | Open finding detail |
+| `0` / `1` / `2` / `3` / `4` | List | Filter All / Fixed / Error / Skipped / Rejected |
+| `g` | Detail | `git log -1` for the commit |
+| `s` | Detail | `git show --stat` |
+| `d` | Detail | Full `git show` patch |
+| `n` / `p` | Detail | Next / previous in current filter |
+| `v` | List | Switch to verdict (analyzer) mode |
+| `a` | Verdict summary | Switch to action mode |
+| Esc | Detail / Git | Back |
+| `q` | Anywhere | Quit |
+
+### Verdict mode (after `review-analyzer`)
 
 | Key | Action |
 |-----|--------|
 | Enter | Drill into selected verdict or finding |
 | Esc | Go back one level |
 | n / p | Next / previous finding (on the detail screen, within the current verdict) |
+| `a` | Switch to action results (if present) |
 | q | Quit |
 
 Drill-down order: **summary** (counts by verdict) → **finding list** for a verdict → **detail** (comment, existing/suggested code, LLM analysis).
@@ -538,6 +563,10 @@ Drill-down order: **summary** (counts by verdict) → **finding list** for a ver
 ```bash
 # After review-analyzer wrote feedback-proj-0013/
 uv run review-feedback-browse feedback-proj-0013/
+
+# After review-action completed (auto-opens action mode)
+cd ~/repos/plant-tracking
+review-feedback-browse feedback-proj-0013/
 ```
 
 This tool does not modify findings, apply fixes, or replace `INDEX.md` / per-finding Markdown files — it only browses them.
@@ -616,11 +645,14 @@ opencode --ocr code-review.json
 # 2. Analyze and triage findings
 uv run review-analyzer code-review.json --output-dir feedback/
 
-# 3. (Optional) Browse triage results interactively
+# 3. (Optional) Browse triage results interactively (verdict mode)
 uv run review-feedback-browse feedback/
 
 # 4. Apply VALID fixes automatically
 uv run review-action feedback/
+
+# 5. Review what happened (action mode: stats, commits, diffs)
+uv run review-feedback-browse feedback/
 ```
 
 ### Output
