@@ -205,12 +205,17 @@ def format_progress_label(
 
 
 def format_result_line(event: ProgressEvent) -> str:
-    """One results-pane line for a finished finding."""
+    """One results-pane line for a finished finding.
+
+    Columns: icon+verdict, retry count, duration (seconds), location, preview.
+    """
     icon = _VERDICT_ICON.get(event.analysis.verdict, "?")
     verdict = event.analysis.verdict.value.upper()
+    retries = max(0, int(event.analysis.retry_count))
+    secs = max(0, int(round(event.analysis.duration_s)))
     loc = truncate_message(_location(event.finding), max_len=48)
     preview = truncate_message(event.analysis.analysis, max_len=80)
-    return f"{icon} {verdict:<9} {loc}  {preview}"
+    return f"{icon} {verdict:<9} {retries:>2}r {secs:>4}s  {loc}  {preview}"
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +419,10 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
             id="summary-panel",
         )
         with Vertical(id="results-panel"):
-            yield Static("Results (newest last)", id="results-title")
+            yield Static(
+                "Results (newest last)  ·  r=retries  secs=duration",
+                id="results-title",
+            )
             yield RichLog(id="results-log", highlight=False, markup=False, max_lines=500)
         with Vertical(id="log-panel"):
             yield Static("Log (opencode / harness output)", id="log-title")
@@ -520,9 +528,10 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
         if self._result_count > _MAX_RESULT_ROWS:
             title = (
                 f"Results (newest last; older rows trimmed at {_MAX_RESULT_ROWS})"
+                "  ·  r=retries  secs=duration"
             )
         else:
-            title = "Results (newest last)"
+            title = "Results (newest last)  ·  r=retries  secs=duration"
         self.query_one("#results-title", Static).update(title)
         self._refresh_progress_widgets()
 

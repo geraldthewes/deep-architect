@@ -136,7 +136,11 @@ class TestFormatHelpers:
                 "content": "rename",
             },
             analysis=AnalysisResult(
-                Verdict.VALID, "Real bug in naming", ""
+                Verdict.VALID,
+                "Real bug in naming",
+                "",
+                retry_count=0,
+                duration_s=12.4,
             ),
             elapsed_s=5.0,
         )
@@ -144,6 +148,35 @@ class TestFormatHelpers:
         assert "VALID" in line
         assert "src/foo.py" in line
         assert "Real bug" in line
+        assert " 0r" in line
+        assert "  12s" in line
+
+    def test_result_line_with_retry_and_duration(self) -> None:
+        event = ProgressEvent(
+            completed=2,
+            total=2,
+            finding={
+                "type": "comment",
+                "path": "src/bar.py",
+                "start_line": 1,
+                "end_line": 3,
+                "index": 1,
+                "content": "slow",
+            },
+            analysis=AnalysisResult(
+                Verdict.TIMEOUT,
+                "opencode execution timed out after 2 attempts",
+                "",
+                retry_count=1,
+                duration_s=301.2,
+            ),
+            elapsed_s=400.0,
+        )
+        line = format_result_line(event)
+        assert "TIMEOUT" in line
+        assert " 1r" in line
+        assert " 301s" in line
+        assert "src/bar.py" in line
 
 
 class TestTuiLogHandler:

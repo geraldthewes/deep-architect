@@ -357,6 +357,7 @@ class TestCallOpendencodeAnalysis:
         )
         result = call_opencode_analysis("prompt", "model")
         assert result.verdict == Verdict.VALID
+        assert result.retry_count == 0
         mock_run.assert_called_once()
         assert mock_run.call_args.kwargs["timeout"] == 300
 
@@ -394,6 +395,7 @@ class TestCallOpendencodeAnalysis:
         assert result.verdict == Verdict.TIMEOUT
         assert "timed out" in result.analysis
         assert "2 attempts" in result.analysis
+        assert result.retry_count == 1
         assert mock_run.call_count == 2
 
     @patch("deep_architect.review_analyzer.subprocess.run")
@@ -406,6 +408,7 @@ class TestCallOpendencodeAnalysis:
         )
         assert result.verdict == Verdict.TIMEOUT
         assert ">10s" in result.analysis
+        assert result.retry_count == 0
         assert mock_run.call_count == 1
 
     @patch("deep_architect.review_analyzer.subprocess.run")
@@ -425,6 +428,7 @@ class TestCallOpendencodeAnalysis:
         )
         assert result.verdict == Verdict.VALID
         assert "recovered" in result.analysis
+        assert result.retry_count == 1
         assert mock_run.call_count == 2
 
     def test_binary_not_found(

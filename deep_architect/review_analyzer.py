@@ -11,7 +11,7 @@ import sys
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC
 from enum import StrEnum
 from pathlib import Path
@@ -142,6 +142,10 @@ class AnalysisResult:
     verdict: Verdict
     analysis: str
     raw_response: str
+    # Extra attempts after the first (0 = first try succeeded / no retry used).
+    retry_count: int = 0
+    # Wall-clock seconds for this finding's full analysis (including retries).
+    duration_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -537,7 +541,7 @@ def call_opencode_analysis(
     for attempt in range(1, attempts + 1):
         result = _run_opencode_once(prompt, model, timeout=timeout)
         if result.verdict != Verdict.TIMEOUT:
-            return result
+            return replace(result, retry_count=attempt - 1)
         last = result
         if attempt < attempts:
             log.warning(
@@ -548,6 +552,8 @@ def call_opencode_analysis(
             )
 
     assert last is not None
+    # All attempts timed out; retry_count is how many extras were used.
+    retry_count = attempts - 1
     if attempts > 1:
         return AnalysisResult(
             verdict=Verdict.TIMEOUT,
@@ -556,8 +562,9 @@ def call_opencode_analysis(
                 f"after {attempts} attempts"
             ),
             raw_response=last.raw_response,
+            retry_count=retry_count,
         )
-    return last
+    return replace(last, retry_count=retry_count)
 
 
 def analyze_finding(
@@ -570,6 +577,7 @@ def analyze_finding(
 ) -> AnalysisResult:
     """Analyze a single finding through opencode with circuit-breaker protection."""
     prompt = construct_analysis_prompt(finding)
+    t0 = time.monotonic()
 
     def _invoke() -> AnalysisResult:
         return call_opencode_analysis(
@@ -581,12 +589,13 @@ def analyze_finding(
 
     try:
         result: AnalysisResult = breaker.call(_invoke)
-        return result
+        return replace(result, duration_s=time.monotonic() - t0)
     except Exception as exc:
         return AnalysisResult(
             verdict=Verdict.BACKLOG,
             analysis=f"Circuit breaker / subprocess error: {exc}",
             raw_response="",
+            duration_s=time.monotonic() - t0,
         )
 
 
