@@ -598,6 +598,50 @@ class TestGenerateSummaryReport:
         report = generate_summary_report({}, 0, model="custom/model")
         assert "Coding agent: opencode (custom/model)" in report
 
+    def test_includes_promotion_block(self) -> None:
+        report = generate_summary_report(
+            {"valid": 0, "rejected": 0, "backlog": 1, "timeout": 0},
+            1,
+            model="standard/coder",
+            promotion={
+                "created": 1,
+                "updated": 0,
+                "linked_to_ticket": 0,
+                "skipped": 0,
+                "errors": 0,
+            },
+        )
+        assert "Backlog promotion:" in report
+        assert "created: 1" in report
+
+
+# ---------------------------------------------------------------------------
+# parse_args (backlog flags)
+# ---------------------------------------------------------------------------
+
+
+class TestParseArgsBacklogFlags:
+
+    def test_defaults_write_backlog_on(self) -> None:
+        from deep_architect.review_analyzer import parse_args
+
+        args = parse_args(["ocr.json", "--no-tui"])
+        assert args.no_write_backlog is False
+        assert args.knowledge_dir is None
+
+    def test_no_write_backlog(self) -> None:
+        from deep_architect.review_analyzer import parse_args
+
+        args = parse_args(["ocr.json", "--no-write-backlog"])
+        assert args.no_write_backlog is True
+
+    def test_knowledge_dir(self, tmp_path: Path) -> None:
+        from deep_architect.review_analyzer import parse_args
+
+        k = tmp_path / "knowledge"
+        args = parse_args(["ocr.json", "--knowledge-dir", str(k)])
+        assert args.knowledge_dir == k
+
 
 # ---------------------------------------------------------------------------
 # _finding_path

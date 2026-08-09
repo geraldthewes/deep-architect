@@ -475,6 +475,8 @@ uv run review-analyzer <ocr-file.json> [options]
 | `--output-dir <dir>` | `feedback/` | Directory for per-finding Markdown reports |
 | `--summary-only` | off | Print summary counts without writing individual files |
 | `--retry-timeouts` | off | Re-analyze only findings whose prior report is `TIMEOUT` (or legacy timed-out `BACKLOG`) |
+| `--no-write-backlog` | off | Disable promotion of `BACKLOG` findings into `knowledge/backlog/` (write-backlog is **on** by default) |
+| `--knowledge-dir <path>` | `<cwd>/knowledge` | Knowledge root for backlog/tickets (run from the target repo root) |
 | `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
@@ -510,6 +512,26 @@ uv run review-analyzer code-review.json \
 The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to the output directory, plus a `SUMMARY.md` with the coding agent/model used (`opencode` + `--model`), verdict counts, and percentages. Disk output is the same in TUI and plain mode.
 
 `TIMEOUT` means the opencode subprocess exceeded `--timeout` (after one automatic retry). Those findings were **not** LLM-triaged; re-run with `--retry-timeouts` (and optionally a higher `--timeout`) to obtain a real verdict. `review-action` only auto-fixes `VALID` findings, so `TIMEOUT` items are skipped until re-triaged.
+
+### Backlog promotion (`knowledge/backlog/`)
+
+After triage, each finding with verdict **`BACKLOG`** is promoted into the target repo’s IDLC store (same layout as `/triage_critique`):
+
+| Action | Behavior |
+|--------|----------|
+| **create** | New `knowledge/backlog/<slug>.md` (problem, recommendation, occurrence link back to the feedback file) |
+| **update** | Append an occurrence to a matching existing backlog entry |
+| **link_ticket** | If a similar `knowledge/tickets/PROJ-*.md` already tracks the issue — stamp the feedback file only; do **not** edit the ticket |
+| **skip** | Rare; stamp feedback only |
+
+Dedup uses an **extra opencode call** per BACKLOG finding against a compact catalog of backlog + ticket titles. Run the analyzer from the **application repo root** (e.g. plant-tracking) so `<cwd>/knowledge/` is correct. Disable with `--no-write-backlog` (cheaper; feedback-only). Optional `--knowledge-dir` overrides the knowledge root (useful in tests).
+
+This is **not** the same as:
+
+- Ticket frontmatter `status: backlog` (deferred IDLC ticket)
+- `knowledge/review-wiki/backlog/` (architecture critique wiki; unused by review-analyzer)
+
+Each promoted feedback file gains a `## Backlog disposition` section. `SUMMARY.md` includes promotion counts when promotion ran.
 
 ### Configuration
 

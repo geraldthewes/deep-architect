@@ -869,11 +869,13 @@ def generate_summary_report(
     total: int,
     *,
     model: str,
+    promotion: dict[str, int] | None = None,
 ) -> str:
     """Build a human-readable summary of verdict distribution.
 
     *model* is the opencode model id used for analysis; the summary always
     labels the backend as ``opencode`` (the only analyzer backend today).
+    *promotion* is optional BACKLOG→knowledge/backlog stats.
     """
     lines: list[str] = [
         "# Review Analysis Summary",
@@ -888,6 +890,18 @@ def generate_summary_report(
         count = counts.get(verdict.value, 0)
         pct = (count / total * 100) if total else 0
         lines.append(f"- {verdict.value.upper()}: {count} ({pct:.1f}%)")
+    if promotion is not None:
+        lines.extend(
+            [
+                "",
+                "Backlog promotion:",
+                f"- created: {promotion.get('created', 0)}",
+                f"- updated: {promotion.get('updated', 0)}",
+                f"- linked_to_ticket: {promotion.get('linked_to_ticket', 0)}",
+                f"- skipped: {promotion.get('skipped', 0)}",
+                f"- errors: {promotion.get('errors', 0)}",
+            ]
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -977,6 +991,7 @@ def _emit_summary_outputs(
     output_dir: Path,
     summary_only: bool,
     total_findings: int,
+    promotion: dict[str, int] | None = None,
 ) -> None:
     """Print and optionally write SUMMARY.md / INDEX.md after analysis.
 
@@ -1008,7 +1023,12 @@ def _emit_summary_outputs(
         # Prefer actual processed count (partial run on interrupt) over planned total.
         summary_total = processed if processed else total_findings
 
-    summary = generate_summary_report(summary_counts, summary_total, model=model)
+    summary = generate_summary_report(
+        summary_counts,
+        summary_total,
+        model=model,
+        promotion=promotion,
+    )
     print("\n" + summary)
 
     if not summary_only:
@@ -1178,6 +1198,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Re-analyze only findings whose prior report in --output-dir is "
             "TIMEOUT (or legacy timed-out BACKLOG); requires existing reports"
+        ),
+    )
+    parser.add_argument(
+        "--no-write-backlog",
+        action="store_true",
+        help=(
+            "Do not promote BACKLOG findings into knowledge/backlog/ "
+            "(default: write-backlog is ON)"
+        ),
+    )
+    parser.add_argument(
+        "--knowledge-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the knowledge/ directory for backlog promotion "
+            "(default: <cwd>/knowledge)"
         ),
     )
     tui_group = parser.add_mutually_exclusive_group()
@@ -1354,6 +1391,51 @@ def main(argv: list[str] | None = None) -> int:
             reporter.finish(counts)
         results = list(results_box)
 
+    promotion_counts: dict[str, int] | None = None
+    write_backlog = not bool(getattr(args, "no_write_backlog", False))
+    if (
+        write_backlog
+        and not args.summary_only
+        and results
+        and any(a.verdict == Verdict.BACKLOG for _, a in results)
+    ):
+        from deep_architect.backlog_dedup import (  # noqa: PLC0415
+            promote_backlog_findings,
+        )
+        from deep_architect.backlog_store import (  # noqa: PLC0415
+            default_knowledge_dir,
+        )
+
+        knowledge_dir = (
+            args.knowledge_dir
+            if getattr(args, "knowledge_dir", None) is not None
+            else default_knowledge_dir()
+        )
+        log.info(
+            "Promoting BACKLOG findings into %s/backlog/ "
+            "(disable with --no-write-backlog)",
+            knowledge_dir,
+        )
+        print(f"\nPromoting BACKLOG findings → {knowledge_dir}/backlog/")
+        promo = promote_backlog_findings(
+            results,
+            knowledge_dir=knowledge_dir,
+            ocr_file=args.ocr_file,
+            output_dir=args.output_dir,
+            model=args.model,
+            timeout=timeout_seconds,
+        )
+        promotion_counts = promo.as_dict()
+        print(
+            f"Backlog promotion: created={promotion_counts['created']} "
+            f"updated={promotion_counts['updated']} "
+            f"linked_to_ticket={promotion_counts['linked_to_ticket']} "
+            f"skipped={promotion_counts['skipped']} "
+            f"errors={promotion_counts['errors']}"
+        )
+    elif not write_backlog:
+        log.info("Backlog promotion disabled (--no-write-backlog)")
+
     _emit_summary_outputs(
         results,
         counts,
@@ -1361,6 +1443,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
         summary_only=args.summary_only,
         total_findings=meta.total_findings,
+        promotion=promotion_counts,
     )
 
     return 130 if counts.get("interrupted") else 0
