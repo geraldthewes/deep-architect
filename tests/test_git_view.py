@@ -94,14 +94,20 @@ def test_git_commit_log_stat_diff(tmp_path: Path) -> None:
     log = git_commit_log(tmp_path, sha)
     assert "initial commit" in log
     assert not log.startswith("Error:")
+    # log is message-only — no unified diff
+    assert "diff --git" not in log
 
     stat = git_commit_stat(tmp_path, sha)
     assert "hello.txt" in stat
     assert not stat.startswith("Error:")
+    assert "diff --git" not in stat
 
     diff = git_commit_diff(tmp_path, sha)
-    assert "+hello" in diff or "hello" in diff
     assert not diff.startswith("Error:")
+    assert "diff --git" in diff
+    assert "+hello" in diff
+    # short header uses subject only; full body stays on the log view
+    assert "initial commit" in diff
 
 
 def test_git_bad_sha(tmp_path: Path) -> None:

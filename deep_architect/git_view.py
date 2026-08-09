@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -65,7 +66,18 @@ def _run_git(
     max_chars: int = DEFAULT_GIT_OUTPUT_MAX_CHARS,
 ) -> str:
     """Run a read-only git command; return stdout or an error message."""
-    cmd = ["git", "-C", str(repo_root), *args]
+    # Force non-interactive output (no pager, no TTY-dependent defaults).
+    cmd = [
+        "git",
+        "-C",
+        str(repo_root),
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "color.ui=false",
+        *args,
+    ]
+    env = {**os.environ, "GIT_PAGER": "cat", "PAGER": "cat"}
     try:
         result = subprocess.run(
             cmd,
@@ -73,9 +85,10 @@ def _run_git(
             text=True,
             check=False,
             timeout=30,
+            env=env,
         )
     except subprocess.TimeoutExpired:
-        return f"Error: git timed out: {' '.join(cmd)}"
+        return f"Error: git timed out: git -C {repo_root} {' '.join(args)}"
     except OSError as exc:
         logger.error("Failed to run git: %s", exc)
         return f"Error: failed to run git: {exc}"
@@ -95,21 +108,44 @@ def _run_git(
 
 
 def git_commit_log(repo_root: Path, sha: str) -> str:
-    """Return ``git log -1 --format=fuller`` for *sha*."""
+    """Return ``git log -1 --format=fuller`` for *sha* (message, no patch)."""
     if not sha.strip():
         return "Error: no commit SHA"
     return _run_git(repo_root, ["log", "-1", "--format=fuller", sha])
 
 
 def git_commit_stat(repo_root: Path, sha: str) -> str:
-    """Return ``git show --stat --format=medium`` for *sha*."""
+    """Return ``git show --stat`` summary for *sha* (no patch hunks)."""
     if not sha.strip():
         return "Error: no commit SHA"
-    return _run_git(repo_root, ["show", "--stat", "--format=medium", sha])
+    # --stat alone shows the file table without unified-diff hunks.
+    return _run_git(
+        repo_root,
+        ["show", "--stat", "--format=medium", sha],
+    )
 
 
 def git_commit_diff(repo_root: Path, sha: str) -> str:
-    """Return full ``git show --format=medium`` patch for *sha*."""
+    """Return the patch for *sha*, with a short header (not the full body).
+
+    review-action commits embed the full review comment in the commit message,
+    which can fill a TUI screen before any ``diff --git`` line appears. The
+    full message is available via ``git_commit_log``; this view prioritizes the
+    actual file diff.
+    """
     if not sha.strip():
         return "Error: no commit SHA"
-    return _run_git(repo_root, ["show", "--format=medium", sha])
+    # Short subject-only header + forced patch. Empty pretty format would work
+    # for patch-only, but a one-line subject orients the reader.
+    return _run_git(
+        repo_root,
+        [
+            "show",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--format=format:commit %H%nAuthor: %an <%ae>%nDate:   %ad%n%n    %s%n",
+            "--patch",
+            "--find-renames",
+            sha,
+        ],
+    )

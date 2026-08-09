@@ -496,14 +496,14 @@ class ActionSummaryScreen(Screen[None]):
         )
 
         list_view = self.query_one("#action-list", ListView)
+        # clear() is async; reusing fixed ids (arow-0, …) races and raises
+        # DuplicateIds. Omit ids and use ListView.index for selection instead.
         list_view.clear()
         if not self._rows:
             list_view.append(ListItem(Label("(no findings in this filter)")))
             return
         for i, row in enumerate(self._rows):
-            list_view.append(
-                ListItem(Label(format_action_row(row, i + 1)), id=f"arow-{i}")
-            )
+            list_view.append(ListItem(Label(format_action_row(row, i + 1))))
 
     def _set_filter(self, key: str | None) -> None:
         self._filter = key
@@ -533,13 +533,10 @@ class ActionSummaryScreen(Screen[None]):
             )
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        item_id = event.item.id or ""
-        if item_id.startswith("arow-"):
-            try:
-                idx = int(item_id.removeprefix("arow-"))
-            except ValueError:
-                return
-            self._open_index(idx)
+        list_view = self.query_one("#action-list", ListView)
+        if list_view.index is None:
+            return
+        self._open_index(list_view.index)
 
     def action_open_row(self) -> None:
         list_view = self.query_one("#action-list", ListView)
@@ -561,9 +558,9 @@ class ActionDetailScreen(Screen[None]):
         Binding("q", "quit", "Quit"),
         Binding("n", "next_row", "Next"),
         Binding("p", "prev_row", "Prev"),
-        Binding("g", "git_log", "Log"),
-        Binding("s", "git_stat", "Stat"),
-        Binding("d", "git_diff", "Diff"),
+        Binding("g", "git_log", "Log", priority=True),
+        Binding("s", "git_stat", "Stat", priority=True),
+        Binding("d", "git_diff", "Diff", priority=True),
     ]
 
     def __init__(
@@ -667,7 +664,7 @@ class ActionDetailScreen(Screen[None]):
         if sha is None or self.repo_root is None:
             return
         text = git_commit_diff(self.repo_root, sha)
-        self._show_git(f"git show {sha}", text)
+        self._show_git(f"git show --patch {sha}", text)
 
 
 class GitViewScreen(Screen[None]):
@@ -688,8 +685,9 @@ class GitViewScreen(Screen[None]):
         with Vertical(id="detail-body"):
             yield Static(f"[bold]{self.view_title}[/bold]", id="detail-header")
             with VerticalScroll(id="detail-scroll"):
-                # Escape markup-ish sequences so raw diffs render literally.
-                yield Static(self.body.replace("[", "\\["), id="detail-content")
+                # markup=False: raw diffs must not be parsed as Rich markup
+                # (brackets in paths/subjects would corrupt or hide the patch).
+                yield Static(self.body, id="detail-content", markup=False)
             yield Static("[dim]Esc back · q quit[/dim]", id="detail-footer-hint")
         yield Footer()
 
