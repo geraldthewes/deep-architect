@@ -110,6 +110,10 @@ class TestGetVerdict:
         md = _write_finding(tmp_path, "t.md", _finding_md(verdict="TIMEOUT"))
         assert get_verdict(md) == "TIMEOUT"
 
+    def test_duplicate(self, tmp_path: Path) -> None:
+        md = _write_finding(tmp_path, "d.md", _finding_md(verdict="DUPLICATE"))
+        assert get_verdict(md) == "DUPLICATE"
+
     def test_missing_verdict(self, tmp_path: Path) -> None:
         path = _write_finding(tmp_path, "n.md", "# no verdict\n")
         assert get_verdict(path) is None

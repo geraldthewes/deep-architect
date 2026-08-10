@@ -294,6 +294,140 @@ class TestApplyAndPromote:
         assert called == []
         assert counts.created == 0
 
+    def test_promote_skips_timeout_and_duplicate(self, tmp_path: Path) -> None:
+        knowledge = tmp_path / "knowledge"
+        output = tmp_path / "feedback"
+        output.mkdir()
+        called: list[str] = []
+
+        def runner(prompt: str, model: str) -> str:
+            called.append(prompt)
+            return "{}"
+
+        results = [
+            (
+                _comment_finding(index=0),
+                AnalysisResult(Verdict.TIMEOUT, "timed out", ""),
+            ),
+            (
+                _comment_finding(index=1),
+                AnalysisResult(Verdict.DUPLICATE, "dup of other", ""),
+            ),
+        ]
+        counts = promote_backlog_findings(
+            results,
+            knowledge_dir=knowledge,
+            ocr_file=tmp_path / "ocr.json",
+            output_dir=output,
+            model="test/model",
+            timeout=30,
+            runner=runner,
+        )
+        assert called == []
+        assert counts.created == 0
+        assert counts.updated == 0
+
+    def test_promote_short_circuit_match_path_no_llm(
+        self, tmp_path: Path
+    ) -> None:
+        """Triage match_path → update existing backlog without calling runner."""
+        knowledge = tmp_path / "knowledge"
+        from deep_architect.backlog_store import Occurrence
+
+        existing = create_backlog_entry(
+            knowledge,
+            title="Public API type hints",
+            problem="Missing annotations.",
+            recommendation="Add gradually.",
+            source_report="old.json",
+            occurrence=Occurrence(
+                feedback_rel="feedback/old.md",
+                file_path="src/api.py",
+                lines="1-2",
+                date="2026-01-01",
+                analysis_preview="old",
+            ),
+        )
+        output = tmp_path / "feedback"
+        output.mkdir()
+        finding = _comment_finding(index=2, path="src/helpers.py")
+        match = f"knowledge/backlog/{existing.name}"
+        analysis = AnalysisResult(
+            Verdict.BACKLOG,
+            "Same deferred type-hint campaign",
+            "",
+            match_path=match,
+        )
+        fb = output / generate_output_filename(finding)
+        fb.write_text(generate_markdown_content(finding, analysis), encoding="utf-8")
+
+        called: list[str] = []
+
+        def runner(prompt: str, model: str) -> str:
+            called.append(prompt)
+            raise AssertionError("LLM should not be called on short-circuit")
+
+        counts = promote_backlog_findings(
+            [(finding, analysis)],
+            knowledge_dir=knowledge,
+            ocr_file=tmp_path / "ocr.json",
+            output_dir=output,
+            model="test/model",
+            timeout=30,
+            runner=runner,
+        )
+        assert called == []
+        assert counts.updated == 1
+        assert counts.created == 0
+        text = existing.read_text(encoding="utf-8")
+        # Occurrence appended; original Problem preserved
+        assert "Missing annotations." in text
+        assert "src/helpers.py" in text or fb.name in text
+        stamped = fb.read_text(encoding="utf-8")
+        assert "updated" in stamped
+
+    def test_promote_short_circuit_ticket_link(self, tmp_path: Path) -> None:
+        knowledge = tmp_path / "knowledge"
+        tickets = knowledge / "tickets"
+        tickets.mkdir(parents=True)
+        ticket = tickets / "PROJ-0099.md"
+        ticket.write_text(
+            "---\nid: PROJ-0099\ntitle: Type hints campaign\nstatus: backlog\n---\n\n# T\n",
+            encoding="utf-8",
+        )
+        output = tmp_path / "feedback"
+        output.mkdir()
+        finding = _comment_finding()
+        analysis = AnalysisResult(
+            Verdict.BACKLOG,
+            "Tracked by ticket",
+            "",
+            match_path="knowledge/tickets/PROJ-0099.md",
+        )
+        fb = output / generate_output_filename(finding)
+        fb.write_text(generate_markdown_content(finding, analysis), encoding="utf-8")
+
+        called: list[str] = []
+
+        def runner(prompt: str, model: str) -> str:
+            called.append(prompt)
+            return "{}"
+
+        counts = promote_backlog_findings(
+            [(finding, analysis)],
+            knowledge_dir=knowledge,
+            ocr_file=tmp_path / "ocr.json",
+            output_dir=output,
+            model="test/model",
+            timeout=30,
+            runner=runner,
+        )
+        assert called == []
+        assert counts.linked_to_ticket == 1
+        assert not list((knowledge / "backlog").glob("*.md")) if (
+            knowledge / "backlog"
+        ).exists() else True
+
     def test_promote_with_mocked_runner_create(self, tmp_path: Path) -> None:
         knowledge = tmp_path / "knowledge"
         output = tmp_path / "feedback"

@@ -5,14 +5,18 @@ from pathlib import Path
 
 from deep_architect.backlog_store import (
     BacklogAction,
+    CatalogEntry,
     Occurrence,
     PromotionCounts,
     create_backlog_entry,
     default_knowledge_dir,
     deterministic_title_from_finding,
+    format_catalog_heads,
     load_backlog_catalog,
+    load_entry_body,
     load_full_catalog,
     load_ticket_catalog,
+    rank_catalog_for_finding,
     slugify_title,
     stamp_feedback_disposition,
     update_backlog_entry,
@@ -66,6 +70,138 @@ class TestCatalog:
         assert "Real Ticket" in titles
         kinds = {e.kind for e in catalog}
         assert kinds == {"backlog", "ticket"}
+
+    def test_occurrence_files_from_multi_file_backlog(self, tmp_path: Path) -> None:
+        knowledge = tmp_path / "knowledge"
+        (knowledge / "backlog").mkdir(parents=True)
+        (knowledge / "backlog" / "type-hints.md").write_text(
+            "---\n"
+            "title: Public API type hints\n"
+            "created_at: 2026-01-01T00:00:00Z\n"
+            "occurrences:\n"
+            "  - feedback: feedback/a.md\n"
+            "    file: src/api.py\n"
+            "    lines: 10-20\n"
+            "    date: 2026-08-01\n"
+            "  - feedback: feedback/b.md\n"
+            "    file: src/helpers.py\n"
+            "    date: 2026-08-02\n"
+            "  - feedback: feedback/c.md\n"
+            "    file: src/api.py\n"
+            "    date: 2026-08-03\n"
+            "---\n\n"
+            "# Public API type hints\n\n"
+            "## Problem\n\n"
+            "Missing type annotations on public functions.\n",
+            encoding="utf-8",
+        )
+        catalog = load_backlog_catalog(knowledge)
+        assert len(catalog) == 1
+        entry = catalog[0]
+        assert entry.title == "Public API type hints"
+        assert entry.occurrence_files == ("src/api.py", "src/helpers.py")
+
+    def test_tickets_have_empty_occurrence_files(self, tmp_path: Path) -> None:
+        knowledge = tmp_path / "knowledge"
+        (knowledge / "tickets").mkdir(parents=True)
+        (knowledge / "tickets" / "PROJ-0001.md").write_text(
+            "---\nid: PROJ-0001\ntitle: Real Ticket\nstatus: backlog\n---\n\n# Real\n",
+            encoding="utf-8",
+        )
+        catalog = load_ticket_catalog(knowledge)
+        assert len(catalog) == 1
+        assert catalog[0].occurrence_files == ()
+
+    def test_malformed_occurrences_yield_empty(self, tmp_path: Path) -> None:
+        knowledge = tmp_path / "knowledge"
+        (knowledge / "backlog").mkdir(parents=True)
+        (knowledge / "backlog" / "broken.md").write_text(
+            "---\ntitle: Broken\noccurrences:\n  not-a-list\n---\n\n# Broken\n",
+            encoding="utf-8",
+        )
+        catalog = load_backlog_catalog(knowledge)
+        assert len(catalog) == 1
+        assert catalog[0].occurrence_files == ()
+
+
+class TestRankAndFormat:
+    def test_rank_boosts_same_file_keeps_all(self) -> None:
+        catalog = [
+            CatalogEntry(
+                path="knowledge/backlog/a.md",
+                title="Unrelated theme",
+                kind="backlog",
+                occurrence_files=("other/file.py",),
+            ),
+            CatalogEntry(
+                path="knowledge/backlog/b.md",
+                title="Same-file theme",
+                kind="backlog",
+                occurrence_files=("src/api.py", "src/other.py"),
+            ),
+            CatalogEntry(
+                path="knowledge/tickets/PROJ-0001.md",
+                title="Ticket no files",
+                kind="ticket",
+                ticket_id="PROJ-0001",
+                status="backlog",
+            ),
+        ]
+        ranked = rank_catalog_for_finding(catalog, "src/api.py")
+        assert len(ranked) == 3
+        assert ranked[0].title == "Same-file theme"
+        titles = [e.title for e in ranked]
+        assert "Unrelated theme" in titles
+        assert "Ticket no files" in titles
+
+    def test_rank_empty_catalog(self) -> None:
+        assert rank_catalog_for_finding([], "src/x.py") == []
+
+    def test_format_catalog_heads_titles_not_bodies(self) -> None:
+        catalog = [
+            CatalogEntry(
+                path="knowledge/backlog/type-hints.md",
+                title="Public API type hints",
+                kind="backlog",
+                occurrence_files=("src/api.py",),
+            ),
+            CatalogEntry(
+                path="knowledge/tickets/PROJ-0001.md",
+                title="Real Ticket",
+                kind="ticket",
+                ticket_id="PROJ-0001",
+                status="backlog",
+            ),
+        ]
+        heads = format_catalog_heads(catalog)
+        assert "Public API type hints" in heads
+        assert "Real Ticket" in heads
+        assert "knowledge/backlog/type-hints.md" in heads
+        assert "src/api.py" in heads
+        assert "id=PROJ-0001" in heads
+        # Must not include full Problem bodies (we only pass compact fields)
+        assert "## Problem" not in heads
+        assert "Missing type annotations" not in heads
+
+    def test_format_catalog_heads_empty(self) -> None:
+        assert format_catalog_heads([]) == ""
+
+    def test_load_entry_body(self, tmp_path: Path) -> None:
+        knowledge = tmp_path / "knowledge"
+        (knowledge / "backlog").mkdir(parents=True)
+        body = (
+            "---\ntitle: Foo\n---\n\n# Foo\n\n## Problem\n\nFull body text here.\n"
+        )
+        (knowledge / "backlog" / "foo.md").write_text(body, encoding="utf-8")
+        loaded = load_entry_body(knowledge, "knowledge/backlog/foo.md")
+        assert loaded is not None
+        assert "Full body text here." in loaded
+        assert "## Problem" in loaded
+
+    def test_load_entry_body_missing(self, tmp_path: Path) -> None:
+        knowledge = tmp_path / "knowledge"
+        knowledge.mkdir()
+        assert load_entry_body(knowledge, "knowledge/backlog/missing.md") is None
 
 
 class TestCreateUpdate:

@@ -25,6 +25,7 @@ VERDICT_ORDER: tuple[str, ...] = (
     "REJECTED",
     "BACKLOG",
     "TIMEOUT",
+    "DUPLICATE",
     "UNKNOWN",
 )
 
@@ -152,7 +153,7 @@ def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:
 def get_verdict(file_path: Path) -> str | None:
     """Return the finding's verdict, or None if missing.
 
-    Recognized values: VALID, REJECTED, BACKLOG, TIMEOUT.
+    Recognized values: VALID, REJECTED, BACKLOG, TIMEOUT, DUPLICATE.
     """
     try:
         content = file_path.read_text(encoding="utf-8")
@@ -161,7 +162,7 @@ def get_verdict(file_path: Path) -> str | None:
         return None
 
     verdict_match = re.search(
-        r"\*\*Verdict\*\*:?\s*(VALID|REJECTED|BACKLOG|TIMEOUT)", content
+        r"\*\*Verdict\*\*:?\s*(VALID|REJECTED|BACKLOG|TIMEOUT|DUPLICATE)", content
     )
     return verdict_match.group(1) if verdict_match else None
 

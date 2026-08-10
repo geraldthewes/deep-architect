@@ -539,6 +539,116 @@ def run_dedup_llm(
     return result.raw_response or result.analysis
 
 
+def decision_from_triage_match(
+    finding: dict[str, Any],
+    analysis: AnalysisResult,
+    *,
+    knowledge_dir: Any,
+    catalog: list[CatalogEntry],
+) -> DedupDecision | None:
+    """Build a promotion decision from triage ``match_path`` without an LLM call.
+
+    Returns a decision when *match_path* resolves to a backlog (update) or
+    ticket (link). Returns ``None`` when *match_path* is absent, or set but
+    unresolvable (caller should fall through to LLM dedup).
+
+    Update path only appends an occurrence — it does not rewrite Problem /
+    Recommendation on the existing entry.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    if not analysis.match_path:
+        return None
+
+    knowledge_dir = Path(knowledge_dir)
+    resolved = resolve_match_path(
+        analysis.match_path,
+        knowledge_dir=knowledge_dir,
+        catalog=catalog,
+    )
+    if resolved is None:
+        log.warning(
+            "Triage match_path %r unresolvable; falling through to LLM dedup",
+            analysis.match_path,
+        )
+        return None
+
+    # Prefer catalog entry identity for path spelling + kind.
+    entry: CatalogEntry | None = None
+    try:
+        rel = relative_to_repo(resolved, knowledge_dir)
+    except Exception:  # noqa: BLE001
+        rel = analysis.match_path.strip().lstrip("./")
+
+    candidates = {
+        analysis.match_path.strip().lstrip("./"),
+        rel,
+        f"knowledge/backlog/{resolved.name}",
+        f"knowledge/tickets/{resolved.name}",
+    }
+    for e in catalog:
+        if e.path in candidates or Path(e.path).name == resolved.name:
+            entry = e
+            break
+
+    if entry is not None:
+        kind = entry.kind
+        match_path = entry.path
+    elif "tickets" in resolved.parts:
+        kind = "ticket"
+        match_path = (
+            rel
+            if rel.startswith("knowledge/")
+            else f"knowledge/tickets/{resolved.name}"
+        )
+    elif "backlog" in resolved.parts:
+        kind = "backlog"
+        match_path = (
+            rel
+            if rel.startswith("knowledge/")
+            else f"knowledge/backlog/{resolved.name}"
+        )
+    else:
+        log.warning(
+            "Triage match_path %r resolved to non-catalog path %s; "
+            "falling through to LLM dedup",
+            analysis.match_path,
+            resolved,
+        )
+        return None
+
+    title = deterministic_title_from_finding(finding, analysis.analysis)
+    problem = analysis.analysis.strip()[:500] or title
+    if kind == "ticket":
+        return DedupDecision(
+            action="link_ticket",
+            match_path=match_path,
+            title=title,
+            problem=problem,
+            recommendation="Tracked by existing ticket.",
+            rationale=(
+                f"Triage match_path short-circuit → ticket {match_path}"
+            ),
+        )
+    if kind == "backlog":
+        return DedupDecision(
+            action="update_backlog",
+            match_path=match_path,
+            title=title,
+            problem=problem,
+            recommendation="See existing backlog entry.",
+            rationale=(
+                f"Triage match_path short-circuit → backlog {match_path}"
+            ),
+        )
+    log.warning(
+        "Triage match_path %r has unknown kind %r; falling through to LLM",
+        match_path,
+        kind,
+    )
+    return None
+
+
 def promote_backlog_findings(
     results: list[tuple[dict[str, Any], AnalysisResult]],
     *,
@@ -552,7 +662,11 @@ def promote_backlog_findings(
     """Sequentially promote BACKLOG findings into ``knowledge/backlog/``.
 
     *runner*, when provided, replaces the live opencode call (for tests).
-    TIMEOUT / VALID / REJECTED findings are ignored.
+    Only :attr:`Verdict.BACKLOG` is promoted — never ``TIMEOUT``,
+    ``DUPLICATE``, ``VALID``, or ``REJECTED``.
+
+    When triage already set :attr:`AnalysisResult.match_path` and it resolves
+    to a catalog entry, promotion skips the LLM and updates/links directly.
     """
     from pathlib import Path  # noqa: PLC0415
 
@@ -578,39 +692,53 @@ def promote_backlog_findings(
         feedback_path = output_dir / generate_output_filename(finding)
         try:
             catalog = load_full_catalog(knowledge_dir)
-            prompt = build_dedup_prompt(finding, analysis, catalog)
-            try:
-                raw = run_dedup_llm(
-                    prompt, model, timeout=timeout, runner=runner
-                )
-                decision = parse_dedup_response(
-                    raw,
-                    finding=finding,
-                    analysis=analysis,
-                    catalog=catalog,
-                )
-            except TimeoutError as exc:
-                log.warning(
-                    "Dedup LLM timed out for %s: %s; fallback create",
+            decision = decision_from_triage_match(
+                finding,
+                analysis,
+                knowledge_dir=knowledge_dir,
+                catalog=catalog,
+            )
+            if decision is not None:
+                log.info(
+                    "Promotion short-circuit for %s via match_path=%s → %s",
                     generate_output_filename(finding),
-                    exc,
+                    analysis.match_path,
+                    decision.action,
                 )
-                decision = fallback_create_decision(
-                    finding,
-                    analysis,
-                    rationale=f"Dedup timed out; fallback create ({exc})",
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "Dedup LLM failed for %s: %s; fallback create",
-                    generate_output_filename(finding),
-                    exc,
-                )
-                decision = fallback_create_decision(
-                    finding,
-                    analysis,
-                    rationale=f"Dedup error; fallback create ({exc})",
-                )
+            else:
+                prompt = build_dedup_prompt(finding, analysis, catalog)
+                try:
+                    raw = run_dedup_llm(
+                        prompt, model, timeout=timeout, runner=runner
+                    )
+                    decision = parse_dedup_response(
+                        raw,
+                        finding=finding,
+                        analysis=analysis,
+                        catalog=catalog,
+                    )
+                except TimeoutError as exc:
+                    log.warning(
+                        "Dedup LLM timed out for %s: %s; fallback create",
+                        generate_output_filename(finding),
+                        exc,
+                    )
+                    decision = fallback_create_decision(
+                        finding,
+                        analysis,
+                        rationale=f"Dedup timed out; fallback create ({exc})",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "Dedup LLM failed for %s: %s; fallback create",
+                        generate_output_filename(finding),
+                        exc,
+                    )
+                    decision = fallback_create_decision(
+                        finding,
+                        analysis,
+                        rationale=f"Dedup error; fallback create ({exc})",
+                    )
 
             result = apply_dedup_decision(
                 decision,

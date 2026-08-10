@@ -11,7 +11,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import deep_architect.review_analyzer as review_analyzer_mod
+from deep_architect.backlog_store import CatalogEntry
 from deep_architect.review_analyzer import (
+    DEFAULT_DEDUP_SIMILARITY,
     AnalysisResult,
     CircuitBreaker,
     PlainReporter,
@@ -20,22 +22,30 @@ from deep_architect.review_analyzer import (
     Verdict,
     _finding_lines,
     _finding_path,
+    _normalize_match_path,
     _parse_opencode_json,
     call_opencode_analysis,
     construct_analysis_prompt,
+    content_similarity,
     default_opencode_timeout,
+    expand_prior_feedback_dirs,
     extract_findings,
     filter_findings_by_path,
+    finding_similarity_text,
+    format_prior_feedback_index,
     generate_index_report,
     generate_markdown_content,
     generate_output_filename,
     generate_summary_report,
     get_filepath_hash,
+    group_near_duplicate_findings,
     is_timeout_report,
     load_ocr_json,
+    load_prior_feedback_index,
     process_findings_concurrently,
     request_shutdown,
     resolve_opencode_timeout,
+    select_catalog_bodies_to_expand,
     select_timeout_findings_for_retry,
     should_use_tui,
     tally_output_dir_verdicts,
@@ -280,6 +290,9 @@ class TestConstructAnalysisPrompt:
         assert "x = 1" in prompt
         assert "count = 1" in prompt
         assert "Rename variable" in prompt
+        # Empty catalog: no catalog section / multi-file rule block
+        assert "Existing knowledge catalog" not in prompt
+        assert "each file still needs a fix" not in prompt
 
     def test_warning_prompt(self) -> None:
         finding = {
@@ -291,6 +304,244 @@ class TestConstructAnalysisPrompt:
         prompt = construct_analysis_prompt(finding)
         assert "src/bar.py" in prompt
         assert "Context deadline exceeded" in prompt
+
+    def test_with_catalog_heads_includes_rules(self) -> None:
+        finding = {
+            "type": "comment",
+            "path": "src/api.py",
+            "content": "Missing type hints on public API",
+            "existing_code": "def f(x):",
+            "suggestion_code": "def f(x: int) -> None:",
+            "start_line": 1,
+            "end_line": 1,
+        }
+        heads = (
+            "- path=knowledge/backlog/type-hints.md | title=Public API type hints "
+            "| kind=backlog | files=[src/api.py]"
+        )
+        prompt = construct_analysis_prompt(finding, catalog_heads=heads)
+        assert "Existing knowledge catalog" in prompt
+        assert "Public API type hints" in prompt
+        assert "knowledge/backlog/type-hints.md" in prompt
+        assert "each file still needs a fix" in prompt
+        assert "match_path" in prompt
+        assert "VALID|REJECTED|BACKLOG" in prompt
+
+    def test_empty_catalog_heads_omits_section(self) -> None:
+        finding = {
+            "type": "comment",
+            "path": "a.py",
+            "content": "x",
+            "start_line": 1,
+            "end_line": 1,
+        }
+        prompt = construct_analysis_prompt(finding, catalog_heads="")
+        assert "Existing knowledge catalog" not in prompt
+        baseline = construct_analysis_prompt(finding)
+        # Same structural shape (no catalog rules)
+        assert "Classification rules" not in prompt
+        assert "Classification rules" not in baseline
+
+    def test_with_prior_feedback_section(self) -> None:
+        finding = {
+            "type": "comment",
+            "path": "a.py",
+            "content": "x",
+            "start_line": 1,
+            "end_line": 1,
+        }
+        prompt = construct_analysis_prompt(
+            finding,
+            prior_feedback_index="- file=a.py verdict=BACKLOG preview=type hints",
+        )
+        assert "Prior feedback" in prompt
+        assert "verdict=BACKLOG" in prompt
+
+
+class TestPriorFeedbackIndex:
+
+    def _write_finding(
+        self,
+        directory: Path,
+        name: str,
+        *,
+        verdict: str,
+        file_path: str = "src/api.py",
+        comment: str = "Missing type hints on public helpers",
+        disposition: str | None = None,
+        analysis: str = "Deferred style campaign",
+    ) -> Path:
+        text = (
+            "# OCR Review Analysis\n\n"
+            f"- **File**: {file_path}\n"
+            "- **Lines**: 1-5\n"
+            "- **Type**: Comment\n"
+            "- **Existing Code**:\n```\npass\n```\n"
+            f"- **Review Comment**: {comment}\n\n"
+            "## LLM Analysis\n\n"
+            f"**Verdict**: {verdict}\n\n"
+            "**Analysis**:\n\n"
+            f"{analysis}\n"
+        )
+        if disposition:
+            text += (
+                "\n## Backlog disposition\n\n"
+                f"- **Action**: {disposition}\n"
+                "- **Target**: `knowledge/backlog/type-hints.md`\n"
+            )
+        path = directory / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_load_mixed_verdicts_excludes_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        fb = tmp_path / "feedback-r1"
+        fb.mkdir()
+        self._write_finding(fb, "a-0.md", verdict="BACKLOG", disposition="created")
+        self._write_finding(
+            fb,
+            "b-1.md",
+            verdict="REJECTED",
+            comment="False positive on lint",
+            analysis="Noise",
+        )
+        self._write_finding(
+            fb,
+            "c-2.md",
+            verdict="VALID",
+            comment="Null check missing",
+            analysis="Real bug",
+        )
+        # TIMEOUT noise
+        (fb / "d-3.md").write_text(
+            "# OCR Review Analysis\n\n"
+            "- **File**: src/x.py\n"
+            "- **Review Comment**: timed out\n\n"
+            "## LLM Analysis\n\n"
+            "**Verdict**: TIMEOUT\n\n"
+            "**Analysis**:\n\n"
+            "opencode execution timed out (>300s)\n",
+            encoding="utf-8",
+        )
+        # Non-finding files skipped
+        (fb / "SUMMARY.md").write_text("# Summary\n", encoding="utf-8")
+
+        items = load_prior_feedback_index([fb])
+        verdicts = {i.verdict for i in items}
+        assert "TIMEOUT" not in verdicts
+        assert "BACKLOG" in verdicts
+        assert "REJECTED" in verdicts
+        assert "VALID" in verdicts
+        assert len(items) == 3
+        backlog = next(i for i in items if i.verdict == "BACKLOG")
+        assert backlog.disposition == "created"
+        assert "type hints" in backlog.comment_preview.lower()
+
+    def test_format_is_compact(self, tmp_path: Path) -> None:
+        fb = tmp_path / "fb"
+        fb.mkdir()
+        long_comment = "word " * 80
+        self._write_finding(
+            fb, "a-0.md", verdict="BACKLOG", comment=long_comment
+        )
+        items = load_prior_feedback_index([fb])
+        formatted = format_prior_feedback_index(items)
+        assert "verdict=BACKLOG" in formatted
+        assert "prefer BACKLOG" in formatted
+        # Preview truncated
+        assert len(items[0].comment_preview) <= 120
+        assert "…" in items[0].comment_preview or len(long_comment) <= 120
+
+    def test_missing_dir_no_crash(self, tmp_path: Path) -> None:
+        missing = tmp_path / "nope"
+        items = load_prior_feedback_index([missing])
+        assert items == []
+
+    def test_prompt_includes_prior_only_when_non_empty(self) -> None:
+        finding = {
+            "type": "comment",
+            "path": "a.py",
+            "content": "x",
+            "start_line": 1,
+            "end_line": 1,
+        }
+        empty = construct_analysis_prompt(finding, prior_feedback_index="")
+        assert "Prior feedback" not in empty
+        filled = construct_analysis_prompt(
+            finding,
+            prior_feedback_index=format_prior_feedback_index([]),  # empty → ""
+        )
+        assert "Prior feedback" not in filled
+        # Non-empty index string
+        index = (
+            "Prior triage…\n\n"
+            "- file=a.py verdict=BACKLOG preview=type hints src=fb/a-0.md"
+        )
+        with_prior = construct_analysis_prompt(
+            finding, prior_feedback_index=index
+        )
+        assert "Prior feedback" in with_prior
+        assert "verdict=BACKLOG" in with_prior
+
+
+class TestSelectCatalogBodies:
+
+    def test_selects_overlapping_titles(self) -> None:
+        catalog = [
+            CatalogEntry(
+                path="knowledge/backlog/type-hints.md",
+                title="Public API type hints campaign",
+                kind="backlog",
+                occurrence_files=("src/api.py",),
+            ),
+            CatalogEntry(
+                path="knowledge/backlog/metrics.md",
+                title="Missing Prometheus metrics",
+                kind="backlog",
+            ),
+        ]
+        finding = {
+            "type": "comment",
+            "path": "src/api.py",
+            "content": "Add type hints to public API helpers",
+            "index": 0,
+        }
+        selected = select_catalog_bodies_to_expand(
+            catalog, finding, max_bodies=3, title_overlap_threshold=0.15
+        )
+        assert any(e.path.endswith("type-hints.md") for e in selected)
+
+    def test_empty_catalog(self) -> None:
+        finding = {"type": "comment", "path": "a.py", "content": "x", "index": 0}
+        assert select_catalog_bodies_to_expand([], finding) == []
+
+
+class TestNormalizeMatchPath:
+
+    def test_valid_path(self) -> None:
+        paths = {"knowledge/backlog/foo.md", "knowledge/tickets/PROJ-0001.md"}
+        assert (
+            _normalize_match_path("knowledge/backlog/foo.md", catalog_path_set=paths)
+            == "knowledge/backlog/foo.md"
+        )
+
+    def test_invalid_path_dropped(self) -> None:
+        paths = {"knowledge/backlog/foo.md"}
+        assert (
+            _normalize_match_path("knowledge/backlog/nope.md", catalog_path_set=paths)
+            is None
+        )
+
+    def test_missing_field_ok(self) -> None:
+        assert _normalize_match_path(None, catalog_path_set={"a.md"}) is None
+        assert _normalize_match_path("null", catalog_path_set={"a.md"}) is None
+
+    def test_no_catalog_drops_match(self) -> None:
+        assert (
+            _normalize_match_path("knowledge/backlog/foo.md", catalog_path_set=None)
+            is None
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +558,31 @@ class TestParseOpendencodeJson:
         result = _parse_opencode_json(raw)
         assert result.verdict == Verdict.VALID
         assert "real issue" in result.analysis
+        assert result.match_path is None
+
+    def test_match_path_validated(self) -> None:
+        payload = {
+            "verdict": "backlog",
+            "analysis": "deferred theme",
+            "match_path": "knowledge/backlog/type-hints.md",
+        }
+        raw = json.dumps({"content": json.dumps(payload)})
+        paths = {"knowledge/backlog/type-hints.md"}
+        result = _parse_opencode_json(raw, catalog_path_set=paths)
+        assert result.verdict == Verdict.BACKLOG
+        assert result.match_path == "knowledge/backlog/type-hints.md"
+
+    def test_invalid_match_path_dropped(self) -> None:
+        payload = {
+            "verdict": "backlog",
+            "analysis": "x",
+            "match_path": "knowledge/backlog/missing.md",
+        }
+        raw = json.dumps({"content": json.dumps(payload)})
+        result = _parse_opencode_json(
+            raw, catalog_path_set={"knowledge/backlog/other.md"}
+        )
+        assert result.match_path is None
 
     def test_list_content_blocks(self) -> None:
         verdict_json = '{"verdict":"rejected","analysis":"false positive"}'
@@ -454,14 +730,181 @@ class TestVerdict:
         assert Verdict.REJECTED.value == "rejected"
         assert Verdict.BACKLOG.value == "backlog"
         assert Verdict.TIMEOUT.value == "timeout"
+        assert Verdict.DUPLICATE.value == "duplicate"
 
     def test_from_string(self) -> None:
         assert Verdict("valid") == Verdict.VALID
         assert Verdict("timeout") == Verdict.TIMEOUT
+        assert Verdict("duplicate") == Verdict.DUPLICATE
 
     def test_invalid_raises(self) -> None:
         with pytest.raises(ValueError):
             Verdict("not_a_verdict")
+
+
+# ---------------------------------------------------------------------------
+# Intra-OCR near-duplicate collapse
+# ---------------------------------------------------------------------------
+
+
+def _comment(
+    path: str,
+    content: str,
+    index: int = 0,
+    *,
+    severity: str | None = None,
+    start_line: int = 1,
+    end_line: int = 1,
+) -> dict[str, Any]:
+    finding: dict[str, Any] = {
+        "type": "comment",
+        "path": path,
+        "content": content,
+        "start_line": start_line,
+        "end_line": end_line,
+        "index": index,
+    }
+    if severity is not None:
+        finding["severity"] = severity
+    return finding
+
+
+class TestContentSimilarity:
+
+    def test_identical(self) -> None:
+        assert content_similarity("missing type hints", "missing type hints") == 1.0
+
+    def test_empty_both(self) -> None:
+        assert content_similarity("", "") == 1.0
+
+    def test_empty_one(self) -> None:
+        assert content_similarity("hello world", "") == 0.0
+
+    def test_partial_overlap(self) -> None:
+        sim = content_similarity(
+            "add type hints to public API functions",
+            "add type hints on public helpers",
+        )
+        assert 0.0 < sim < 1.0
+
+    def test_disjoint(self) -> None:
+        assert content_similarity("alpha beta", "gamma delta") == 0.0
+
+
+class TestGroupNearDuplicates:
+
+    def test_same_path_near_identical_collapses(self) -> None:
+        findings = [
+            _comment("conftest.py", "Iterator consumed twice in fixture setup", 0),
+            _comment(
+                "conftest.py",
+                "Iterator consumed twice during fixture setup",
+                1,
+            ),
+        ]
+        groups = group_near_duplicate_findings(findings, threshold=0.5)
+        multi = [g for g in groups if g.duplicate_indices]
+        assert len(multi) == 1
+        assert multi[0].canonical_index == 0
+        assert multi[0].duplicate_indices == (1,)
+
+    def test_same_content_different_paths_no_collapse(self) -> None:
+        text = "Missing null check on response object"
+        findings = [
+            _comment("a.py", text, 0),
+            _comment("b.py", text, 1),
+        ]
+        groups = group_near_duplicate_findings(findings)
+        assert len(groups) == 2
+        assert all(g.duplicate_indices == () for g in groups)
+
+    def test_empty_and_single(self) -> None:
+        assert group_near_duplicate_findings([]) == []
+        groups = group_near_duplicate_findings(
+            [_comment("a.py", "only one", 0)]
+        )
+        assert len(groups) == 1
+        assert groups[0].canonical_index == 0
+        assert groups[0].duplicate_indices == ()
+
+    def test_threshold_boundary(self) -> None:
+        # Share one token of two → Jaccard 1/3 ≈ 0.333
+        a = "unique_token_aaa shared"
+        b = "unique_token_bbb shared"
+        sim = content_similarity(a, b)
+        assert abs(sim - 1 / 3) < 1e-9
+        findings = [_comment("x.py", a, 0), _comment("x.py", b, 1)]
+        below = group_near_duplicate_findings(findings, threshold=0.5)
+        assert all(g.duplicate_indices == () for g in below)
+        above = group_near_duplicate_findings(findings, threshold=0.3)
+        multi = [g for g in above if g.duplicate_indices]
+        assert len(multi) == 1
+
+    def test_canonical_prefers_higher_severity(self) -> None:
+        findings = [
+            _comment("x.py", "same issue about missing validation", 0, severity="low"),
+            _comment("x.py", "same issue about missing validation", 1, severity="high"),
+        ]
+        groups = group_near_duplicate_findings(findings, threshold=0.8)
+        multi = [g for g in groups if g.duplicate_indices]
+        assert len(multi) == 1
+        assert multi[0].canonical_index == 1
+        assert multi[0].duplicate_indices == (0,)
+
+    def test_default_threshold_constant(self) -> None:
+        assert DEFAULT_DEDUP_SIMILARITY == 0.85
+
+    def test_finding_similarity_text_warning(self) -> None:
+        f = {"type": "warning", "file": "a.py", "message": "warn msg", "index": 0}
+        assert finding_similarity_text(f) == "warn msg"
+
+
+class TestProcessFindingsDedup:
+
+    def test_only_canonicals_invoke_analysis(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        findings = [
+            _comment("conftest.py", "one-time iterator exhausted early", 0),
+            _comment("conftest.py", "one-time iterator exhausted early!", 1),
+            _comment("other.py", "unrelated null check missing", 2),
+        ]
+        calls: list[int] = []
+
+        def fake_analyze(
+            finding: dict[str, Any],
+            model: str,
+            breaker: Any,
+            **kwargs: Any,
+        ) -> AnalysisResult:
+            calls.append(finding["index"])
+            return AnalysisResult(Verdict.VALID, f"ok-{finding['index']}", "")
+
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer.analyze_finding", fake_analyze
+        )
+
+        results = process_findings_concurrently(
+            findings,
+            model="m",
+            max_workers=2,
+            output_dir=tmp_path,
+            dedup_threshold=0.5,
+        )
+        assert len(results) == 3
+        # Two canonicals only (one for conftest cluster + other.py)
+        assert sorted(calls) == [0, 2]
+        verdicts = {
+            r[0]["index"]: r[1].verdict for r in results
+        }
+        assert verdicts[0] == Verdict.VALID
+        assert verdicts[1] == Verdict.DUPLICATE
+        assert verdicts[2] == Verdict.VALID
+        # DUPLICATE report written
+        dup_name = generate_output_filename(findings[1])
+        dup_md = (tmp_path / dup_name).read_text(encoding="utf-8")
+        assert "**Verdict**: DUPLICATE" in dup_md
+        assert "Duplicate of" in dup_md
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +1014,45 @@ class TestGenerateMarkdownContent:
         assert "timeout" in md
         assert "REJECTED" in md
 
+    def test_duplicate_verdict(self) -> None:
+        finding = {
+            "type": "comment",
+            "path": "conftest.py",
+            "content": "dup",
+            "start_line": 1,
+            "end_line": 1,
+            "index": 1,
+        }
+        analysis = AnalysisResult(
+            Verdict.DUPLICATE,
+            "Near-duplicate of `abc-0.md`",
+            "",
+            duration_s=0.0,
+        )
+        md = generate_markdown_content(
+            finding, analysis, duplicate_of="abc-0.md"
+        )
+        assert "**Verdict**: DUPLICATE" in md
+        assert "**Duplicate of**: `abc-0.md`" in md
+
+    def test_catalog_match_stamp(self) -> None:
+        finding = {
+            "type": "comment",
+            "path": "a.py",
+            "content": "type hints",
+            "start_line": 1,
+            "end_line": 1,
+            "index": 0,
+        }
+        analysis = AnalysisResult(
+            Verdict.BACKLOG,
+            "Deferred theme",
+            "",
+            match_path="knowledge/backlog/type-hints.md",
+        )
+        md = generate_markdown_content(finding, analysis)
+        assert "**Catalog match**: `knowledge/backlog/type-hints.md`" in md
+
 
 # ---------------------------------------------------------------------------
 # generate_summary_report
@@ -588,6 +1070,9 @@ class TestGenerateSummaryReport:
         assert "REJECTED: 1 (33.3%)" in report
         assert "BACKLOG: 0 (0.0%)" in report
         assert "TIMEOUT: 0 (0.0%)" in report
+        assert "DUPLICATE:" in report
+        assert "TIMEOUT is infrastructure" in report
+        assert "DUPLICATE is same-path" in report
 
     def test_zero_total(self) -> None:
         report = generate_summary_report({}, 0, model="standard/coder")
@@ -627,7 +1112,26 @@ class TestParseArgsBacklogFlags:
 
         args = parse_args(["ocr.json", "--no-tui"])
         assert args.no_write_backlog is False
-        assert args.knowledge_dir is None
+        assert args.prior_feedback == []
+
+    def test_prior_feedback_repeatable(self) -> None:
+        from deep_architect.review_analyzer import parse_args
+
+        args = parse_args(
+            [
+                "ocr.json",
+                "--prior-feedback",
+                "feedback-r1",
+                "--prior-feedback",
+                "feedback-r2",
+                "--no-tui",
+            ]
+        )
+        assert args.prior_feedback == ["feedback-r1", "feedback-r2"]
+
+    def test_prior_feedback_comma_separated_expand(self) -> None:
+        dirs = expand_prior_feedback_dirs(["a,b", "c"])
+        assert dirs == [Path("a"), Path("b"), Path("c")]
 
     def test_no_write_backlog(self) -> None:
         from deep_architect.review_analyzer import parse_args

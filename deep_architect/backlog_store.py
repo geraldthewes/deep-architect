@@ -34,13 +34,14 @@ class BacklogAction(StrEnum):
 
 @dataclass(frozen=True)
 class CatalogEntry:
-    """Compact index row for dedup prompts (no full file bodies)."""
+    """Compact index row for prompts (no full file bodies)."""
 
     path: str  # relative path string, e.g. knowledge/backlog/foo.md
     title: str
     kind: str  # "backlog" | "ticket"
     ticket_id: str | None = None
     status: str | None = None
+    occurrence_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,40 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
     return fields
 
 
+def _parse_occurrence_files(text: str) -> tuple[str, ...]:
+    """Extract unique ``file:`` paths from frontmatter ``occurrences:`` list.
+
+    Missing or malformed occurrences yield an empty tuple (never raises).
+    """
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return ()
+    block = match.group(1)
+    if "occurrences:" not in block:
+        return ()
+
+    files: list[str] = []
+    seen: set[str] = set()
+    in_occurrences = False
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not in_occurrences:
+            if stripped == "occurrences:" or stripped.startswith("occurrences:"):
+                in_occurrences = True
+            continue
+        # Leave occurrences block when a non-indented key appears.
+        if stripped and not line.startswith((" ", "\t", "-")) and ":" in stripped:
+            break
+        # Match nested "file:" under list items (any indentation).
+        file_match = re.match(r"^\s*-?\s*file:\s*(.+)$", line)
+        if file_match:
+            raw = file_match.group(1).strip().strip("\"'")
+            if raw and raw not in seen:
+                seen.add(raw)
+                files.append(raw)
+    return tuple(files)
+
+
 def _catalog_entry_from_file(
     path: Path,
     *,
@@ -179,11 +214,12 @@ def _catalog_entry_from_file(
     try:
         rel = path.relative_to(knowledge_dir.parent).as_posix()
     except ValueError:
-        rel = f"knowledge/{kind}/{path.name}" if kind == "backlog" else path.as_posix()
         if kind == "ticket":
             rel = f"knowledge/tickets/{path.name}"
         else:
             rel = f"knowledge/backlog/{path.name}"
+
+    occurrence_files = _parse_occurrence_files(text)
 
     return CatalogEntry(
         path=rel,
@@ -191,7 +227,105 @@ def _catalog_entry_from_file(
         kind=kind,
         ticket_id=fields.get("id") if kind == "ticket" else None,
         status=fields.get("status") if kind == "ticket" else None,
+        occurrence_files=occurrence_files,
     )
+
+
+def format_catalog_heads(catalog: list[CatalogEntry]) -> str:
+    """Format compact catalog heads for prompt injection (no full bodies).
+
+    Each entry includes path, title, kind, optional ticket fields, and
+    occurrence file list.
+    """
+    if not catalog:
+        return ""
+    lines: list[str] = []
+    for entry in catalog:
+        parts = [
+            f"path={entry.path}",
+            f"title={entry.title}",
+            f"kind={entry.kind}",
+        ]
+        if entry.ticket_id:
+            parts.append(f"id={entry.ticket_id}")
+        if entry.status:
+            parts.append(f"status={entry.status}")
+        if entry.occurrence_files:
+            files = ", ".join(entry.occurrence_files)
+            parts.append(f"files=[{files}]")
+        else:
+            parts.append("files=[]")
+        lines.append("- " + " | ".join(parts))
+    return "\n".join(lines)
+
+
+def load_entry_body(knowledge_dir: Path, entry_path: str) -> str | None:
+    """Read full markdown body for a catalog entry path.
+
+    *entry_path* is typically relative to the repo root (parent of
+    knowledge/), e.g. ``knowledge/backlog/foo.md``. Returns None on
+    missing/unreadable files (logs a warning).
+    """
+    if not entry_path or not entry_path.strip():
+        return None
+    normalized = entry_path.strip().lstrip("./")
+    candidates = [
+        knowledge_dir.parent / normalized,
+        knowledge_dir / normalized,
+        Path(normalized),
+    ]
+    # Also try under backlog/tickets by basename.
+    name = Path(normalized).name
+    candidates.append(knowledge_dir / "backlog" / name)
+    candidates.append(knowledge_dir / "tickets" / name)
+
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return cand.read_text(encoding="utf-8")
+        except OSError as exc:
+            log.warning("Could not read catalog body %s: %s", cand, exc)
+            return None
+    log.warning("Catalog entry body not found for path %s", entry_path)
+    return None
+
+
+def rank_catalog_for_finding(
+    catalog: list[CatalogEntry],
+    finding_path: str,
+) -> list[CatalogEntry]:
+    """Stable sort: entries whose occurrence files intersect *finding_path* first.
+
+    Does **not** drop any entry — file affinity only boosts rank.
+    Matching is exact path equality, or either path as a suffix of the other
+    (handles ``src/foo.py`` vs ``app/src/foo.py``).
+    """
+    if not catalog:
+        return []
+    finding_norm = (finding_path or "").strip().replace("\\", "/")
+
+    def _path_affinity(occ: str) -> bool:
+        if not finding_norm or not occ:
+            return False
+        occ_norm = occ.strip().replace("\\", "/")
+        if occ_norm == finding_norm:
+            return True
+        if occ_norm.endswith("/" + finding_norm) or finding_norm.endswith("/" + occ_norm):
+            return True
+        return False
+
+    def _matches(entry: CatalogEntry) -> bool:
+        return any(_path_affinity(occ) for occ in entry.occurrence_files)
+
+    # Two-pass stable partition preserving original relative order.
+    boosted: list[CatalogEntry] = []
+    rest: list[CatalogEntry] = []
+    for entry in catalog:
+        if _matches(entry):
+            boosted.append(entry)
+        else:
+            rest.append(entry)
+    return boosted + rest
 
 
 def load_backlog_catalog(knowledge_dir: Path) -> list[CatalogEntry]:

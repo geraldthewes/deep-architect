@@ -455,7 +455,7 @@ The file exists but failed TOML parsing or Pydantic validation. Compare against
 
 ## Review Analyzer
 
-`review-analyzer` takes an OCR (Open Code Review) JSON file and uses an LLM to triage each finding, classifying it as `VALID`, `REJECTED`, or `BACKLOG` with detailed reasoning. Infrastructure failures that hit the opencode wall-clock limit are classified separately as `TIMEOUT` (not conflated with intentional `BACKLOG`). This is useful when OCR produces a large volume of findings and you need a second LLM opinion to separate real issues from false positives.
+`review-analyzer` takes an OCR (Open Code Review) JSON file and uses an LLM to triage each finding, classifying it as `VALID`, `REJECTED`, or `BACKLOG` with detailed reasoning. Infrastructure failures that hit the opencode wall-clock limit are classified separately as `TIMEOUT` (not conflated with intentional `BACKLOG`). Same-path near-duplicates within one OCR run are collapsed as `DUPLICATE` (no LLM call). This is useful when OCR produces a large volume of findings and you need a second LLM opinion to separate real issues from false positives.
 
 ### Usage
 
@@ -476,7 +476,8 @@ uv run review-analyzer <ocr-file.json> [options]
 | `--summary-only` | off | Print summary counts without writing individual files |
 | `--retry-timeouts` | off | Re-analyze only findings whose prior report is `TIMEOUT` (or legacy timed-out `BACKLOG`) |
 | `--no-write-backlog` | off | Disable promotion of `BACKLOG` findings into `knowledge/backlog/` (write-backlog is **on** by default) |
-| `--knowledge-dir <path>` | `<cwd>/knowledge` | Knowledge root for backlog/tickets (run from the target repo root) |
+| `--knowledge-dir <path>` | `<cwd>/knowledge` | Knowledge root for **catalog-aware triage** and backlog promotion (run from the target repo root) |
+| `--prior-feedback <dir>` | (none) | Prior feedback directory for multi-pass theme memory (repeatable; comma-separated also OK). **Read-only** — never mutates old feedback files |
 | `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
@@ -507,11 +508,45 @@ uv run review-analyzer code-review.json \
     --retry-timeouts
 ```
 
+### Multi-pass memory (catalog + prior feedback)
+
+Run the analyzer from the **application repo root** so the default knowledge dir (`./knowledge`) is correct.
+
+On each run, triage prompts include:
+
+1. **Catalog heads** from `--knowledge-dir` (`knowledge/backlog/` + `knowledge/tickets/`) — compact titles/paths/occurrence files, not full bodies (up to 3 full bodies may be expanded for high-affinity candidates).
+2. **Prior feedback index** from `--prior-feedback` (optional, repeatable) — compact file + verdict + comment preview from earlier feedback dirs. `TIMEOUT` reports are excluded so infrastructure noise is not treated as a deferred theme.
+
+**Product rules encoded in the prompt:**
+
+- The **same concrete defect in two different files** may both be `VALID` — each file still needs a fix. Catalog match does **not** skip a second file’s real defect.
+- Deferred **themes / campaigns** (style, large refactors, intentional “do later”) should prefer `BACKLOG` and may set `match_path` to an existing catalog entry.
+- **Intra-OCR near-duplicates** on the **same path** collapse to one full triage + `DUPLICATE` stubs (no LLM). Different paths never collapse.
+
+```bash
+# Multi-pass: seed memory from earlier feedback dirs + durable knowledge/
+review-analyzer code-review-r3.json \
+  --output-dir feedback-r3 \
+  --prior-feedback feedback-r1 \
+  --prior-feedback feedback-r2 \
+  --knowledge-dir ./knowledge
+```
+
+Promotion remains **on by default** after triage; use `--no-write-backlog` to disable. When triage already sets `match_path` to a known backlog/ticket, promotion **skips the second LLM call** and updates/links directly.
+
 ### Output
 
 The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to the output directory, plus a `SUMMARY.md` with the coding agent/model used (`opencode` + `--model`), verdict counts, and percentages. Disk output is the same in TUI and plain mode.
 
-`TIMEOUT` means the opencode subprocess exceeded `--timeout` (after one automatic retry). Those findings were **not** LLM-triaged; re-run with `--retry-timeouts` (and optionally a higher `--timeout`) to obtain a real verdict. `review-action` only auto-fixes `VALID` findings, so `TIMEOUT` items are skipped until re-triaged.
+Verdict notes in `SUMMARY.md`:
+
+| Verdict | Meaning |
+|---------|---------|
+| `VALID` / `REJECTED` / `BACKLOG` | LLM triage decisions |
+| `TIMEOUT` | Infrastructure (opencode wall-clock); **not** deferred product work |
+| `DUPLICATE` | Same-path near-duplicate within this OCR run; no LLM |
+
+`TIMEOUT` findings were **not** LLM-triaged; re-run with `--retry-timeouts` (and optionally a higher `--timeout`) to obtain a real verdict. `review-action` only auto-fixes `VALID` findings, so `TIMEOUT` / `DUPLICATE` / `BACKLOG` items are not auto-fixed.
 
 ### Backlog promotion (`knowledge/backlog/`)
 
@@ -524,7 +559,9 @@ After triage, each finding with verdict **`BACKLOG`** is promoted into the targe
 | **link_ticket** | If a similar `knowledge/tickets/PROJ-*.md` already tracks the issue — stamp the feedback file only; do **not** edit the ticket |
 | **skip** | Rare; stamp feedback only |
 
-Dedup uses an **extra opencode call** per BACKLOG finding against a compact catalog of backlog + ticket titles. Run the analyzer from the **application repo root** (e.g. plant-tracking) so `<cwd>/knowledge/` is correct. Disable with `--no-write-backlog` (cheaper; feedback-only). Optional `--knowledge-dir` overrides the knowledge root (useful in tests).
+When triage already provided a resolvable `match_path`, promotion reuses it (**no extra opencode call**): backlog → update (append occurrence only), ticket → link. Otherwise dedup uses an **extra opencode call** per remaining BACKLOG finding against a compact catalog of backlog + ticket titles. Run from the **application repo root** so `<cwd>/knowledge/` is correct. Disable with `--no-write-backlog` (cheaper; feedback-only). Optional `--knowledge-dir` overrides the knowledge root (useful in tests).
+
+`TIMEOUT` and `DUPLICATE` are **never** promoted.
 
 This is **not** the same as:
 

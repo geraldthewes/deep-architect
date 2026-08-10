@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -15,7 +16,10 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, TextIO
+from typing import TYPE_CHECKING, Any, Protocol, TextIO
+
+if TYPE_CHECKING:
+    from deep_architect.backlog_store import CatalogEntry
 
 log = logging.getLogger(__name__)
 
@@ -127,12 +131,41 @@ class Verdict(StrEnum):
     ``TIMEOUT`` is infrastructure-only: the opencode subprocess hit the wall-
     clock limit (after retries). It is not an intentional LLM triage decision
     and must not be conflated with ``BACKLOG``.
+
+    ``DUPLICATE`` is pre-triage only: near-duplicate of another finding on the
+    same path within the same OCR run (no LLM call).
     """
 
     VALID = "valid"
     REJECTED = "rejected"
     BACKLOG = "backlog"
     TIMEOUT = "timeout"
+    DUPLICATE = "duplicate"
+
+
+# Token Jaccard threshold for same-path near-duplicate collapse (intra-OCR).
+DEFAULT_DEDUP_SIMILARITY = 0.85
+
+# Max full catalog bodies expanded into a single triage prompt.
+DEFAULT_CATALOG_BODY_EXPAND_MAX = 3
+# Min title↔finding token Jaccard to expand a catalog body (after rank boost).
+DEFAULT_CATALOG_TITLE_OVERLAP = 0.2
+# Cap on prior-feedback rows injected into the triage prompt.
+DEFAULT_PRIOR_FEEDBACK_MAX_ITEMS = 200
+# Truncate review-comment previews in the prior-feedback index.
+DEFAULT_PRIOR_COMMENT_PREVIEW = 120
+
+# Severity ranks for picking a canonical finding within a duplicate group.
+_SEVERITY_RANK: dict[str, int] = {
+    "critical": 5,
+    "high": 4,
+    "error": 4,
+    "medium": 3,
+    "warning": 3,
+    "low": 2,
+    "info": 1,
+    "nit": 0,
+}
 
 
 @dataclass
@@ -146,6 +179,8 @@ class AnalysisResult:
     retry_count: int = 0
     # Wall-clock seconds for this finding's full analysis (including retries).
     duration_s: float = 0.0
+    # Catalog path when the finding was deferred as a known theme (optional).
+    match_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -307,7 +342,303 @@ def filter_findings_by_path(
 
 
 # ---------------------------------------------------------------------------
-# LLM analysis helpers  (Phase 2)
+# Intra-OCR near-duplicate collapse
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DuplicateGroup:
+    """One cluster of same-path near-duplicate findings."""
+
+    canonical_index: int  # index into the original findings list
+    duplicate_indices: tuple[int, ...]
+
+
+def finding_similarity_text(finding: dict[str, Any]) -> str:
+    """Normalize content/message for near-duplicate comparison."""
+    if finding.get("type") == "warning":
+        return str(finding.get("message") or "").strip()
+    # Comments and unknown types: prefer review content.
+    content = finding.get("content")
+    if content is not None:
+        return str(content).strip()
+    return str(finding.get("message") or "").strip()
+
+
+def _tokenize_for_similarity(text: str) -> set[str]:
+    """Lowercase alphanumeric tokens for Jaccard comparison."""
+    return set(re.findall(r"[a-z0-9_]+", text.lower()))
+
+
+def content_similarity(a: str, b: str) -> float:
+    """Token Jaccard similarity in ``[0.0, 1.0]``; pure and unit-testable."""
+    tokens_a = _tokenize_for_similarity(a)
+    tokens_b = _tokenize_for_similarity(b)
+    if not tokens_a and not tokens_b:
+        return 1.0
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = len(tokens_a & tokens_b)
+    union = len(tokens_a | tokens_b)
+    return intersection / union if union else 0.0
+
+
+def _finding_path_key(finding: dict[str, Any]) -> str:
+    """Path used for same-path-only grouping."""
+    return str(finding.get("path") or finding.get("file") or "")
+
+
+def _severity_rank(finding: dict[str, Any]) -> int:
+    raw = finding.get("severity") or finding.get("level") or ""
+    return _SEVERITY_RANK.get(str(raw).lower().strip(), -1)
+
+
+def _pick_canonical_index(indices: list[int], findings: list[dict[str, Any]]) -> int:
+    """Highest severity if present; ties broken by lowest original index."""
+    return min(
+        indices,
+        key=lambda i: (-_severity_rank(findings[i]), i),
+    )
+
+
+def group_near_duplicate_findings(
+    findings: list[dict[str, Any]],
+    *,
+    threshold: float = DEFAULT_DEDUP_SIMILARITY,
+) -> list[DuplicateGroup]:
+    """Group near-duplicate findings for same-path collapse.
+
+    Different paths never group together. Returns a full partition: every
+    finding index appears exactly once as either a canonical or a duplicate.
+    Empty / single-finding inputs yield one group per finding with no dups.
+    """
+    if not findings:
+        return []
+
+    # Bucket by path (empty path still groups among themselves).
+    by_path: dict[str, list[int]] = {}
+    for idx, finding in enumerate(findings):
+        by_path.setdefault(_finding_path_key(finding), []).append(idx)
+
+    groups: list[DuplicateGroup] = []
+    for indices in by_path.values():
+        # Greedy clustering within the path bucket, preserving index order.
+        claimed: set[int] = set()
+        texts = {i: finding_similarity_text(findings[i]) for i in indices}
+        for i in indices:
+            if i in claimed:
+                continue
+            cluster = [i]
+            claimed.add(i)
+            for j in indices:
+                if j in claimed:
+                    continue
+                if content_similarity(texts[i], texts[j]) >= threshold:
+                    cluster.append(j)
+                    claimed.add(j)
+            canonical = _pick_canonical_index(cluster, findings)
+            dups = tuple(sorted(k for k in cluster if k != canonical))
+            groups.append(
+                DuplicateGroup(canonical_index=canonical, duplicate_indices=dups)
+            )
+
+    # Stable order by canonical index for deterministic downstream behavior.
+    groups.sort(key=lambda g: g.canonical_index)
+    return groups
+
+
+def make_duplicate_result(canonical_filename: str) -> AnalysisResult:
+    """Build a zero-cost DUPLICATE analysis pointing at the canonical report."""
+    return AnalysisResult(
+        verdict=Verdict.DUPLICATE,
+        analysis=(
+            f"Near-duplicate of `{canonical_filename}` "
+            "(same path, similar content; skipped full triage)."
+        ),
+        raw_response="",
+        retry_count=0,
+        duration_s=0.0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Prior-feedback theme memory
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PriorFeedbackItem:
+    """One previously triaged finding from a feedback directory."""
+
+    source_dir: str
+    feedback_file: str
+    file_path: str
+    comment_preview: str
+    verdict: str
+    disposition: str | None  # from ## Backlog disposition if present
+    is_timeout_noise: bool
+
+
+def expand_prior_feedback_dirs(raw_values: list[str] | list[Path]) -> list[Path]:
+    """Expand repeatable / comma-separated ``--prior-feedback`` values to paths."""
+    dirs: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        for part in str(raw).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            key = str(Path(part))
+            if key in seen:
+                continue
+            seen.add(key)
+            dirs.append(Path(part))
+    return dirs
+
+
+def _truncate_preview(text: str, max_len: int = DEFAULT_PRIOR_COMMENT_PREVIEW) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= max_len:
+        return collapsed
+    if max_len <= 1:
+        return "…"
+    return collapsed[: max_len - 1] + "…"
+
+
+def _parse_disposition_action(content: str) -> str | None:
+    """Extract backlog disposition action from feedback markdown, if present."""
+    match = re.search(
+        r"##\s*Backlog disposition\b.*?"
+        r"-\s*\*\*Action\*\*:?\s*([a-zA-Z_]+)",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return match.group(1).strip().lower()
+
+
+def _parse_prior_feedback_file(
+    md_path: Path,
+    *,
+    source_dir: Path,
+) -> PriorFeedbackItem | None:
+    """Parse one feedback markdown into a compact prior item (or None)."""
+    from deep_architect.feedback_report import (  # noqa: PLC0415
+        NON_FINDING_FILES,
+        get_verdict,
+    )
+
+    if md_path.name in NON_FINDING_FILES:
+        return None
+
+    try:
+        content = md_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("Could not read prior feedback %s: %s", md_path, exc)
+        return None
+
+    verdict = get_verdict(md_path) or "UNKNOWN"
+    timeout_noise = is_timeout_report(md_path)
+
+    file_match = re.search(r"-?\s*\*\*File\*\*:?\s*(.+)", content)
+    file_path = file_match.group(1).strip() if file_match else "(unknown)"
+
+    comment_match = re.search(
+        r"-?\s*\*\*Review Comment\*\*:?\s*(.+?)(?:\n|$)", content
+    )
+    message_match = re.search(
+        r"-?\s*\*\*Message\*\*:?\s*(.+?)(?:\n|$)", content
+    )
+    if comment_match:
+        preview_src = comment_match.group(1).strip()
+    elif message_match:
+        preview_src = message_match.group(1).strip()
+    else:
+        analysis_match = re.search(
+            r"\*\*Analysis\*\*:?\s*\n(.*?)(?:\n---|\n\*Generated|\Z)",
+            content,
+            re.DOTALL,
+        )
+        preview_src = (
+            analysis_match.group(1).strip() if analysis_match else ""
+        )
+
+    return PriorFeedbackItem(
+        source_dir=source_dir.as_posix(),
+        feedback_file=md_path.name,
+        file_path=file_path,
+        comment_preview=_truncate_preview(preview_src),
+        verdict=verdict,
+        disposition=_parse_disposition_action(content),
+        is_timeout_noise=timeout_noise,
+    )
+
+
+def load_prior_feedback_index(dirs: list[Path]) -> list[PriorFeedbackItem]:
+    """Scan prior feedback directories for compact theme-memory items.
+
+    TIMEOUT (and legacy timed-out BACKLOG) reports are excluded from the
+    returned index so infrastructure noise is not treated as a deferred theme.
+    Missing or unreadable dirs/files log a warning and are skipped.
+    """
+    from deep_architect.feedback_report import NON_FINDING_FILES  # noqa: PLC0415
+
+    items: list[PriorFeedbackItem] = []
+    for directory in dirs:
+        if not directory.is_dir():
+            log.warning(
+                "Prior feedback path missing or not a directory (skipping): %s",
+                directory,
+            )
+            continue
+        for md_path in sorted(directory.glob("*.md")):
+            if md_path.name in NON_FINDING_FILES:
+                continue
+            item = _parse_prior_feedback_file(md_path, source_dir=directory)
+            if item is None:
+                continue
+            if item.is_timeout_noise:
+                log.debug(
+                    "Excluding timeout noise from prior-feedback index: %s",
+                    md_path,
+                )
+                continue
+            items.append(item)
+    return items
+
+
+def format_prior_feedback_index(
+    items: list[PriorFeedbackItem],
+    *,
+    max_items: int = DEFAULT_PRIOR_FEEDBACK_MAX_ITEMS,
+) -> str:
+    """Compact bullet list for prompt injection (previews truncated)."""
+    if not items:
+        return ""
+    header = (
+        "Prior triage decisions (read-only; do not mutate old feedback). "
+        "Prior BACKLOG / deferred disposition → prefer BACKLOG for the same "
+        "deferred theme. Prior REJECTED → prefer REJECTED for the same noise. "
+        "Prior VALID → re-evaluate normally (code may have changed). "
+        "A prior entry on file A does not force BACKLOG on a concrete bug in file B."
+    )
+    lines: list[str] = [header, ""]
+    shown = items[:max_items]
+    for item in shown:
+        disp = f" disposition={item.disposition}" if item.disposition else ""
+        preview = item.comment_preview or "(no preview)"
+        lines.append(
+            f"- file={item.file_path} verdict={item.verdict}{disp} "
+            f"preview={preview} src={item.source_dir}/{item.feedback_file}"
+        )
+    if len(items) > max_items:
+        lines.append(f"- … and {len(items) - max_items} more (truncated)")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# LLM analysis helpers
 # ---------------------------------------------------------------------------
 
 
@@ -372,8 +703,115 @@ class CircuitBreaker:
             )
 
 
-def construct_analysis_prompt(finding: dict[str, Any]) -> str:
-    """Build an LLM analysis prompt for a single OCR finding."""
+def select_catalog_bodies_to_expand(
+    catalog: list[CatalogEntry],
+    finding: dict[str, Any],
+    *,
+    max_bodies: int = DEFAULT_CATALOG_BODY_EXPAND_MAX,
+    title_overlap_threshold: float = DEFAULT_CATALOG_TITLE_OVERLAP,
+) -> list[CatalogEntry]:
+    """Pick up to *max_bodies* catalog entries whose full body should be expanded.
+
+    Ranks by file affinity first (:func:`~deep_architect.backlog_store.rank_catalog_for_finding`),
+    then keeps entries with title-token overlap against the finding text above
+    *title_overlap_threshold*. May return an empty list.
+    """
+    if not catalog or max_bodies <= 0:
+        return []
+
+    from deep_architect.backlog_store import rank_catalog_for_finding  # noqa: PLC0415
+
+    finding_path = _finding_path_key(finding)
+    ranked = rank_catalog_for_finding(catalog, finding_path)
+    finding_text = finding_similarity_text(finding)
+    selected: list[CatalogEntry] = []
+    for entry in ranked:
+        overlap = content_similarity(entry.title, finding_text)
+        if overlap >= title_overlap_threshold:
+            selected.append(entry)
+            if len(selected) >= max_bodies:
+                break
+    return selected
+
+
+def _catalog_context_sections(
+    *,
+    catalog_heads: str | None,
+    catalog_bodies: list[tuple[str, str]] | None,
+    prior_feedback_index: str | None,
+) -> str:
+    """Build optional catalog / prior-feedback sections for the triage prompt."""
+    parts: list[str] = []
+    if catalog_heads and catalog_heads.strip():
+        parts.append(
+            "## Existing knowledge catalog (compact heads)\n\n"
+            "These are deferred themes and tickets already tracked in knowledge/. "
+            "Use them when deciding BACKLOG vs VALID.\n\n"
+            f"{catalog_heads.strip()}\n"
+        )
+    if catalog_bodies:
+        body_blocks: list[str] = []
+        for path, body in catalog_bodies:
+            # Cap each body to keep the prompt bounded.
+            trimmed = body if len(body) <= 4000 else body[:4000] + "\n…\n"
+            body_blocks.append(f"### {path}\n\n{trimmed}")
+        parts.append(
+            "## Expanded catalog entries (full bodies for top candidates)\n\n"
+            + "\n\n".join(body_blocks)
+            + "\n"
+        )
+    if prior_feedback_index and prior_feedback_index.strip():
+        parts.append(
+            "## Prior feedback (read-only theme memory)\n\n"
+            "Use this as multi-pass memory only — prior dirs are never mutated.\n\n"
+            f"{prior_feedback_index.strip()}\n"
+        )
+    if not parts:
+        return ""
+    return "\n" + "\n".join(parts) + "\n"
+
+
+_CATALOG_TRIAGE_RULES = """\
+## Classification rules (normative)
+
+1. If the finding is a **concrete, auto-fixable defect**, prefer VALID even if a \
+similar catalog entry exists — **especially when the same class of bug may appear \
+in multiple files; each file still needs a fix.** Catalog match is **not** \
+permission to skip a second file's real defect.
+2. If the finding is the same **deferred theme / campaign** as a backlog or ticket \
+(style campaigns, large refactors, intentional "do later"), prefer BACKLOG and set \
+``match_path`` to the exact catalog path from the heads list.
+3. Prefer REJECTED for false positives / noise.
+4. Do not invent DUPLICATE or TIMEOUT (infrastructure / pre-filter only).
+"""
+
+
+def construct_analysis_prompt(
+    finding: dict[str, Any],
+    *,
+    catalog_heads: str | None = None,
+    catalog_bodies: list[tuple[str, str]] | None = None,
+    prior_feedback_index: str | None = None,
+) -> str:
+    """Build an LLM analysis prompt for a single OCR finding.
+
+    When *catalog_heads* is None or empty, the catalog section is omitted
+    (baseline behavior). *prior_feedback_index* is similarly optional.
+    """
+    extra = _catalog_context_sections(
+        catalog_heads=catalog_heads,
+        catalog_bodies=catalog_bodies,
+        prior_feedback_index=prior_feedback_index,
+    )
+    has_catalog = bool(catalog_heads and catalog_heads.strip())
+    rules = ("\n" + _CATALOG_TRIAGE_RULES + "\n") if has_catalog else ""
+    json_shape = (
+        '{"verdict": "VALID|REJECTED|BACKLOG", "analysis": "...", '
+        '"match_path": "knowledge/..." | null}'
+        if has_catalog
+        else '{"verdict": "...", "analysis": "..."}'
+    )
+
     if finding["type"] == "comment":
         return (
             "Analyze this code review comment:\n\n"
@@ -381,7 +819,9 @@ def construct_analysis_prompt(finding: dict[str, Any]) -> str:
             f"**Lines**: {finding['start_line']}-{finding['end_line']}\n"
             f"**Existing Code**:\n```\n{finding.get('existing_code', '(none)')}\n```\n"
             f"**Suggested Code**:\n```\n{finding.get('suggestion_code', '(none)')}\n```\n"
-            f"**Review Comment**: {finding['content']}\n\n"
+            f"**Review Comment**: {finding['content']}\n"
+            f"{extra}"
+            f"{rules}"
             "Please:\n"
             "1. Confirm the issue: Is this a real problem that needs fixing?\n"
             "2. Explain the issue: Why is this problematic?\n"
@@ -392,26 +832,61 @@ def construct_analysis_prompt(finding: dict[str, Any]) -> str:
             "   - New test only\n"
             "   - No new test\n"
             "6. Provide a verdict: VALID, REJECTED, or BACKLOG\n\n"
-            "Respond in JSON: {\"verdict\": \"...\", \"analysis\": \"...\"}"
+            f"Respond in JSON: {json_shape}"
         )
-    else:
-        return (
-            "Analyze this OCR warning:\n\n"
-            f"**File**: {finding['file']}\n"
-            f"**Message**: {finding['message']}\n"
-            f"**Type**: {finding.get('type', 'warning')}\n\n"
-            "Please:\n"
-            "1. Confirm the issue: Is this a real problem that needs attention?\n"
-            "2. Explain the issue: What does this warning indicate?\n"
-            "3. Critique the feedback: Actionable or false positive?\n"
-            "4. Suggest alternatives if appropriate\n"
-            "5. Determine if action is needed: VALID, REJECTED, or BACKLOG\n"
-            "6. Provide brief reasoning for your verdict\n\n"
-            "Respond in JSON: {\"verdict\": \"...\", \"analysis\": \"...\"}"
-        )
+    return (
+        "Analyze this OCR warning:\n\n"
+        f"**File**: {finding['file']}\n"
+        f"**Message**: {finding['message']}\n"
+        f"**Type**: {finding.get('type', 'warning')}\n"
+        f"{extra}"
+        f"{rules}"
+        "Please:\n"
+        "1. Confirm the issue: Is this a real problem that needs attention?\n"
+        "2. Explain the issue: What does this warning indicate?\n"
+        "3. Critique the feedback: Actionable or false positive?\n"
+        "4. Suggest alternatives if appropriate\n"
+        "5. Determine if action is needed: VALID, REJECTED, or BACKLOG\n"
+        "6. Provide brief reasoning for your verdict\n\n"
+        f"Respond in JSON: {json_shape}"
+    )
 
 
-def _parse_opencode_json(raw_stdout: str) -> AnalysisResult:
+def _normalize_match_path(
+    raw: Any,
+    *,
+    catalog_path_set: set[str] | None,
+) -> str | None:
+    """Validate optional LLM ``match_path`` against the catalog when provided."""
+    if raw is None:
+        return None
+    if isinstance(raw, str) and raw.strip().lower() in ("", "null", "none"):
+        return None
+    path = str(raw).strip().lstrip("./")
+    if not path:
+        return None
+    if catalog_path_set is None:
+        # No catalog in this run — ignore match_path (nothing to match).
+        return None
+    if path in catalog_path_set:
+        return path
+    # Accept bare filename match against catalog tails.
+    name = Path(path).name
+    for cand in catalog_path_set:
+        if Path(cand).name == name:
+            return cand
+    log.warning(
+        "LLM match_path %r not in catalog; dropping",
+        path,
+    )
+    return None
+
+
+def _parse_opencode_json(
+    raw_stdout: str,
+    *,
+    catalog_path_set: set[str] | None = None,
+) -> AnalysisResult:
     """Parse opencode --format json output into an AnalysisResult.
 
     opencode streams NDJSON events; we look for a ``content`` field and then
@@ -462,10 +937,19 @@ def _parse_opencode_json(raw_stdout: str) -> AnalysisResult:
                 verdict = Verdict(verdict_str)
             except ValueError:
                 verdict = Verdict.BACKLOG
+            # TIMEOUT / DUPLICATE are infrastructure / pre-triage only — not LLM
+            # verdicts. Fall back if a model invents them.
+            if verdict in (Verdict.TIMEOUT, Verdict.DUPLICATE):
+                verdict = Verdict.BACKLOG
+            match_path = _normalize_match_path(
+                parsed.get("match_path"),
+                catalog_path_set=catalog_path_set,
+            )
             return AnalysisResult(
                 verdict=verdict,
                 analysis=str(parsed.get("analysis", "No analysis provided")),
                 raw_response=raw_stdout,
+                match_path=match_path,
             )
         except json.JSONDecodeError:
             pass
@@ -477,7 +961,13 @@ def _parse_opencode_json(raw_stdout: str) -> AnalysisResult:
     )
 
 
-def _run_opencode_once(prompt: str, model: str, *, timeout: int) -> AnalysisResult:
+def _run_opencode_once(
+    prompt: str,
+    model: str,
+    *,
+    timeout: int,
+    catalog_path_set: set[str] | None = None,
+) -> AnalysisResult:
     """Single ``opencode run`` attempt with a wall-clock *timeout* (seconds)."""
     try:
         result = subprocess.run(
@@ -517,7 +1007,9 @@ def _run_opencode_once(prompt: str, model: str, *, timeout: int) -> AnalysisResu
             raw_response=result.stderr,
         )
 
-    return _parse_opencode_json(result.stdout)
+    return _parse_opencode_json(
+        result.stdout, catalog_path_set=catalog_path_set
+    )
 
 
 def call_opencode_analysis(
@@ -526,6 +1018,7 @@ def call_opencode_analysis(
     *,
     timeout: int = DEFAULT_OPENCODE_TIMEOUT,
     timeout_retries: int = DEFAULT_TIMEOUT_RETRIES,
+    catalog_path_set: set[str] | None = None,
 ) -> AnalysisResult:
     """Invoke ``opencode run`` and return a structured analysis result.
 
@@ -539,7 +1032,12 @@ def call_opencode_analysis(
     last: AnalysisResult | None = None
 
     for attempt in range(1, attempts + 1):
-        result = _run_opencode_once(prompt, model, timeout=timeout)
+        result = _run_opencode_once(
+            prompt,
+            model,
+            timeout=timeout,
+            catalog_path_set=catalog_path_set,
+        )
         if result.verdict != Verdict.TIMEOUT:
             return replace(result, retry_count=attempt - 1)
         last = result
@@ -574,9 +1072,46 @@ def analyze_finding(
     *,
     timeout: int = DEFAULT_OPENCODE_TIMEOUT,
     timeout_retries: int = DEFAULT_TIMEOUT_RETRIES,
+    catalog: list[CatalogEntry] | None = None,
+    catalog_heads: str | None = None,
+    knowledge_dir: Path | None = None,
+    prior_feedback_index: str | None = None,
 ) -> AnalysisResult:
-    """Analyze a single finding through opencode with circuit-breaker protection."""
-    prompt = construct_analysis_prompt(finding)
+    """Analyze a single finding through opencode with circuit-breaker protection.
+
+    *catalog* / *catalog_heads* enable classification-time knowledge awareness.
+    *prior_feedback_index* is optional theme memory from prior runs (Phase 4).
+    """
+    from deep_architect.backlog_store import (  # noqa: PLC0415
+        catalog_paths,
+        format_catalog_heads,
+        load_entry_body,
+    )
+
+    catalog_list: list[CatalogEntry] = list(catalog) if catalog else []
+    heads = catalog_heads
+    if heads is None and catalog_list:
+        heads = format_catalog_heads(catalog_list)
+
+    catalog_bodies: list[tuple[str, str]] | None = None
+    if catalog_list and knowledge_dir is not None:
+        selected = select_catalog_bodies_to_expand(catalog_list, finding)
+        bodies: list[tuple[str, str]] = []
+        for entry in selected:
+            body = load_entry_body(knowledge_dir, entry.path)
+            if body:
+                bodies.append((entry.path, body))
+        if bodies:
+            catalog_bodies = bodies
+
+    path_set = catalog_paths(catalog_list) if catalog_list else None
+
+    prompt = construct_analysis_prompt(
+        finding,
+        catalog_heads=heads,
+        catalog_bodies=catalog_bodies,
+        prior_feedback_index=prior_feedback_index,
+    )
     t0 = time.monotonic()
 
     def _invoke() -> AnalysisResult:
@@ -585,6 +1120,7 @@ def analyze_finding(
             model,
             timeout=timeout,
             timeout_retries=timeout_retries,
+            catalog_path_set=path_set,
         )
 
     try:
@@ -599,6 +1135,26 @@ def analyze_finding(
         )
 
 
+def _write_finding_report(
+    finding: dict[str, Any],
+    analysis: AnalysisResult,
+    output_dir: Path,
+    *,
+    duplicate_of: str | None = None,
+) -> None:
+    """Write one finding markdown report; log OSError without raising."""
+    filename = generate_output_filename(finding)
+    output_path = output_dir / filename
+    try:
+        content = generate_markdown_content(
+            finding, analysis, duplicate_of=duplicate_of
+        )
+        output_path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        log.error("Failed to write %s: %s", output_path, exc)
+        print(f"Error writing {output_path}: {exc}", file=sys.stderr)
+
+
 def process_findings_concurrently(
     findings: list[dict[str, Any]],
     model: str,
@@ -608,10 +1164,21 @@ def process_findings_concurrently(
     *,
     timeout: int = DEFAULT_OPENCODE_TIMEOUT,
     timeout_retries: int = DEFAULT_TIMEOUT_RETRIES,
+    dedup_threshold: float = DEFAULT_DEDUP_SIMILARITY,
+    catalog: list[CatalogEntry] | None = None,
+    knowledge_dir: Path | None = None,
+    prior_feedback_index: str | None = None,
 ) -> list[tuple[dict[str, Any], AnalysisResult]]:
     """Process findings through LLM with controlled concurrency, writing
     each result to disk immediately (when *output_dir* is given) so progress
     is preserved on crash.
+
+    Same-path near-duplicates are collapsed first: only the canonical finding
+    in each group is sent to opencode; others get :attr:`Verdict.DUPLICATE`
+    without an LLM call.
+
+    *catalog* is loaded once per run and injected into triage prompts.
+    *prior_feedback_index* is optional compact prior-pass memory (Phase 4).
 
     *on_result* is invoked after each finding completes (caller thread of
     :func:`as_completed` — typically a worker thread when the Textual TUI
@@ -623,10 +1190,74 @@ def process_findings_concurrently(
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
-    results: list[tuple[dict[str, Any], AnalysisResult]] = []
+    catalog_list: list[CatalogEntry] = list(catalog) if catalog else []
+    catalog_heads: str | None = None
+    if catalog_list:
+        from deep_architect.backlog_store import format_catalog_heads  # noqa: PLC0415
+
+        catalog_heads = format_catalog_heads(catalog_list)
+        log.info(
+            "Catalog-aware triage: %d entries (heads injected into prompts)",
+            len(catalog_list),
+        )
+
+    groups = group_near_duplicate_findings(findings, threshold=dedup_threshold)
+    dup_to_canonical: dict[int, int] = {}
+    for group in groups:
+        for dup_idx in group.duplicate_indices:
+            dup_to_canonical[dup_idx] = group.canonical_index
+
+    results_by_idx: dict[int, AnalysisResult] = {}
     total = len(findings)
     t0 = time.monotonic()
+    completed = 0
+
+    def _emit(
+        finding: dict[str, Any],
+        analysis: AnalysisResult,
+    ) -> None:
+        nonlocal completed
+        completed += 1
+        if on_result is not None:
+            on_result(
+                ProgressEvent(
+                    completed=completed,
+                    total=total,
+                    finding=finding,
+                    analysis=analysis,
+                    elapsed_s=time.monotonic() - t0,
+                )
+            )
+
+    # Emit cheap DUPLICATE stubs first (no LLM).
+    for dup_idx, can_idx in sorted(dup_to_canonical.items()):
+        canonical_name = generate_output_filename(findings[can_idx])
+        dup_analysis = make_duplicate_result(canonical_name)
+        results_by_idx[dup_idx] = dup_analysis
+        dup_finding = findings[dup_idx]
+        if output_dir is not None:
+            _write_finding_report(
+                dup_finding,
+                dup_analysis,
+                output_dir,
+                duplicate_of=canonical_name,
+            )
+        _emit(dup_finding, dup_analysis)
+        log.info(
+            "Marked finding %s as DUPLICATE of %s",
+            generate_output_filename(dup_finding),
+            canonical_name,
+        )
+
+    canonical_items = [
+        (idx, finding)
+        for idx, finding in enumerate(findings)
+        if idx not in dup_to_canonical
+    ]
+    if not canonical_items:
+        return [(findings[i], results_by_idx[i]) for i in sorted(results_by_idx)]
+
+    breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=30)
     cancel_pending = False
     # Allow wall time for all attempts plus a small grace period for process teardown.
     future_wait = timeout * (1 + max(0, timeout_retries)) + 60
@@ -642,68 +1273,60 @@ def process_findings_concurrently(
             breaker,
             timeout=timeout,
             timeout_retries=timeout_retries,
+            catalog=catalog_list,
+            catalog_heads=catalog_heads,
+            knowledge_dir=knowledge_dir,
+            prior_feedback_index=prior_feedback_index,
         )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_finding = {
-            executor.submit(_analyze_one, finding): finding for finding in findings
+        future_to_item = {
+            executor.submit(_analyze_one, finding): (idx, finding)
+            for idx, finding in canonical_items
         }
 
-        for future in as_completed(future_to_finding):
+        for future in as_completed(future_to_item):
             if future.cancelled():
                 continue
 
-            finding = future_to_finding[future]
+            idx, finding = future_to_item[future]
             try:
-                analysis = future.result(timeout=future_wait)
+                maybe_result = future.result(timeout=future_wait)
             except Exception as exc:
-                analysis = AnalysisResult(
+                maybe_result = AnalysisResult(
                     verdict=Verdict.BACKLOG,
                     analysis=f"Task exception: {exc}",
                     raw_response="",
                 )
 
-            if analysis is None:
+            if maybe_result is None:
                 # Worker saw the shutdown flag before starting the LLM call.
                 continue
 
-            results.append((finding, analysis))
+            results_by_idx[idx] = maybe_result
 
-            # Write file immediately so progress survives a crash
             if output_dir is not None:
-                try:
-                    filename = generate_output_filename(finding)
-                    output_path = output_dir / filename
-                    content = generate_markdown_content(finding, analysis)
-                    output_path.write_text(content, encoding="utf-8")
-                except OSError as exc:
-                    log.error("Failed to write %s: %s", output_path, exc)
-                    print(f"Error writing {output_path}: {exc}", file=sys.stderr)
+                _write_finding_report(finding, maybe_result, output_dir)
 
-            if on_result is not None:
-                on_result(
-                    ProgressEvent(
-                        completed=len(results),
-                        total=total,
-                        finding=finding,
-                        analysis=analysis,
-                        elapsed_s=time.monotonic() - t0,
-                    )
-                )
+            _emit(finding, maybe_result)
 
             if _shutdown_requested and not cancel_pending:
                 cancel_pending = True
                 log.info(
                     "Shutdown requested — cancelling pending analyses "
                     "(%d completed so far)",
-                    len(results),
+                    completed,
                 )
-                for pending in future_to_finding:
+                for pending in future_to_item:
                     if not pending.done():
                         pending.cancel()
 
-    return results
-
+    # Preserve original findings order for stable INDEX / promotion.
+    return [
+        (findings[i], results_by_idx[i])
+        for i in range(len(findings))
+        if i in results_by_idx
+    ]
 
 # ---------------------------------------------------------------------------
 # Output generation  (Phase 3)
@@ -803,8 +1426,14 @@ def tally_output_dir_verdicts(output_dir: Path) -> dict[str, int]:
 def generate_markdown_content(
     finding: dict[str, Any],
     analysis_result: AnalysisResult,
+    *,
+    duplicate_of: str | None = None,
 ) -> str:
-    """Build markdown report for a single finding + its LLM analysis."""
+    """Build markdown report for a single finding + its LLM analysis.
+
+    *duplicate_of* is the canonical report filename when the verdict is
+    :attr:`Verdict.DUPLICATE`.
+    """
     from datetime import datetime  # noqa: PLC0415
 
     timestamp = datetime.now(UTC).isoformat()
@@ -847,6 +1476,16 @@ def generate_markdown_content(
             "## LLM Analysis",
             "",
             f"**Verdict**: {analysis_result.verdict.value.upper()}",
+        ]
+    )
+    if duplicate_of or analysis_result.verdict == Verdict.DUPLICATE:
+        of = duplicate_of or ""
+        if of:
+            lines.append(f"**Duplicate of**: `{of}`")
+    if analysis_result.match_path:
+        lines.append(f"**Catalog match**: `{analysis_result.match_path}`")
+    lines.extend(
+        [
             "",
             "**Analysis**:",
             "",
@@ -890,6 +1529,15 @@ def generate_summary_report(
         count = counts.get(verdict.value, 0)
         pct = (count / total * 100) if total else 0
         lines.append(f"- {verdict.value.upper()}: {count} ({pct:.1f}%)")
+    lines.extend(
+        [
+            "",
+            "Notes:",
+            "- TIMEOUT is infrastructure (opencode wall-clock); not deferred product work.",
+            "- DUPLICATE is same-path near-duplicate collapse within one OCR run (no LLM).",
+            "- BACKLOG is intentional deferred work (may promote to knowledge/backlog/).",
+        ]
+    )
     if promotion is not None:
         lines.extend(
             [
@@ -1213,8 +1861,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Path to the knowledge/ directory for backlog promotion "
-            "(default: <cwd>/knowledge)"
+            "Path to the knowledge/ directory for catalog-aware triage and "
+            "backlog promotion (default: <cwd>/knowledge)"
+        ),
+    )
+    parser.add_argument(
+        "--prior-feedback",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Prior feedback directory for theme memory (repeatable; also "
+            "accepts comma-separated paths in one flag). Read-only — never "
+            "mutates old feedback files."
         ),
     )
     tui_group = parser.add_mutually_exclusive_group()
@@ -1328,6 +1987,49 @@ def main(argv: list[str] | None = None) -> int:
     )
     results_box: list[tuple[dict[str, Any], AnalysisResult]] = []
 
+    # Load knowledge catalog once for classification-time awareness.
+    from deep_architect.backlog_store import (  # noqa: PLC0415
+        default_knowledge_dir,
+        load_full_catalog,
+    )
+
+    knowledge_dir = (
+        args.knowledge_dir
+        if getattr(args, "knowledge_dir", None) is not None
+        else default_knowledge_dir()
+    )
+    catalog = load_full_catalog(knowledge_dir)
+    if catalog:
+        log.info(
+            "Loaded %d catalog entries from %s for triage",
+            len(catalog),
+            knowledge_dir,
+        )
+        print(f"Catalog: {len(catalog)} backlog/ticket entries from {knowledge_dir}")
+    else:
+        log.info(
+            "No catalog entries under %s (triage without knowledge heads)",
+            knowledge_dir,
+        )
+
+    prior_dirs = expand_prior_feedback_dirs(
+        list(getattr(args, "prior_feedback", None) or [])
+    )
+    prior_items = load_prior_feedback_index(prior_dirs) if prior_dirs else []
+    prior_feedback_index = (
+        format_prior_feedback_index(prior_items) if prior_items else None
+    )
+    if prior_dirs:
+        log.info(
+            "Prior feedback: %d theme-memory item(s) from %d dir(s)",
+            len(prior_items),
+            len(prior_dirs),
+        )
+        print(
+            f"Prior feedback: {len(prior_items)} item(s) from "
+            f"{len(prior_dirs)} dir(s) (TIMEOUT excluded)"
+        )
+
     def _run_pipeline(
         on_result: Callable[[ProgressEvent], None],
     ) -> dict[str, int]:
@@ -1346,6 +2048,9 @@ def main(argv: list[str] | None = None) -> int:
             on_result=on_result,
             timeout=timeout_seconds,
             timeout_retries=DEFAULT_TIMEOUT_RETRIES,
+            catalog=catalog,
+            knowledge_dir=knowledge_dir,
+            prior_feedback_index=prior_feedback_index,
         )
         results_box[:] = results
         counts = _tally_counts(results)
@@ -1402,15 +2107,7 @@ def main(argv: list[str] | None = None) -> int:
         from deep_architect.backlog_dedup import (  # noqa: PLC0415
             promote_backlog_findings,
         )
-        from deep_architect.backlog_store import (  # noqa: PLC0415
-            default_knowledge_dir,
-        )
 
-        knowledge_dir = (
-            args.knowledge_dir
-            if getattr(args, "knowledge_dir", None) is not None
-            else default_knowledge_dir()
-        )
         log.info(
             "Promoting BACKLOG findings into %s/backlog/ "
             "(disable with --no-write-backlog)",
