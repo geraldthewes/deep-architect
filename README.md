@@ -485,9 +485,7 @@ uv run review-analyzer <ocr-file.json> [options]
 
 When stdout is a TTY, `review-analyzer` opens a **full-screen Textual app** (alternate screen) instead of sparse progress lines. Logging and opencode diagnostics stay inside a dedicated Log pane so they never scroll the dashboard off-screen.
 
-- **Header** — OCR path, model, concurrency, output dir, filtered finding count, plus OCR `status` / `summary` fields when present
-- **Progress** — bar with completed/total, elapsed time, ETA, and throughput
-- **Summary stats** — live counters for `VALID`, `REJECTED`, `BACKLOG`, `TIMEOUT`, and pending; severity breakdown when OCR provides it
+- **Header** — OCR path, model, concurrency, output dir, filtered finding count, plus OCR `status` / `summary` fields when present; live progress (count, elapsed, ETA, bar); live counters for `VALID`, `REJECTED`, `BACKLOG`, `TIMEOUT`, pending, and severity when OCR provides it
 - **Results list** — scrollable list of each completed finding (verdict, severity, location, analysis preview)
 - **Log pane** — harness and opencode log lines (truncated for display); full detail is also written to `<output-dir>/review-analyzer.log`
 - **Keys (during the run)** — `q` / Ctrl-C request a graceful stop after in-flight analyses finish; `l` focuses the Log pane; `r` focuses Results

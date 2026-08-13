@@ -215,7 +215,7 @@ def format_progress_label(
 
     return (
         f"[bold]Analyzing {completed}/{total}[/bold]  "
-        f"[dim]({fraction * 100:.0f}%)[/dim]\n"
+        f"[dim]({fraction * 100:.0f}%)[/dim]  "
         f"[dim]Elapsed[/dim] {format_duration(elapsed_s)}  ·  "
         f"[dim]ETA[/dim] {eta_text}  ·  "
         f"{rate_text}"
@@ -439,30 +439,22 @@ class ReviewAnalyzerApp(App[AnalyzerTuiResult]):
     }
     #header-panel {
         height: auto;
-        max-height: 6;
         border: solid cyan;
         padding: 0 1;
-        margin: 0 0 1 0;
+        margin: 0;
     }
-    #progress-panel {
+    #header-meta {
         height: auto;
-        border: solid blue;
-        padding: 0 1;
-        margin: 0 0 1 0;
     }
     #progress-label {
         height: auto;
     }
     #progress-bar {
         height: 1;
-        margin: 1 0;
+        margin: 0;
     }
-    #summary-panel {
+    #summary-strip {
         height: auto;
-        max-height: 5;
-        border: solid magenta;
-        padding: 0 1;
-        margin: 0 0 1 0;
     }
     #results-panel {
         height: 1fr;
@@ -480,7 +472,7 @@ class ReviewAnalyzerApp(App[AnalyzerTuiResult]):
         height: 12;
         border: solid yellow;
         padding: 0 1;
-        margin: 1 0 0 0;
+        margin: 0;
     }
     #log-title {
         height: 1;
@@ -551,8 +543,8 @@ class ReviewAnalyzerApp(App[AnalyzerTuiResult]):
         self._capture: LoggingCapture | None = None
 
     def compose(self) -> ComposeResult:
-        yield Static(format_header(self._meta), id="header-panel")
-        with Vertical(id="progress-panel"):
+        with Vertical(id="header-panel"):
+            yield Static(format_header(self._meta), id="header-meta")
             yield Static(
                 format_progress_label(0, self._total, 0.0),
                 id="progress-label",
@@ -562,15 +554,15 @@ class ReviewAnalyzerApp(App[AnalyzerTuiResult]):
                 show_eta=False,
                 id="progress-bar",
             )
-        yield Static(
-            format_summary(
-                self._counts,
-                self._total,
-                self._completed,
-                self._severity_counts,
-            ),
-            id="summary-panel",
-        )
+            yield Static(
+                format_summary(
+                    self._counts,
+                    self._total,
+                    self._completed,
+                    self._severity_counts,
+                ),
+                id="summary-strip",
+            )
         with Vertical(id="results-panel"):
             yield Static(
                 "Results (newest last)  ·  sev · r=retries  secs=duration",
@@ -722,7 +714,7 @@ class ReviewAnalyzerApp(App[AnalyzerTuiResult]):
         )
         bar = self.query_one("#progress-bar", ProgressBar)
         bar.update(total=max(self._total, 1), progress=self._completed)
-        self.query_one("#summary-panel", Static).update(
+        self.query_one("#summary-strip", Static).update(
             format_summary(
                 self._counts,
                 self._total,

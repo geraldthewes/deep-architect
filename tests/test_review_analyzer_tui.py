@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 import pytest
+from textual.widgets import Static
 
 from deep_architect.review_analyzer import (
     AnalysisResult,
@@ -177,6 +179,9 @@ class TestFormatHelpers:
         text = format_progress_label(1, 4, 12.0)
         assert "1/4" in text
         assert "Analyzing" in text
+        assert "Elapsed" in text
+        assert "ETA" in text
+        assert "\n" not in text
 
     def test_result_line(self) -> None:
         event = ProgressEvent(
@@ -386,3 +391,44 @@ class TestRunReviewAnalyzerTuiFallback:
         assert result.counts["interrupted"] == 1
         assert result.counts["total_findings"] == 3
         assert result.summary_path is None
+
+
+class TestReviewAnalyzerAppLayout:
+    async def test_compose_has_three_panels(self) -> None:
+        release = threading.Event()
+
+        def pipeline(_on_result: object) -> dict[str, int]:
+            release.wait(timeout=10)
+            return {
+                "valid": 0,
+                "rejected": 0,
+                "backlog": 0,
+                "timeout": 0,
+                "total_findings": 2,
+            }
+
+        meta = RunMeta(
+            ocr_file=Path("code-review.json"),
+            model="standard/coder",
+            concurrency=2,
+            output_dir=Path("feedback"),
+            summary_only=False,
+            total_findings=2,
+            raw_findings=2,
+        )
+        app = ReviewAnalyzerApp(meta, pipeline)
+        try:
+            async with app.run_test():
+                assert app.query("#header-panel")
+                assert app.query("#results-panel")
+                assert app.query("#log-panel")
+                assert app.query("#results-log")
+                assert not app.query("#progress-panel")
+                header = str(app.query_one("#header-meta", Static).content)
+                assert "code-review.json" in header
+                progress = str(app.query_one("#progress-label", Static).content)
+                assert "Analyzing" in progress
+                summary = str(app.query_one("#summary-strip", Static).content)
+                assert "VALID" in summary
+        finally:
+            release.set()
