@@ -11,6 +11,7 @@ from deep_architect.feedback_report import (
     ReviewFinding,
     analysis_preview,
     findings_for_verdict,
+    get_severity,
     get_verdict,
     is_valid_finding,
     line_range_label,
@@ -32,15 +33,18 @@ def _finding_md(
     comment: str = "fix it",
     verdict: str = "VALID",
     analysis: str = "Confirmed real issue.",
+    severity: str | None = None,
 ) -> str:
     suggested_block = ""
     if suggested is not None:
         suggested_block = f"- **Suggested Code**:\n```\n{suggested}\n```\n"
+    severity_line = f"- **Severity**: {severity}\n" if severity else ""
     return (
         "# OCR Review Analysis\n\n"
         "**Original OCR Finding**:\n\n"
         f"- **File**: {file_path}\n"
         f"- **Lines**: {lines}\n"
+        f"{severity_line}"
         f"- **Existing Code**:\n```\n{existing}\n```\n"
         f"{suggested_block}"
         f"- **Review Comment**: {comment}\n\n"
@@ -76,6 +80,16 @@ class TestParseMarkdownFinding:
         assert finding.suggested_code == "new_code()"
         assert finding.review_comment == "fix it"
         assert "Confirmed" in finding.analysis
+        assert finding.severity == ""
+
+    def test_parses_severity(self, tmp_path: Path) -> None:
+        md = _write_finding(
+            tmp_path, "sev-0.md", _finding_md(severity="High")
+        )
+        finding = parse_markdown_finding(md)
+        assert finding is not None
+        assert finding.severity == "high"
+        assert get_severity(md) == "high"
 
     def test_missing_suggested_code(self, tmp_path: Path) -> None:
         md = _write_finding(
@@ -185,6 +199,16 @@ class TestLoadFeedbackDir:
         assert report.findings[0].finding_id == "keep-0"
         assert report.summary_text is not None
         assert "SUMMARY.md" in report.summary_text or report.summary_text.startswith("#")
+
+    def test_loads_severity(self, tmp_path: Path) -> None:
+        _write_finding(
+            tmp_path,
+            "sev-0.md",
+            _finding_md(verdict="VALID", severity="medium", analysis="ok"),
+        )
+        report = load_feedback_dir(tmp_path)
+        assert len(report.findings) == 1
+        assert report.findings[0].severity == "medium"
 
     def test_counts_and_grouping(self, tmp_path: Path) -> None:
         (tmp_path / "SUMMARY.md").write_text(

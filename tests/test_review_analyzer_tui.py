@@ -118,6 +118,54 @@ class TestFormatHelpers:
         assert "TIMEOUT 1" in text
         assert "pending 3" in text
 
+    def test_summary_severity_line(self) -> None:
+        text = format_summary(
+            {"valid": 2, "rejected": 0, "backlog": 0, "timeout": 0},
+            total=2,
+            completed=2,
+            severity_counts={"high": 1, "low": 1},
+        )
+        assert "severity:" in text
+        assert "high 1" in text
+        assert "low 1" in text
+
+    def test_result_line_includes_severity(self) -> None:
+        event = ProgressEvent(
+            completed=1,
+            total=1,
+            finding={
+                "type": "comment",
+                "path": "src/foo.py",
+                "start_line": 1,
+                "end_line": 2,
+                "severity": "high",
+            },
+            analysis=AnalysisResult(
+                Verdict.VALID, "real issue", "", retry_count=0, duration_s=3.0
+            ),
+            elapsed_s=3.0,
+        )
+        line = format_result_line(event)
+        assert "VALID" in line
+        assert "high" in line
+        assert "src/foo.py" in line
+
+    def test_result_line_missing_severity(self) -> None:
+        event = ProgressEvent(
+            completed=1,
+            total=1,
+            finding={
+                "type": "comment",
+                "path": "src/foo.py",
+                "start_line": 1,
+                "end_line": 1,
+            },
+            analysis=AnalysisResult(Verdict.BACKLOG, "later", "", duration_s=1.0),
+            elapsed_s=1.0,
+        )
+        line = format_result_line(event)
+        assert "—" in line
+
     def test_progress_label(self) -> None:
         text = format_progress_label(1, 4, 12.0)
         assert "1/4" in text

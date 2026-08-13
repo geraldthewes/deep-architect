@@ -487,8 +487,8 @@ When stdout is a TTY, `review-analyzer` opens a **full-screen Textual app** (alt
 
 - **Header** — OCR path, model, concurrency, output dir, filtered finding count, plus OCR `status` / `summary` fields when present
 - **Progress** — bar with completed/total, elapsed time, ETA, and throughput
-- **Summary stats** — live counters for `VALID`, `REJECTED`, `BACKLOG`, `TIMEOUT`, and pending
-- **Results list** — scrollable list of each completed finding (verdict, location, analysis preview)
+- **Summary stats** — live counters for `VALID`, `REJECTED`, `BACKLOG`, `TIMEOUT`, and pending; severity breakdown when OCR provides it
+- **Results list** — scrollable list of each completed finding (verdict, severity, location, analysis preview)
 - **Log pane** — harness and opencode log lines (truncated for display); full detail is also written to `<output-dir>/review-analyzer.log`
 - **Keys** — `q` / Ctrl-C request a graceful stop after in-flight analyses finish; `l` focuses the Log pane; `r` focuses Results
 
@@ -536,7 +536,7 @@ Promotion remains **on by default** after triage; use `--no-write-backlog` to di
 
 ### Output
 
-The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to the output directory, plus a `SUMMARY.md` with the coding agent/model used (`opencode` + `--model`), verdict counts, and percentages. Disk output is the same in TUI and plain mode.
+The tool writes one Markdown file per finding (`{filepath_hash}-{index}.md`) to the output directory, plus a `SUMMARY.md` with the coding agent/model used (`opencode` + `--model`), verdict counts, percentages, and an OCR **severity** breakdown when present. `INDEX.md` lists findings grouped by verdict with a **Severity** column. Per-finding reports include `**Severity**: …` when the OCR comment provided it. Disk output is the same in TUI and plain mode.
 
 Verdict notes in `SUMMARY.md`:
 
@@ -545,6 +545,8 @@ Verdict notes in `SUMMARY.md`:
 | `VALID` / `REJECTED` / `BACKLOG` | LLM triage decisions |
 | `TIMEOUT` | Infrastructure (opencode wall-clock); **not** deferred product work |
 | `DUPLICATE` | Same-path near-duplicate within this OCR run; no LLM |
+
+Severity is taken from the OCR input (`severity` or `level` on each comment) — the analyzer does not re-label it. Older OCR files without severity show `—` in the index and bucket as `unknown` only when mixed with labeled findings in tallies from disk.
 
 `TIMEOUT` findings were **not** LLM-triaged; re-run with `--retry-timeouts` (and optionally a higher `--timeout`) to obtain a real verdict. `review-action` only auto-fixes `VALID` findings, so `TIMEOUT` / `DUPLICATE` / `BACKLOG` items are not auto-fixed.
 

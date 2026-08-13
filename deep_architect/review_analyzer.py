@@ -388,9 +388,47 @@ def _finding_path_key(finding: dict[str, Any]) -> str:
     return str(finding.get("path") or finding.get("file") or "")
 
 
-def _severity_rank(finding: dict[str, Any]) -> int:
+def _finding_severity(finding: dict[str, Any]) -> str:
+    """Return normalized OCR severity label, or empty string if absent."""
     raw = finding.get("severity") or finding.get("level") or ""
-    return _SEVERITY_RANK.get(str(raw).lower().strip(), -1)
+    return str(raw).strip().lower()
+
+
+def _severity_rank(finding: dict[str, Any]) -> int:
+    return _SEVERITY_RANK.get(_finding_severity(finding), -1)
+
+
+def _severity_rank_label(label: str) -> int:
+    """Rank for a severity label string (higher = more severe)."""
+    return _SEVERITY_RANK.get(label.lower().strip(), -1)
+
+
+def _severity_display(finding: dict[str, Any]) -> str:
+    """Human-facing severity for tables: label or em-dash when missing."""
+    sev = _finding_severity(finding)
+    return sev if sev else "—"
+
+
+def _severity_stats_key(finding: dict[str, Any]) -> str:
+    """Bucket key for severity tallies (``unknown`` when OCR omitted it)."""
+    sev = _finding_severity(finding)
+    return sev if sev else "unknown"
+
+
+def _sort_severity_counts(counts: dict[str, int]) -> list[tuple[str, int]]:
+    """Return non-zero severity counts ordered by rank desc, then name.
+
+    ``unknown`` always sorts last among non-zero buckets.
+    """
+    items = [(k, n) for k, n in counts.items() if n > 0]
+    return sorted(
+        items,
+        key=lambda item: (
+            1 if item[0] == "unknown" else 0,
+            -_severity_rank_label(item[0]),
+            item[0],
+        ),
+    )
 
 
 def _pick_canonical_index(indices: list[int], findings: list[dict[str, Any]]) -> int:
@@ -1423,6 +1461,39 @@ def tally_output_dir_verdicts(output_dir: Path) -> dict[str, int]:
     return counts
 
 
+def parse_severity_from_markdown(content: str) -> str:
+    """Extract OCR severity from a finding markdown body, or empty if absent."""
+    match = re.search(
+        r"-?\s*\*\*Severity\*\*:?\s*([^\n\r]+)",
+        content,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return ""
+    return match.group(1).strip().lower()
+
+
+def tally_output_dir_severities(output_dir: Path) -> dict[str, int]:
+    """Count severities from finding markdown files in *output_dir*."""
+    from deep_architect.feedback_report import NON_FINDING_FILES  # noqa: PLC0415
+
+    counts: dict[str, int] = {}
+    if not output_dir.is_dir():
+        return counts
+
+    for md_path in sorted(output_dir.glob("*.md")):
+        if md_path.name in NON_FINDING_FILES:
+            continue
+        try:
+            content = md_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            log.error("Failed to read %s for severity tally: %s", md_path, exc)
+            continue
+        sev = parse_severity_from_markdown(content) or "unknown"
+        counts[sev] = counts.get(sev, 0) + 1
+    return counts
+
+
 def generate_markdown_content(
     finding: dict[str, Any],
     analysis_result: AnalysisResult,
@@ -1446,14 +1517,17 @@ def generate_markdown_content(
         "",
     ]
 
+    severity = _finding_severity(finding)
     if finding["type"] == "comment":
         lines.extend(
             [
                 f"- **File**: {finding['path']}",
                 f"- **Lines**: {finding['start_line']}-{finding['end_line']}",
-                "- **Type**: Comment",
             ]
         )
+        if severity:
+            lines.append(f"- **Severity**: {severity}")
+        lines.append("- **Type**: Comment")
         existing = finding.get("existing_code")
         if existing:
             lines.append(f"- **Existing Code**:\n```\n{existing}\n```\n")
@@ -1465,6 +1539,12 @@ def generate_markdown_content(
         lines.extend(
             [
                 f"- **File**: {finding['file']}",
+            ]
+        )
+        if severity:
+            lines.append(f"- **Severity**: {severity}")
+        lines.extend(
+            [
                 f"- **Type**: Warning ({finding.get('warning_type', 'unknown')})",
                 f"- **Message**: {finding['message']}",
             ]
@@ -1509,12 +1589,15 @@ def generate_summary_report(
     *,
     model: str,
     promotion: dict[str, int] | None = None,
+    severity_counts: dict[str, int] | None = None,
 ) -> str:
     """Build a human-readable summary of verdict distribution.
 
     *model* is the opencode model id used for analysis; the summary always
     labels the backend as ``opencode`` (the only analyzer backend today).
     *promotion* is optional BACKLOG→knowledge/backlog stats.
+    *severity_counts* is optional OCR severity tallies (sparse: only non-zero
+    buckets are written when provided).
     """
     lines: list[str] = [
         "# Review Analysis Summary",
@@ -1529,6 +1612,17 @@ def generate_summary_report(
         count = counts.get(verdict.value, 0)
         pct = (count / total * 100) if total else 0
         lines.append(f"- {verdict.value.upper()}: {count} ({pct:.1f}%)")
+
+    if severity_counts:
+        ordered = _sort_severity_counts(severity_counts)
+        if ordered:
+            lines.extend(["", "Breakdown by severity:"])
+            severity_total = sum(n for _, n in ordered)
+            denom = severity_total if severity_total else total
+            for label, count in ordered:
+                pct = (count / denom * 100) if denom else 0
+                lines.append(f"- {label.upper()}: {count} ({pct:.1f}%)")
+
     lines.extend(
         [
             "",
@@ -1536,6 +1630,7 @@ def generate_summary_report(
             "- TIMEOUT is infrastructure (opencode wall-clock); not deferred product work.",
             "- DUPLICATE is same-path near-duplicate collapse within one OCR run (no LLM).",
             "- BACKLOG is intentional deferred work (may promote to knowledge/backlog/).",
+            "- Severity is from the OCR input (not re-labeled by the analyzer).",
         ]
     )
     if promotion is not None:
@@ -1573,7 +1668,11 @@ def _finding_lines(finding: dict[str, Any]) -> str:
 def generate_index_report(
     results: list[tuple[dict[str, Any], AnalysisResult]],
 ) -> str:
-    """Build an INDEX.md listing all findings grouped by verdict."""
+    """Build an INDEX.md listing all findings grouped by verdict.
+
+    Within each verdict section, rows are ordered by severity (highest first),
+    then file path.
+    """
     grouped: dict[str, list[tuple[dict[str, Any], AnalysisResult]]] = {
         v.value: [] for v in Verdict
     }
@@ -1590,20 +1689,30 @@ def generate_index_report(
         if not entries:
             continue
 
+        entries = sorted(
+            entries,
+            key=lambda item: (
+                -_severity_rank(item[0]),
+                _finding_path(item[0]),
+            ),
+        )
+
         lines.append(f"## {verdict.value.upper()} ({len(entries)})")
         lines.append("")
-        lines.append("| # | File | Lines | Report | Analysis Preview |")
-        lines.append("|---|------|-------|--------|------------------|")
+        lines.append("| # | Severity | File | Lines | Report | Analysis Preview |")
+        lines.append("|---|----------|------|-------|--------|------------------|")
 
         for i, (finding, analysis) in enumerate(entries, 1):
             path = _finding_path(finding)
             ln = _finding_lines(finding)
+            sev = _severity_display(finding)
+            sev_cell = f"`{sev}`" if sev != "—" else "—"
             report = generate_output_filename(finding)
             preview = analysis.analysis[:120].replace("|", "\\|").replace("\n", " ")
             if len(analysis.analysis) > 120:
                 preview += "…"
             lines.append(
-                f"| {i} | `{path}` | {ln} | "
+                f"| {i} | {sev_cell} | `{path}` | {ln} | "
                 f"[{report}]({report}) | {preview} |"
             )
 
@@ -1631,6 +1740,17 @@ def _tally_counts(
     return counts
 
 
+def _tally_severity_counts(
+    results: list[tuple[dict[str, Any], AnalysisResult]],
+) -> dict[str, int]:
+    """Count results by OCR severity (``unknown`` when missing)."""
+    counts: dict[str, int] = {}
+    for finding, _ in results:
+        key = _severity_stats_key(finding)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def _emit_summary_outputs(
     results: list[tuple[dict[str, Any], AnalysisResult]],
     counts: dict[str, int],
@@ -1654,6 +1774,8 @@ def _emit_summary_outputs(
     if not summary_only:
         log.info("Per-finding reports written to %s", output_dir)
 
+    run_severity = _tally_severity_counts(results)
+
     if not summary_only and output_dir.is_dir():
         disk_counts = tally_output_dir_verdicts(output_dir)
         # Prefer disk when it has at least as many findings as this run.
@@ -1662,20 +1784,29 @@ def _emit_summary_outputs(
         if disk_total >= run_total and disk_total > 0:
             summary_counts = disk_counts
             summary_total = disk_total
+            disk_severity = tally_output_dir_severities(output_dir)
+            severity_counts = (
+                disk_severity
+                if sum(disk_severity.values()) >= sum(run_severity.values())
+                else run_severity
+            )
         else:
             summary_counts = counts
             summary_total = run_total if run_total else total_findings
+            severity_counts = run_severity
     else:
         summary_counts = counts
         processed = sum(counts.get(v.value, 0) for v in Verdict)
         # Prefer actual processed count (partial run on interrupt) over planned total.
         summary_total = processed if processed else total_findings
+        severity_counts = run_severity
 
     summary = generate_summary_report(
         summary_counts,
         summary_total,
         model=model,
         promotion=promotion,
+        severity_counts=severity_counts or None,
     )
     print("\n" + summary)
 
@@ -1744,6 +1875,11 @@ def generate_index_report_from_output_dir(
             verdict = Verdict.BACKLOG
 
         parsed = parse_markdown_finding(md_path)
+        try:
+            raw_md = md_path.read_text(encoding="utf-8")
+        except OSError:
+            raw_md = ""
+        severity = parse_severity_from_markdown(raw_md)
         disk_finding: dict[str, Any]
         if parsed is not None:
             disk_finding = {
@@ -1754,6 +1890,8 @@ def generate_index_report_from_output_dir(
                 "index": 0,
                 "content": parsed.review_comment,
             }
+            if severity:
+                disk_finding["severity"] = severity
             # Recover index from filename stem when possible (hash-index).
             stem = md_path.stem
             if "-" in stem:
@@ -1774,6 +1912,8 @@ def generate_index_report_from_output_dir(
                 "index": 0,
                 "content": "",
             }
+            if severity:
+                disk_finding["severity"] = severity
             disk_analysis = AnalysisResult(
                 verdict=verdict,
                 analysis="",

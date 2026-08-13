@@ -44,6 +44,7 @@ class ReviewFinding:
     review_comment: str
     analysis: str
     finding_id: str
+    severity: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class FeedbackFinding:
     review_comment: str
     analysis: str
     raw_markdown: str
+    severity: str = ""
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,9 @@ def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:
 
     file_match = re.search(r"-?\s*\*\*File\*\*:?\s*(.+)", content)
     lines_match = re.search(r"-?\s*\*\*Lines\*\*:?\s*(.+)", content)
+    severity_match = re.search(
+        r"-?\s*\*\*Severity\*\*:?\s*([^\n\r]+)", content, re.IGNORECASE
+    )
     existing_code_match = re.search(
         r"\*\*Existing Code\*\*:?\s*```[a-zA-Z]*\s*\n(.*?)\n```",
         content,
@@ -138,6 +143,10 @@ def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:
             except ValueError:
                 pass
 
+    severity = ""
+    if severity_match is not None:
+        severity = severity_match.group(1).strip().lower()
+
     return ReviewFinding(
         file_path=full_path,
         line_start=line_start,
@@ -147,7 +156,23 @@ def parse_markdown_finding(file_path: Path) -> ReviewFinding | None:
         review_comment=review_comment_match.group(1).strip(),
         analysis=analysis_match.group(1).strip() if analysis_match else "",
         finding_id=finding_id,
+        severity=severity,
     )
+
+
+def get_severity(file_path: Path) -> str:
+    """Return the finding's OCR severity, or empty string if missing."""
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.error("Failed to read %s for severity: %s", file_path, exc)
+        return ""
+    match = re.search(
+        r"-?\s*\*\*Severity\*\*:?\s*([^\n\r]+)", content, re.IGNORECASE
+    )
+    if match is None:
+        return ""
+    return match.group(1).strip().lower()
 
 
 def get_verdict(file_path: Path) -> str | None:
@@ -258,12 +283,19 @@ def load_feedback_dir(directory: Path) -> FeedbackReport:
                     review_comment=parsed.review_comment,
                     analysis=parsed.analysis,
                     raw_markdown=raw,
+                    severity=parsed.severity,
                 )
             )
         else:
             # Degraded entry so timeouts / partial reports still appear in the browser.
             logger.warning(
                 "Using degraded parse for %s (missing structured sections)", md_path
+            )
+            sev_match = re.search(
+                r"-?\s*\*\*Severity\*\*:?\s*([^\n\r]+)", raw, re.IGNORECASE
+            )
+            degraded_severity = (
+                sev_match.group(1).strip().lower() if sev_match else ""
             )
             findings.append(
                 FeedbackFinding(
@@ -278,6 +310,7 @@ def load_feedback_dir(directory: Path) -> FeedbackReport:
                     review_comment="",
                     analysis="",
                     raw_markdown=raw,
+                    severity=degraded_severity,
                 )
             )
 

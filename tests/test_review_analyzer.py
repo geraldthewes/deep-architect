@@ -22,8 +22,11 @@ from deep_architect.review_analyzer import (
     Verdict,
     _finding_lines,
     _finding_path,
+    _finding_severity,
     _normalize_match_path,
     _parse_opencode_json,
+    _severity_stats_key,
+    _tally_severity_counts,
     call_opencode_analysis,
     construct_analysis_prompt,
     content_similarity,
@@ -34,6 +37,7 @@ from deep_architect.review_analyzer import (
     finding_similarity_text,
     format_prior_feedback_index,
     generate_index_report,
+    generate_index_report_from_output_dir,
     generate_markdown_content,
     generate_output_filename,
     generate_summary_report,
@@ -42,12 +46,14 @@ from deep_architect.review_analyzer import (
     is_timeout_report,
     load_ocr_json,
     load_prior_feedback_index,
+    parse_severity_from_markdown,
     process_findings_concurrently,
     request_shutdown,
     resolve_opencode_timeout,
     select_catalog_bodies_to_expand,
     select_timeout_findings_for_retry,
     should_use_tui,
+    tally_output_dir_severities,
     tally_output_dir_verdicts,
 )
 
@@ -1053,6 +1059,71 @@ class TestGenerateMarkdownContent:
         md = generate_markdown_content(finding, analysis)
         assert "**Catalog match**: `knowledge/backlog/type-hints.md`" in md
 
+    def test_includes_severity_when_present(self) -> None:
+        finding = {
+            "type": "comment",
+            "path": "a.py",
+            "content": "fix this",
+            "start_line": 1,
+            "end_line": 1,
+            "severity": "high",
+        }
+        analysis = AnalysisResult(Verdict.VALID, "It's wrong", "")
+        md = generate_markdown_content(finding, analysis)
+        assert "**Severity**: high" in md
+
+    def test_omits_severity_when_absent(self) -> None:
+        finding = {
+            "type": "comment",
+            "path": "a.py",
+            "content": "fix this",
+            "start_line": 1,
+            "end_line": 1,
+        }
+        analysis = AnalysisResult(Verdict.VALID, "It's wrong", "")
+        md = generate_markdown_content(finding, analysis)
+        assert "Severity" not in md
+
+
+# ---------------------------------------------------------------------------
+# severity helpers
+# ---------------------------------------------------------------------------
+
+
+class TestSeverityHelpers:
+
+    def test_finding_severity_normalizes(self) -> None:
+        assert _finding_severity({"severity": "HIGH"}) == "high"
+        assert _finding_severity({"level": "medium"}) == "medium"
+        assert _finding_severity({}) == ""
+
+    def test_severity_stats_key_unknown(self) -> None:
+        assert _severity_stats_key({}) == "unknown"
+        assert _severity_stats_key({"severity": "low"}) == "low"
+
+    def test_parse_severity_from_markdown(self) -> None:
+        body = "- **File**: a.py\n- **Severity**: High\n- **Type**: Comment\n"
+        assert parse_severity_from_markdown(body) == "high"
+        assert parse_severity_from_markdown("# no severity\n") == ""
+
+    def test_tally_severity_counts(self) -> None:
+        results = [
+            (
+                {"type": "comment", "path": "a.py", "severity": "high", "index": 0},
+                AnalysisResult(Verdict.VALID, "ok", ""),
+            ),
+            (
+                {"type": "comment", "path": "b.py", "severity": "high", "index": 1},
+                AnalysisResult(Verdict.REJECTED, "no", ""),
+            ),
+            (
+                {"type": "comment", "path": "c.py", "index": 2},
+                AnalysisResult(Verdict.BACKLOG, "later", ""),
+            ),
+        ]
+        counts = _tally_severity_counts(results)
+        assert counts == {"high": 2, "unknown": 1}
+
 
 # ---------------------------------------------------------------------------
 # generate_summary_report
@@ -1073,6 +1144,7 @@ class TestGenerateSummaryReport:
         assert "DUPLICATE:" in report
         assert "TIMEOUT is infrastructure" in report
         assert "DUPLICATE is same-path" in report
+        assert "Severity is from the OCR input" in report
 
     def test_zero_total(self) -> None:
         report = generate_summary_report({}, 0, model="standard/coder")
@@ -1098,6 +1170,27 @@ class TestGenerateSummaryReport:
         )
         assert "Backlog promotion:" in report
         assert "created: 1" in report
+
+    def test_severity_breakdown(self) -> None:
+        report = generate_summary_report(
+            {"valid": 2, "rejected": 1, "backlog": 0, "timeout": 0},
+            3,
+            model="standard/coder",
+            severity_counts={"high": 1, "low": 2},
+        )
+        assert "Breakdown by severity:" in report
+        assert "HIGH: 1 (33.3%)" in report
+        assert "LOW: 2 (66.7%)" in report
+        # Higher severity listed first
+        high_pos = report.index("HIGH:")
+        low_pos = report.index("LOW:")
+        assert high_pos < low_pos
+
+    def test_severity_section_omitted_when_empty(self) -> None:
+        report = generate_summary_report(
+            {"valid": 1}, 1, model="standard/coder", severity_counts={}
+        )
+        assert "Breakdown by severity:" not in report
 
 
 # ---------------------------------------------------------------------------
@@ -1221,6 +1314,46 @@ class TestGenerateIndexReport:
         assert "src/foo.py" in report
         assert "Real issue found" in report
         assert "False positive" in report
+        assert "| # | Severity | File |" in report
+
+    def test_severity_column(self) -> None:
+        high: dict[str, Any] = {
+            "type": "comment",
+            "path": "a.py",
+            "content": "fix",
+            "start_line": 1,
+            "end_line": 1,
+            "index": 0,
+            "severity": "high",
+        }
+        low: dict[str, Any] = {
+            "type": "comment",
+            "path": "b.py",
+            "content": "nit",
+            "start_line": 2,
+            "end_line": 2,
+            "index": 1,
+            "severity": "low",
+        }
+        none: dict[str, Any] = {
+            "type": "comment",
+            "path": "c.py",
+            "content": "old",
+            "start_line": 3,
+            "end_line": 3,
+            "index": 2,
+        }
+        results = [
+            (low, AnalysisResult(Verdict.VALID, "low issue", "")),
+            (high, AnalysisResult(Verdict.VALID, "high issue", "")),
+            (none, AnalysisResult(Verdict.VALID, "no sev", "")),
+        ]
+        report = generate_index_report(results)
+        assert "`high`" in report
+        assert "`low`" in report
+        assert "—" in report
+        # High severity row comes before low within VALID section
+        assert report.index("`high`") < report.index("`low`")
 
     def test_pipes_escaped_in_preview(self) -> None:
         comment: dict[str, Any] = {
@@ -1252,6 +1385,50 @@ class TestGenerateIndexReport:
         ]
         report = generate_index_report(results)
         assert "…" in report
+
+    def test_disk_rebuild_recovers_severity(self, tmp_path: Path) -> None:
+        md = (
+            "# OCR Review Analysis\n\n"
+            "**Original OCR Finding**:\n\n"
+            "- **File**: src/foo.py\n"
+            "- **Lines**: 1-2\n"
+            "- **Severity**: medium\n"
+            "- **Type**: Comment\n"
+            "- **Existing Code**:\n```\nx\n```\n"
+            "- **Review Comment**: fix it\n\n"
+            "## LLM Analysis\n\n"
+            "**Verdict**: VALID\n\n"
+            "**Analysis**:\nReal issue\n\n"
+            "---\n\n"
+            "*Generated by review-analyzer.*\n"
+        )
+        name = "abcd1234-0.md"
+        (tmp_path / name).write_text(md, encoding="utf-8")
+        report = generate_index_report_from_output_dir(tmp_path)
+        assert "`medium`" in report
+        assert "Severity" in report
+
+    def test_tally_output_dir_severities(self, tmp_path: Path) -> None:
+        high_md = (
+            "# OCR Review Analysis\n\n"
+            "- **File**: a.py\n"
+            "- **Severity**: high\n"
+            "- **Existing Code**:\n```\nx\n```\n"
+            "- **Review Comment**: a\n\n"
+            "**Verdict**: VALID\n"
+        )
+        none_md = (
+            "# OCR Review Analysis\n\n"
+            "- **File**: b.py\n"
+            "- **Existing Code**:\n```\ny\n```\n"
+            "- **Review Comment**: b\n\n"
+            "**Verdict**: BACKLOG\n"
+        )
+        (tmp_path / "a-0.md").write_text(high_md, encoding="utf-8")
+        (tmp_path / "b-1.md").write_text(none_md, encoding="utf-8")
+        (tmp_path / "SUMMARY.md").write_text("# Summary\n", encoding="utf-8")
+        counts = tally_output_dir_severities(tmp_path)
+        assert counts == {"high": 1, "unknown": 1}
 
 
 # ---------------------------------------------------------------------------

@@ -305,8 +305,9 @@ class FindingListScreen(Screen[None]):
             for i, finding in enumerate(self.findings, 1):
                 lines = line_range_label(finding.line_start, finding.line_end)
                 preview = analysis_preview(finding.analysis or finding.review_comment)
+                sev = finding.severity or "—"
                 label = (
-                    f"{i:3d}  {finding.source_file}{lines}  "
+                    f"{i:3d}  [{sev:<8}]  {finding.source_file}{lines}  "
                     f"[{finding.finding_id}]  {preview}"
                 )
                 items.append(ListItem(Label(label), id=f"finding-{i - 1}"))
@@ -388,11 +389,12 @@ class FindingDetailScreen(Screen[None]):
         f = self.finding
         style = _VERDICT_STYLE.get(f.verdict, "bold")
         lines = line_range_label(f.line_start, f.line_end)
+        sev = f.severity or "—"
         header = (
             f"[{style}]{f.verdict}[/{style}]  "
             f"[bold]{f.source_file}{lines}[/bold]\n"
-            f"id: {f.finding_id}  ·  {self.index + 1}/{len(self.findings)}  "
-            f"·  {f.path.name}"
+            f"severity: {sev}  ·  id: {f.finding_id}  ·  "
+            f"{self.index + 1}/{len(self.findings)}  ·  {f.path.name}"
         )
         self.query_one("#detail-header", Static).update(header)
 

@@ -27,6 +27,9 @@ from deep_architect.review_analyzer import (
     Verdict,
     _finding_lines,
     _finding_path,
+    _severity_display,
+    _severity_stats_key,
+    _sort_severity_counts,
     request_shutdown,
 )
 
@@ -155,20 +158,33 @@ def format_header(meta: RunMeta) -> str:
     return "\n".join(lines)
 
 
-def format_summary(counts: dict[str, int], total: int, completed: int) -> str:
-    """Markup for the summary stats strip."""
+def format_summary(
+    counts: dict[str, int],
+    total: int,
+    completed: int,
+    severity_counts: dict[str, int] | None = None,
+) -> str:
+    """Markup for the summary stats strip (verdicts + optional severity)."""
     valid = counts.get(Verdict.VALID.value, 0)
     rejected = counts.get(Verdict.REJECTED.value, 0)
     backlog = counts.get(Verdict.BACKLOG.value, 0)
     timeout = counts.get(Verdict.TIMEOUT.value, 0)
     pending = max(total - completed, 0)
-    return (
-        f"[bold green]✓ VALID {valid}[/bold green]    "
-        f"[bold red]✗ REJECTED {rejected}[/bold red]    "
-        f"[bold yellow]◷ BACKLOG {backlog}[/bold yellow]    "
-        f"[bold magenta]⌛ TIMEOUT {timeout}[/bold magenta]    "
-        f"[dim]pending {pending}[/dim]"
-    )
+    lines = [
+        (
+            f"[bold green]✓ VALID {valid}[/bold green]    "
+            f"[bold red]✗ REJECTED {rejected}[/bold red]    "
+            f"[bold yellow]◷ BACKLOG {backlog}[/bold yellow]    "
+            f"[bold magenta]⌛ TIMEOUT {timeout}[/bold magenta]    "
+            f"[dim]pending {pending}[/dim]"
+        )
+    ]
+    if severity_counts:
+        ordered = _sort_severity_counts(severity_counts)
+        if ordered:
+            bits = [f"{label} {n}" for label, n in ordered]
+            lines.append("[dim]severity:[/dim] " + "  ·  ".join(bits))
+    return "\n".join(lines)
 
 
 def format_progress_label(
@@ -207,15 +223,19 @@ def format_progress_label(
 def format_result_line(event: ProgressEvent) -> str:
     """One results-pane line for a finished finding.
 
-    Columns: icon+verdict, retry count, duration (seconds), location, preview.
+    Columns: icon+verdict, severity, retry count, duration, location, preview.
     """
     icon = _VERDICT_ICON.get(event.analysis.verdict, "?")
     verdict = event.analysis.verdict.value.upper()
+    sev = _severity_display(event.finding)
+    sev_col = f"{sev:<8}" if sev != "—" else f"{'—':<8}"
     retries = max(0, int(event.analysis.retry_count))
     secs = max(0, int(round(event.analysis.duration_s)))
-    loc = truncate_message(_location(event.finding), max_len=48)
-    preview = truncate_message(event.analysis.analysis, max_len=80)
-    return f"{icon} {verdict:<9} {retries:>2}r {secs:>4}s  {loc}  {preview}"
+    loc = truncate_message(_location(event.finding), max_len=44)
+    preview = truncate_message(event.analysis.analysis, max_len=72)
+    return (
+        f"{icon} {verdict:<9} {sev_col} {retries:>2}r {secs:>4}s  {loc}  {preview}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +348,8 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
         margin: 1 0;
     }
     #summary-panel {
-        height: 3;
+        height: auto;
+        max-height: 5;
         border: solid magenta;
         padding: 0 1;
         margin: 0 0 1 0;
@@ -394,6 +415,7 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
             "interrupted": 0,
             "total_findings": meta.total_findings,
         }
+        self._severity_counts: dict[str, int] = {}
         self._completed = 0
         self._total = meta.total_findings
         self._elapsed_s = 0.0
@@ -415,12 +437,17 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
                 id="progress-bar",
             )
         yield Static(
-            format_summary(self._counts, self._total, self._completed),
+            format_summary(
+                self._counts,
+                self._total,
+                self._completed,
+                self._severity_counts,
+            ),
             id="summary-panel",
         )
         with Vertical(id="results-panel"):
             yield Static(
-                "Results (newest last)  ·  r=retries  secs=duration",
+                "Results (newest last)  ·  sev · r=retries  secs=duration",
                 id="results-title",
             )
             yield RichLog(id="results-log", highlight=False, markup=False, max_lines=500)
@@ -519,6 +546,8 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
         self._elapsed_s = event.elapsed_s
         verdict_key = event.analysis.verdict.value
         self._counts[verdict_key] = int(self._counts.get(verdict_key, 0)) + 1
+        sev_key = _severity_stats_key(event.finding)
+        self._severity_counts[sev_key] = int(self._severity_counts.get(sev_key, 0)) + 1
         self._result_count += 1
         style = _VERDICT_STYLE.get(event.analysis.verdict, "")
         line = format_result_line(event)
@@ -528,10 +557,10 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
         if self._result_count > _MAX_RESULT_ROWS:
             title = (
                 f"Results (newest last; older rows trimmed at {_MAX_RESULT_ROWS})"
-                "  ·  r=retries  secs=duration"
+                "  ·  sev · r=retries  secs=duration"
             )
         else:
-            title = "Results (newest last)  ·  r=retries  secs=duration"
+            title = "Results (newest last)  ·  sev · r=retries  secs=duration"
         self.query_one("#results-title", Static).update(title)
         self._refresh_progress_widgets()
 
@@ -546,7 +575,12 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
         bar = self.query_one("#progress-bar", ProgressBar)
         bar.update(total=max(self._total, 1), progress=self._completed)
         self.query_one("#summary-panel", Static).update(
-            format_summary(self._counts, self._total, self._completed)
+            format_summary(
+                self._counts,
+                self._total,
+                self._completed,
+                self._severity_counts,
+            )
         )
 
     def _final_counts(self) -> dict[str, int]:
