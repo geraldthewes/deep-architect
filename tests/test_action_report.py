@@ -23,12 +23,15 @@ def _finding_md(
     *,
     file_path: str = "src/example.py",
     verdict: str = "VALID",
+    severity: str | None = None,
 ) -> str:
+    severity_line = f"- **Severity**: {severity}\n" if severity else ""
     return (
         "# OCR Review Analysis\n\n"
         "**Original OCR Finding**:\n\n"
         f"- **File**: {file_path}\n"
         "- **Lines**: 10-12\n"
+        f"{severity_line}"
         "- **Existing Code**:\n```\nold()\n```\n"
         "- **Suggested Code**:\n```\nnew()\n```\n"
         "- **Review Comment**: fix it\n\n"
@@ -142,7 +145,9 @@ Progress: 28 out of 29 findings processed
 
 def test_load_action_report(tmp_path: Path) -> None:
     fixed = tmp_path / "aaa-0.md"
-    fixed.write_text(_finding_md(file_path="src/a.py"), encoding="utf-8")
+    fixed.write_text(
+        _finding_md(file_path="src/a.py", severity="High"), encoding="utf-8"
+    )
     write_action_taken(
         fixed,
         FindingStatus(
@@ -207,6 +212,10 @@ Progress: 3 out of 4 findings processed
     assert len(fixed_rows) == 1
     assert fixed_rows[0].commit_sha == "abc123"
     assert fixed_rows[0].source_file == "src/a.py"
+    assert fixed_rows[0].severity == "high"
+
+    pending_rows = rows_for_outcome_filter(report, "Not processed")
+    assert pending_rows[0].severity == ""
 
     err_rows = rows_for_outcome_filter(report, "Error")
     assert "lint boom" in err_rows[0].summary

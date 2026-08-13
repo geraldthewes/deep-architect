@@ -595,7 +595,7 @@ review_analyzer_timeout = 300  # seconds per opencode attempt
 
 ## Review Feedback Browse
 
-`review-feedback-browse` is a view-only Textual TUI for navigating review feedback directories. It has two modes:
+`review-feedback-browse` is a view-only Textual TUI for navigating review feedback directories. Issue lists show OCR severity and a 30-character, fixed-width source path that keeps the right side (leading `…` when truncated). It has two modes:
 
 | Mode | When | What you see |
 |------|------|--------------|

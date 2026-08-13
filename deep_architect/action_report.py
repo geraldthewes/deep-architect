@@ -11,7 +11,11 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from deep_architect.feedback_report import NON_FINDING_FILES, parse_markdown_finding
+from deep_architect.feedback_report import (
+    NON_FINDING_FILES,
+    get_severity,
+    parse_markdown_finding,
+)
 from deep_architect.logger import get_logger
 
 logger = get_logger(__name__)
@@ -71,6 +75,7 @@ class ActionFindingRow:
     commit_sha: str | None
     error_message: str | None
     timestamp: str
+    severity: str = ""
 
 
 @dataclass(frozen=True)
@@ -325,6 +330,7 @@ def _row_from_finding_file(md_path: Path) -> ActionFindingRow:
         )
 
     source_file = _source_file_from_md(md_path, content)
+    severity = get_severity(md_path)
     action = read_action_taken(md_path)
     if action is None:
         return ActionFindingRow(
@@ -337,6 +343,7 @@ def _row_from_finding_file(md_path: Path) -> ActionFindingRow:
             commit_sha=None,
             error_message=None,
             timestamp="",
+            severity=severity,
         )
 
     what = action.summary or ""
@@ -354,6 +361,7 @@ def _row_from_finding_file(md_path: Path) -> ActionFindingRow:
         commit_sha=action.commit_sha,
         error_message=action.error_message,
         timestamp=action.timestamp,
+        severity=severity,
     )
 
 

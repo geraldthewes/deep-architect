@@ -296,6 +296,100 @@ class TestLoadFeedbackDir:
 
 
 # ---------------------------------------------------------------------------
+# Browse list display helpers (no Textual)
+# ---------------------------------------------------------------------------
+
+
+class TestDisplayHelpers:
+    def test_display_source_file_pads_short(self) -> None:
+        from deep_architect.review_feedback_browse import (
+            FILE_COL_WIDTH,
+            display_source_file,
+        )
+
+        col = display_source_file("src/x.py")
+        assert len(col) == FILE_COL_WIDTH
+        assert col.startswith("src/x.py")
+        assert col == "src/x.py".ljust(FILE_COL_WIDTH)
+        assert "…" not in col
+
+    def test_display_source_file_exact_width(self) -> None:
+        from deep_architect.review_feedback_browse import (
+            FILE_COL_WIDTH,
+            display_source_file,
+        )
+
+        path = "a" * FILE_COL_WIDTH
+        col = display_source_file(path)
+        assert col == path
+        assert "…" not in col
+
+    def test_display_source_file_keeps_right(self) -> None:
+        from deep_architect.review_feedback_browse import (
+            FILE_COL_WIDTH,
+            display_source_file,
+        )
+
+        path = "deep_architect/review_feedback_browse.py"
+        col = display_source_file(path)
+        assert len(col) == FILE_COL_WIDTH
+        assert col == "…" + path[-(FILE_COL_WIDTH - 1) :]
+        assert col.endswith("review_feedback_browse.py")
+        assert not col.startswith("deep_architect")
+
+    def test_display_source_file_empty(self) -> None:
+        from deep_architect.review_feedback_browse import (
+            FILE_COL_WIDTH,
+            display_source_file,
+        )
+
+        assert display_source_file("") == " " * FILE_COL_WIDTH
+
+    def test_display_severity(self) -> None:
+        from deep_architect.review_feedback_browse import (
+            SEVERITY_COL_WIDTH,
+            display_severity,
+        )
+
+        assert display_severity("") == "—".ljust(SEVERITY_COL_WIDTH)
+        assert display_severity("   ") == "—".ljust(SEVERITY_COL_WIDTH)
+        assert display_severity("high") == "high".ljust(SEVERITY_COL_WIDTH)
+        assert len(display_severity("critical-extra")) == SEVERITY_COL_WIDTH
+
+    def test_format_finding_row_columns(self) -> None:
+        from deep_architect.feedback_report import FeedbackFinding
+        from deep_architect.review_feedback_browse import (
+            FILE_COL_WIDTH,
+            display_severity,
+            display_source_file,
+            format_finding_row,
+        )
+
+        finding = FeedbackFinding(
+            path=Path("abc-0.md"),
+            finding_id="abc-0",
+            source_file="deep_architect/review_feedback_browse.py",
+            line_start=10,
+            line_end=20,
+            verdict="VALID",
+            existing_code="old",
+            suggested_code="new",
+            review_comment="fix it",
+            analysis="Confirmed real issue.",
+            raw_markdown="",
+            severity="high",
+        )
+        line = format_finding_row(finding, 1)
+        file_col = display_source_file(finding.source_file)
+        assert len(file_col) == FILE_COL_WIDTH
+        assert file_col in line
+        assert display_severity("high") in line
+        assert ":10-20" in line
+        assert "[abc-0]" in line
+        assert "Confirmed" in line
+
+
+# ---------------------------------------------------------------------------
 # CLI load failure path (no Textual)
 # ---------------------------------------------------------------------------
 
@@ -358,6 +452,8 @@ class TestBrowseCli:
             ActionRunBlock,
         )
         from deep_architect.review_feedback_browse import (
+            FILE_COL_WIDTH,
+            display_source_file,
             format_action_detail,
             format_action_row,
             format_action_stats,
@@ -390,6 +486,7 @@ class TestBrowseCli:
             commit_sha="deadbeef",
             error_message=None,
             timestamp="t",
+            severity="high",
         )
         (tmp_path / "abc-0.md").write_text(
             "# OCR\n- **File**: src/x.py\n"
@@ -401,6 +498,10 @@ class TestBrowseCli:
         line = format_action_row(row, 1)
         assert "Fixed" in line
         assert "deadbeef" in line
+        assert "high" in line
+        file_col = display_source_file("src/x.py")
+        assert len(file_col) == FILE_COL_WIDTH
+        assert file_col in line
         detail = format_action_detail(row)
         assert "Action Taken" in detail
         assert "deadbeef" in detail

@@ -84,6 +84,45 @@ _OUTCOME_ICON: dict[str, str] = {
 # Pure helpers (unit-tested without a terminal)
 # ---------------------------------------------------------------------------
 
+FILE_COL_WIDTH = 30
+SEVERITY_COL_WIDTH = 8
+
+
+def display_source_file(path: str, width: int = FILE_COL_WIDTH) -> str:
+    """Fixed-width path that keeps the right side when truncated.
+
+    Short paths are right-padded with spaces. Paths longer than *width*
+    become ``…`` + the last ``width - 1`` characters.
+    """
+    if width <= 0:
+        return ""
+    if width == 1:
+        return "…" if path else " "
+    if len(path) <= width:
+        return path.ljust(width)
+    return "…" + path[-(width - 1) :]
+
+
+def display_severity(severity: str, width: int = SEVERITY_COL_WIDTH) -> str:
+    """Fixed-width severity label; missing values render as an em-dash."""
+    stripped = severity.strip()
+    label = stripped if stripped else "—"
+    if len(label) > width:
+        label = label[:width]
+    return label.ljust(width)
+
+
+def format_finding_row(finding: FeedbackFinding, index: int) -> str:
+    """One list line for a verdict-mode finding."""
+    lines = line_range_label(finding.line_start, finding.line_end)
+    preview = analysis_preview(finding.analysis or finding.review_comment)
+    file_col = display_source_file(finding.source_file)
+    sev = display_severity(finding.severity)
+    return (
+        f"{index:3d}  {sev}  {file_col}{lines}  "
+        f"[{finding.finding_id}]  {preview}"
+    )
+
 
 def format_action_stats(run: ActionRunBlock | None, row_count: int) -> str:
     """Header stats lines for the action summary screen."""
@@ -115,10 +154,11 @@ def format_action_row(row: ActionFindingRow, index: int) -> str:
     style = _OUTCOME_STYLE.get(bucket, "bold")
     sha = row.commit_sha or "—"
     detail = analysis_preview(row.summary or "—", max_len=72)
-    file_path = analysis_preview(row.source_file, max_len=40)
+    file_col = display_source_file(row.source_file)
+    sev = display_severity(row.severity)
     return (
         f"{index:3d}  {icon} [{style}]{row.outcome_label:<16}[/{style}]  "
-        f"{row.finding_id:<16}  {file_path}  {sha}  {detail}"
+        f"{sev}  {file_col}  {row.finding_id:<16}  {sha}  {detail}"
     )
 
 
@@ -303,14 +343,9 @@ class FindingListScreen(Screen[None]):
             yield Static(title, id="list-header")
             items: list[ListItem] = []
             for i, finding in enumerate(self.findings, 1):
-                lines = line_range_label(finding.line_start, finding.line_end)
-                preview = analysis_preview(finding.analysis or finding.review_comment)
-                sev = finding.severity or "—"
-                label = (
-                    f"{i:3d}  [{sev:<8}]  {finding.source_file}{lines}  "
-                    f"[{finding.finding_id}]  {preview}"
+                items.append(
+                    ListItem(Label(format_finding_row(finding, i)), id=f"finding-{i - 1}")
                 )
-                items.append(ListItem(Label(label), id=f"finding-{i - 1}"))
             if not items:
                 items.append(ListItem(Label("(no findings)")))
             yield ListView(*items, id="finding-list")
