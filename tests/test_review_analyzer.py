@@ -20,11 +20,13 @@ from deep_architect.review_analyzer import (
     ProgressEvent,
     RunMeta,
     Verdict,
+    _emit_summary_outputs,
     _finding_lines,
     _finding_path,
     _finding_severity,
     _normalize_match_path,
     _parse_opencode_json,
+    _promote_backlog_if_needed,
     _severity_stats_key,
     _tally_severity_counts,
     call_opencode_analysis,
@@ -1191,6 +1193,121 @@ class TestGenerateSummaryReport:
             {"valid": 1}, 1, model="standard/coder", severity_counts={}
         )
         assert "Breakdown by severity:" not in report
+
+
+# ---------------------------------------------------------------------------
+# _emit_summary_outputs / promotion helpers
+# ---------------------------------------------------------------------------
+
+
+def _sample_finding_result() -> tuple[dict[str, Any], AnalysisResult]:
+    finding = {
+        "type": "comment",
+        "path": "src/foo.py",
+        "start_line": 1,
+        "end_line": 2,
+        "index": 0,
+        "content": "rename this",
+        "severity": "high",
+    }
+    analysis = AnalysisResult(Verdict.VALID, "real issue", "")
+    return finding, analysis
+
+
+class TestEmitSummaryOutputs:
+    def test_echo_true_prints_and_writes(self, tmp_path: Path, capsys: Any) -> None:
+        pair = _sample_finding_result()
+        outputs = _emit_summary_outputs(
+            [pair],
+            {"valid": 1, "rejected": 0, "backlog": 0, "timeout": 0},
+            model="standard/coder",
+            output_dir=tmp_path,
+            summary_only=False,
+            total_findings=1,
+            echo=True,
+        )
+        captured = capsys.readouterr()
+        assert "# Review Analysis Summary" in captured.out
+        assert "Summary written to" in captured.out
+        assert "Index written to" in captured.out
+        assert outputs.summary_path == tmp_path / "SUMMARY.md"
+        assert outputs.index_path == tmp_path / "INDEX.md"
+        assert (tmp_path / "SUMMARY.md").read_text(
+            encoding="utf-8"
+        ).startswith("# Review Analysis Summary")
+
+    def test_echo_false_writes_without_print(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        pair = _sample_finding_result()
+        outputs = _emit_summary_outputs(
+            [pair],
+            {"valid": 1, "rejected": 0, "backlog": 0, "timeout": 0},
+            model="standard/coder",
+            output_dir=tmp_path,
+            summary_only=False,
+            total_findings=1,
+            echo=False,
+        )
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+        assert outputs.text.startswith("# Review Analysis Summary")
+        assert outputs.summary_path is not None
+        assert outputs.summary_path.is_file()
+        assert outputs.index_path is not None
+        assert outputs.index_path.is_file()
+
+    def test_summary_only_does_not_write_files(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        pair = _sample_finding_result()
+        outputs = _emit_summary_outputs(
+            [pair],
+            {"valid": 1},
+            model="standard/coder",
+            output_dir=tmp_path,
+            summary_only=True,
+            total_findings=1,
+            echo=False,
+        )
+        assert outputs.summary_path is None
+        assert outputs.index_path is None
+        assert not (tmp_path / "SUMMARY.md").exists()
+        assert capsys.readouterr().out == ""
+
+
+class TestPromoteBacklogIfNeeded:
+    def test_disabled_returns_none(self, tmp_path: Path, capsys: Any) -> None:
+        finding, analysis = _sample_finding_result()
+        analysis.verdict = Verdict.BACKLOG
+        result = _promote_backlog_if_needed(
+            [(finding, analysis)],
+            knowledge_dir=tmp_path,
+            ocr_file=tmp_path / "ocr.json",
+            output_dir=tmp_path,
+            model="standard/coder",
+            timeout=30,
+            write_backlog=False,
+            summary_only=False,
+            echo=True,
+        )
+        assert result is None
+        assert "Promoting BACKLOG" not in capsys.readouterr().out
+
+    def test_no_backlog_skips(self, tmp_path: Path) -> None:
+        result = _promote_backlog_if_needed(
+            [_sample_finding_result()],
+            knowledge_dir=tmp_path,
+            ocr_file=tmp_path / "ocr.json",
+            output_dir=tmp_path,
+            model="standard/coder",
+            timeout=30,
+            write_backlog=True,
+            summary_only=False,
+            echo=False,
+        )
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

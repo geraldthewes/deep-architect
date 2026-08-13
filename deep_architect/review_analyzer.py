@@ -209,6 +209,15 @@ class ProgressEvent:
     elapsed_s: float
 
 
+@dataclass(frozen=True)
+class SummaryOutputs:
+    """Result of writing (and optionally printing) the run summary."""
+
+    text: str
+    summary_path: Path | None = None
+    index_path: Path | None = None
+
+
 class ProgressReporter(Protocol):
     """Progress sink used by the plain-text analysis pipeline."""
 
@@ -1760,8 +1769,13 @@ def _emit_summary_outputs(
     summary_only: bool,
     total_findings: int,
     promotion: dict[str, int] | None = None,
-) -> None:
-    """Print and optionally write SUMMARY.md / INDEX.md after analysis.
+    echo: bool = True,
+) -> SummaryOutputs:
+    """Build and optionally write SUMMARY.md / INDEX.md after analysis.
+
+    When *echo* is true (plain / CI mode), print the report and write paths
+    to stdout. When false (TUI finalize), only log errors so the alternate
+    screen is not corrupted.
 
     When writing to *output_dir*, SUMMARY counts are tallied from disk so a
     ``--retry-timeouts`` pass still reflects the full feedback directory.
@@ -1808,16 +1822,23 @@ def _emit_summary_outputs(
         promotion=promotion,
         severity_counts=severity_counts or None,
     )
-    print("\n" + summary)
+    if echo:
+        print("\n" + summary)
+
+    written_summary: Path | None = None
+    written_index: Path | None = None
 
     if not summary_only:
         summary_path = output_dir / "SUMMARY.md"
         try:
             summary_path.write_text(summary, encoding="utf-8")
-            print(f"\nSummary written to {summary_path}")
+            written_summary = summary_path
+            if echo:
+                print(f"\nSummary written to {summary_path}")
         except OSError as exc:
             log.error("Failed to write summary: %s", summary_path, exc)
-            print(f"Error writing summary: {exc}", file=sys.stderr)
+            if echo:
+                print(f"Error writing summary: {exc}", file=sys.stderr)
 
         # For INDEX: when the run covered only a subset (retry), rebuild from
         # every on-disk finding by reusing filename stems + verdict text.
@@ -1828,10 +1849,123 @@ def _emit_summary_outputs(
         index_path = output_dir / "INDEX.md"
         try:
             index_path.write_text(index, encoding="utf-8")
-            print(f"Index written to {index_path}")
+            written_index = index_path
+            if echo:
+                print(f"Index written to {index_path}")
         except OSError as exc:
             log.error("Failed to write index: %s", index_path, exc)
-            print(f"Error writing index: {exc}", file=sys.stderr)
+            if echo:
+                print(f"Error writing index: {exc}", file=sys.stderr)
+
+    return SummaryOutputs(
+        text=summary,
+        summary_path=written_summary,
+        index_path=written_index,
+    )
+
+
+def _promote_backlog_if_needed(
+    results: list[tuple[dict[str, Any], AnalysisResult]],
+    *,
+    knowledge_dir: Path,
+    ocr_file: Path,
+    output_dir: Path,
+    model: str,
+    timeout: int,
+    write_backlog: bool,
+    summary_only: bool,
+    echo: bool,
+) -> dict[str, int] | None:
+    """Promote BACKLOG findings into knowledge/backlog/ when enabled.
+
+    Returns promotion counts, or ``None`` when promotion is skipped.
+    When *echo* is false, progress goes to the logger only (TUI finalize).
+    """
+    if not write_backlog:
+        log.info("Backlog promotion disabled (--no-write-backlog)")
+        return None
+    if summary_only or not results:
+        return None
+    if not any(a.verdict == Verdict.BACKLOG for _, a in results):
+        return None
+
+    from deep_architect.backlog_dedup import (  # noqa: PLC0415
+        promote_backlog_findings,
+    )
+
+    log.info(
+        "Promoting BACKLOG findings into %s/backlog/ "
+        "(disable with --no-write-backlog)",
+        knowledge_dir,
+    )
+    if echo:
+        print(f"\nPromoting BACKLOG findings → {knowledge_dir}/backlog/")
+    promo = promote_backlog_findings(
+        results,
+        knowledge_dir=knowledge_dir,
+        ocr_file=ocr_file,
+        output_dir=output_dir,
+        model=model,
+        timeout=timeout,
+    )
+    promotion_counts = promo.as_dict()
+    log.info(
+        "Backlog promotion: created=%s updated=%s linked_to_ticket=%s "
+        "skipped=%s errors=%s",
+        promotion_counts["created"],
+        promotion_counts["updated"],
+        promotion_counts["linked_to_ticket"],
+        promotion_counts["skipped"],
+        promotion_counts["errors"],
+    )
+    if echo:
+        print(
+            f"Backlog promotion: created={promotion_counts['created']} "
+            f"updated={promotion_counts['updated']} "
+            f"linked_to_ticket={promotion_counts['linked_to_ticket']} "
+            f"skipped={promotion_counts['skipped']} "
+            f"errors={promotion_counts['errors']}"
+        )
+    return promotion_counts
+
+
+def _finalize_run(
+    results: list[tuple[dict[str, Any], AnalysisResult]],
+    counts: dict[str, int],
+    *,
+    model: str,
+    output_dir: Path,
+    summary_only: bool,
+    total_findings: int,
+    knowledge_dir: Path,
+    ocr_file: Path,
+    timeout: int,
+    write_backlog: bool,
+    echo: bool,
+) -> tuple[dict[str, int] | None, SummaryOutputs]:
+    """Promote BACKLOG findings (optional) and emit SUMMARY.md / INDEX.md."""
+    promotion = _promote_backlog_if_needed(
+        results,
+        knowledge_dir=knowledge_dir,
+        ocr_file=ocr_file,
+        output_dir=output_dir,
+        model=model,
+        timeout=timeout,
+        write_backlog=write_backlog,
+        summary_only=summary_only,
+        echo=echo,
+    )
+    outputs = _emit_summary_outputs(
+        results,
+        counts,
+        model=model,
+        output_dir=output_dir,
+        summary_only=summary_only,
+        total_findings=total_findings,
+        promotion=promotion,
+        echo=echo,
+    )
+    return promotion, outputs
 
 
 def generate_index_report_from_output_dir(
@@ -2199,6 +2333,26 @@ def main(argv: list[str] | None = None) -> int:
             counts["interrupted"] = 1
         return counts
 
+    write_backlog = not bool(getattr(args, "no_write_backlog", False))
+
+    def _finalize_with(*, echo: bool) -> SummaryOutputs:
+        results = list(results_box)
+        counts = _tally_counts(results) if results else {v.value: 0 for v in Verdict}
+        _, outputs = _finalize_run(
+            results,
+            counts,
+            model=args.model,
+            output_dir=args.output_dir,
+            summary_only=args.summary_only,
+            total_findings=meta.total_findings,
+            knowledge_dir=knowledge_dir,
+            ocr_file=args.ocr_file,
+            timeout=timeout_seconds,
+            write_backlog=write_backlog,
+            echo=echo,
+        )
+        return outputs
+
     if use_tui:
         # Lazy import keeps plain mode free of Textual at import time.
         from deep_architect.review_analyzer_tui import (  # noqa: PLC0415
@@ -2210,13 +2364,22 @@ def main(argv: list[str] | None = None) -> int:
             if args.summary_only
             else args.output_dir / "review-analyzer.log"
         )
-        counts = run_review_analyzer_tui(
+        finalize_box: list[SummaryOutputs] = []
+
+        def _finalize_quiet() -> SummaryOutputs:
+            outputs = _finalize_with(echo=False)
+            finalize_box.append(outputs)
+            return outputs
+
+        tui_result = run_review_analyzer_tui(
             meta,
             _run_pipeline,
             log_level=log_level,
             log_file=log_file,
+            finalize=_finalize_quiet,
         )
         results = list(results_box)
+        counts = tui_result.counts
         # Prefer authoritative pipeline tallies when available; fall back to
         # UI-tracked counts from the app return value.
         if results:
@@ -2224,65 +2387,41 @@ def main(argv: list[str] | None = None) -> int:
             counts["total_findings"] = meta.total_findings
             if _shutdown_requested or counts.get("interrupted"):
                 counts["interrupted"] = 1
-    else:
-        reporter: ProgressReporter = PlainReporter()
-        reporter.start(meta)
-        try:
-            counts = _run_pipeline(reporter.on_result)
-        except BaseException:
-            reporter.finish({v.value: 0 for v in Verdict})
-            raise
+
+        echoed_summary = False
+        if finalize_box:
+            outputs = finalize_box[-1]
         else:
-            reporter.finish(counts)
-        results = list(results_box)
+            # Force-closed or pipeline exception before finalize ran.
+            outputs = _finalize_with(echo=True)
+            echoed_summary = True
 
-    promotion_counts: dict[str, int] | None = None
-    write_backlog = not bool(getattr(args, "no_write_backlog", False))
-    if (
-        write_backlog
-        and not args.summary_only
-        and results
-        and any(a.verdict == Verdict.BACKLOG for _, a in results)
-    ):
-        from deep_architect.backlog_dedup import (  # noqa: PLC0415
-            promote_backlog_findings,
-        )
+        if (
+            tui_result.action == "browse"
+            and not args.summary_only
+            and args.output_dir.is_dir()
+        ):
+            from deep_architect.review_feedback_browse import (  # noqa: PLC0415
+                run_feedback_browse,
+            )
 
-        log.info(
-            "Promoting BACKLOG findings into %s/backlog/ "
-            "(disable with --no-write-backlog)",
-            knowledge_dir,
-        )
-        print(f"\nPromoting BACKLOG findings → {knowledge_dir}/backlog/")
-        promo = promote_backlog_findings(
-            results,
-            knowledge_dir=knowledge_dir,
-            ocr_file=args.ocr_file,
-            output_dir=args.output_dir,
-            model=args.model,
-            timeout=timeout_seconds,
-        )
-        promotion_counts = promo.as_dict()
-        print(
-            f"Backlog promotion: created={promotion_counts['created']} "
-            f"updated={promotion_counts['updated']} "
-            f"linked_to_ticket={promotion_counts['linked_to_ticket']} "
-            f"skipped={promotion_counts['skipped']} "
-            f"errors={promotion_counts['errors']}"
-        )
-    elif not write_backlog:
-        log.info("Backlog promotion disabled (--no-write-backlog)")
+            return run_feedback_browse(args.output_dir, mode="verdict")
 
-    _emit_summary_outputs(
-        results,
-        counts,
-        model=args.model,
-        output_dir=args.output_dir,
-        summary_only=args.summary_only,
-        total_findings=meta.total_findings,
-        promotion=promotion_counts,
-    )
+        if not echoed_summary and outputs.summary_path is not None:
+            print(f"Summary written to {outputs.summary_path}")
+        return 130 if counts.get("interrupted") else 0
 
+    reporter: ProgressReporter = PlainReporter()
+    reporter.start(meta)
+    try:
+        counts = _run_pipeline(reporter.on_result)
+    except BaseException:
+        reporter.finish({v.value: 0 for v in Verdict})
+        raise
+    else:
+        reporter.finish(counts)
+
+    _finalize_with(echo=True)
     return 130 if counts.get("interrupted") else 0
 
 

@@ -490,9 +490,10 @@ When stdout is a TTY, `review-analyzer` opens a **full-screen Textual app** (alt
 - **Summary stats** — live counters for `VALID`, `REJECTED`, `BACKLOG`, `TIMEOUT`, and pending; severity breakdown when OCR provides it
 - **Results list** — scrollable list of each completed finding (verdict, severity, location, analysis preview)
 - **Log pane** — harness and opencode log lines (truncated for display); full detail is also written to `<output-dir>/review-analyzer.log`
-- **Keys** — `q` / Ctrl-C request a graceful stop after in-flight analyses finish; `l` focuses the Log pane; `r` focuses Results
+- **Keys (during the run)** — `q` / Ctrl-C request a graceful stop after in-flight analyses finish; `l` focuses the Log pane; `r` focuses Results
+- **Done screen** — after the last finding (and backlog promotion / `SUMMARY.md` write), the app stays up and shows the same report as `SUMMARY.md`. `q` / Ctrl-C quit; `b` one-way-launches `review-feedback-browse` on the output directory (verdict mode). `--summary-only` omits `b`.
 
-Piped or CI runs (non-TTY) keep plain-text progress. Use `--tui` / `--no-tui` to override auto-detect. Disk output (per-finding reports, `SUMMARY.md`, `INDEX.md`) is the same in TUI and plain mode.
+Piped or CI runs (non-TTY) keep plain-text progress and print the full summary to stdout. Use `--tui` / `--no-tui` to override auto-detect. Disk output (per-finding reports, `SUMMARY.md`, `INDEX.md`) is the same in TUI and plain mode.
 
 ### Example
 

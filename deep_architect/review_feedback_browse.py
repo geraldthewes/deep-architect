@@ -813,15 +813,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point for review-feedback-browse."""
-    args = parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
-    feedback_dir: Path = args.feedback_dir
+def run_feedback_browse(
+    feedback_dir: Path,
+    *,
+    mode: str = "verdict",
+) -> int:
+    """Load reports and run FeedbackBrowseApp. Returns a process exit code.
 
+    Does not configure logging — callers (CLI or review-analyzer) set that up.
+    """
     if not feedback_dir.exists():
         msg = f"Feedback directory does not exist: {feedback_dir}"
         logger.error("%s", msg)
@@ -833,7 +833,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {msg}", file=sys.stderr)
         return 1
 
-    mode = resolve_browse_mode(args.mode, feedback_dir)
+    mode = resolve_browse_mode(mode, feedback_dir)
 
     feedback_report: FeedbackReport | None = None
     action_report: ActionReport | None = None
@@ -913,6 +913,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     app.run()
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point for review-feedback-browse."""
+    args = parse_args(argv)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+    return run_feedback_browse(args.feedback_dir, mode=args.mode)
 
 
 if __name__ == "__main__":

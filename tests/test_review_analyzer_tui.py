@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pytest
+
 from deep_architect.review_analyzer import (
     AnalysisResult,
     ProgressEvent,
@@ -12,14 +14,19 @@ from deep_architect.review_analyzer import (
     Verdict,
 )
 from deep_architect.review_analyzer_tui import (
+    AnalyzerTuiResult,
     LoggingCapture,
+    ReviewAnalyzerApp,
     TuiLogHandler,
+    format_done_body,
     format_duration,
     format_header,
     format_log_line,
     format_progress_label,
     format_result_line,
     format_summary,
+    is_browse_available,
+    run_review_analyzer_tui,
     truncate_message,
 )
 
@@ -280,3 +287,102 @@ class TestLoggingCapture:
         assert stream in root.handlers
         assert tui_handler not in root.handlers
         root.handlers.clear()
+
+
+class TestFormatDoneBody:
+    def test_includes_summary_and_paths(self, tmp_path: Path) -> None:
+        summary = tmp_path / "SUMMARY.md"
+        index = tmp_path / "INDEX.md"
+        body = format_done_body(
+            "# Review Analysis Summary\n\nVALID: 1\n",
+            summary_path=summary,
+            index_path=index,
+            browse_available=True,
+        )
+        assert "# Review Analysis Summary" in body
+        assert "VALID: 1" in body
+        assert f"Summary written to {summary}" in body
+        assert f"Index written to {index}" in body
+        assert "q quit · b browse findings" in body
+
+    def test_omits_browse_when_unavailable(self) -> None:
+        body = format_done_body("hello", browse_available=False)
+        assert "hello" in body
+        assert "b browse" not in body
+        assert body.strip().endswith("q quit")
+
+    def test_includes_error(self) -> None:
+        body = format_done_body("", error="boom", browse_available=False)
+        assert "Pipeline failed: boom" in body
+        assert "q quit" in body
+
+
+class TestIsBrowseAvailable:
+    def test_false_when_summary_only(self, tmp_path: Path) -> None:
+        (tmp_path / "SUMMARY.md").write_text("x", encoding="utf-8")
+        assert (
+            is_browse_available(
+                summary_only=True,
+                output_dir=tmp_path,
+                summary_path=tmp_path / "SUMMARY.md",
+            )
+            is False
+        )
+
+    def test_true_when_summary_exists(self, tmp_path: Path) -> None:
+        summary = tmp_path / "SUMMARY.md"
+        summary.write_text("# Review Analysis Summary\n", encoding="utf-8")
+        assert (
+            is_browse_available(
+                summary_only=False,
+                output_dir=tmp_path,
+                summary_path=summary,
+            )
+            is True
+        )
+
+    def test_true_when_finding_md_exists(self, tmp_path: Path) -> None:
+        (tmp_path / "abcd-0.md").write_text("# finding\n", encoding="utf-8")
+        assert (
+            is_browse_available(
+                summary_only=False,
+                output_dir=tmp_path,
+                summary_path=None,
+            )
+            is True
+        )
+
+    def test_false_when_dir_missing(self, tmp_path: Path) -> None:
+        assert (
+            is_browse_available(
+                summary_only=False,
+                output_dir=tmp_path / "nope",
+                summary_path=None,
+            )
+            is False
+        )
+
+
+class TestRunReviewAnalyzerTuiFallback:
+    def test_none_result_is_quit_interrupted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_run(self: ReviewAnalyzerApp) -> None:
+            return None
+
+        monkeypatch.setattr(ReviewAnalyzerApp, "run", fake_run)
+        meta = RunMeta(
+            ocr_file=Path("ocr.json"),
+            model="standard/coder",
+            concurrency=1,
+            output_dir=Path("feedback"),
+            summary_only=False,
+            total_findings=3,
+            raw_findings=3,
+        )
+        result = run_review_analyzer_tui(meta, lambda _on_result: {})
+        assert isinstance(result, AnalyzerTuiResult)
+        assert result.action == "quit"
+        assert result.counts["interrupted"] == 1
+        assert result.counts["total_findings"] == 3
+        assert result.summary_path is None

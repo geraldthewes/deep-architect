@@ -12,18 +12,21 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
+from textual.screen import Screen
 from textual.widgets import Footer, ProgressBar, RichLog, Static
 
+from deep_architect.feedback_report import NON_FINDING_FILES
 from deep_architect.review_analyzer import (
     ProgressEvent,
     RunMeta,
+    SummaryOutputs,
     Verdict,
     _finding_lines,
     _finding_path,
@@ -220,6 +223,62 @@ def format_progress_label(
     )
 
 
+def format_done_body(
+    summary_text: str,
+    *,
+    summary_path: Path | None = None,
+    index_path: Path | None = None,
+    browse_available: bool = False,
+    error: str | None = None,
+) -> str:
+    """Plain-text body for the post-run done screen."""
+    parts: list[str] = []
+    if error:
+        parts.append(f"Pipeline failed: {error}")
+        parts.append("")
+    stripped = summary_text.strip()
+    if stripped:
+        parts.append(stripped)
+    path_lines: list[str] = []
+    if summary_path is not None:
+        path_lines.append(f"Summary written to {summary_path}")
+    if index_path is not None:
+        path_lines.append(f"Index written to {index_path}")
+    if path_lines:
+        if parts:
+            parts.append("")
+        parts.extend(path_lines)
+    if parts:
+        parts.append("")
+    if browse_available:
+        parts.append("q quit · b browse findings")
+    else:
+        parts.append("q quit")
+    return "\n".join(parts) + "\n"
+
+
+def is_browse_available(
+    *,
+    summary_only: bool,
+    output_dir: Path | None,
+    summary_path: Path | None,
+) -> bool:
+    """True when review-feedback-browse can open the run's output dir."""
+    if summary_only or output_dir is None:
+        return False
+    if not output_dir.is_dir():
+        return False
+    if summary_path is not None and summary_path.is_file():
+        return True
+    try:
+        return any(
+            p.suffix == ".md" and p.name not in NON_FINDING_FILES
+            for p in output_dir.iterdir()
+        )
+    except OSError:
+        return False
+
+
 def format_result_line(event: ProgressEvent) -> str:
     """One results-pane line for a finished finding.
 
@@ -317,9 +376,60 @@ class LoggingCapture:
 # ---------------------------------------------------------------------------
 
 PipelineFn = Callable[[Callable[[ProgressEvent], None]], dict[str, int]]
+FinalizeFn = Callable[[], SummaryOutputs]
+TuiAction = Literal["quit", "browse"]
 
 
-class ReviewAnalyzerApp(App[dict[str, int]]):
+@dataclass(frozen=True)
+class AnalyzerTuiResult:
+    """Value returned when the analyzer TUI exits."""
+
+    counts: dict[str, int]
+    action: TuiAction
+    summary_path: Path | None = None
+
+
+class DoneScreen(Screen[None]):
+    """Post-run summary: the same markdown as SUMMARY.md, then quit or browse."""
+
+    BINDINGS = [
+        Binding("q", "quit_app", "Quit", priority=True),
+        Binding("ctrl+c", "quit_app", "Quit", show=False, priority=True),
+        Binding("b", "launch_browse", "Browse"),
+    ]
+
+    def __init__(self, body: str, *, browse_available: bool) -> None:
+        super().__init__()
+        self._body = body
+        self._browse_available = browse_available
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="done-body"):
+            yield Static("[bold]Review complete[/bold]", id="done-header")
+            with VerticalScroll(id="done-scroll"):
+                yield Static(self._body, id="done-content", markup=False)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#done-scroll", VerticalScroll).focus()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "launch_browse" and not self._browse_available:
+            return False
+        return True
+
+    def action_quit_app(self) -> None:
+        app = self.app
+        if isinstance(app, ReviewAnalyzerApp):
+            app.exit_with_action("quit")
+
+    def action_launch_browse(self) -> None:
+        app = self.app
+        if isinstance(app, ReviewAnalyzerApp):
+            app.launch_browse()
+
+
+class ReviewAnalyzerApp(App[AnalyzerTuiResult]):
     """Full-screen review-analyzer dashboard with a dedicated Log pane."""
 
     TITLE = "review-analyzer"
@@ -384,6 +494,17 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
         color: $text-muted;
         padding: 0 1;
     }
+    #done-body {
+        padding: 1 2;
+    }
+    #done-header {
+        margin-bottom: 1;
+    }
+    #done-scroll {
+        height: 1fr;
+        border: solid cyan;
+        padding: 0 1;
+    }
     """
 
     BINDINGS = [
@@ -391,6 +512,7 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
         Binding("ctrl+c", "request_stop", "Stop", show=False, priority=True),
         Binding("l", "focus_log", "Log", show=True),
         Binding("r", "focus_results", "Results", show=True),
+        Binding("b", "launch_browse", "Browse", show=False),
     ]
 
     def __init__(
@@ -400,12 +522,14 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
         *,
         log_level: int = logging.INFO,
         log_file: Path | None = None,
+        finalize: FinalizeFn | None = None,
     ) -> None:
         super().__init__()
         self._meta = meta
         self._pipeline = pipeline
         self._log_level = log_level
         self._log_file = log_file
+        self._finalize = finalize
 
         self._counts: dict[str, int] = {
             Verdict.VALID.value: 0,
@@ -422,6 +546,8 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
         self._result_count = 0
         self._stop_requested = False
         self._pipeline_finished = False
+        self._browse_available = False
+        self._outputs: SummaryOutputs | None = None
         self._capture: LoggingCapture | None = None
 
     def compose(self) -> ComposeResult:
@@ -474,7 +600,7 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
 
     def action_request_stop(self) -> None:
         if self._pipeline_finished:
-            self.exit(self._final_counts())
+            self.exit_with_action("quit")
             return
         if self._stop_requested:
             self.query_one("#status-line", Static).update(
@@ -495,6 +621,28 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
 
     def action_focus_results(self) -> None:
         self.query_one("#results-log", RichLog).focus()
+
+    def action_launch_browse(self) -> None:
+        self.launch_browse()
+
+    def exit_with_action(self, action: TuiAction) -> None:
+        """Leave the TUI with the given post-run action."""
+        self.exit(
+            AnalyzerTuiResult(
+                counts=self._final_counts(),
+                action=action,
+                summary_path=self._outputs.summary_path if self._outputs else None,
+            )
+        )
+
+    def launch_browse(self) -> None:
+        """One-way handoff: exit so main() can start review-feedback-browse."""
+        if not self._pipeline_finished:
+            return
+        if not self._browse_available:
+            self.notify("No feedback directory to browse", severity="warning")
+            return
+        self.exit_with_action("browse")
 
     # --- logging bridge ---------------------------------------------------
 
@@ -607,6 +755,18 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
             self.call_from_thread(self._on_pipeline_failed, str(exc))
             return
         self.call_from_thread(self._on_pipeline_done, counts)
+        if self._finalize is None:
+            self.call_from_thread(self._on_finalize_done, None, None)
+            return
+        try:
+            outputs = self._finalize()
+        except Exception as exc:
+            logging.getLogger(__name__).exception(
+                "review-analyzer finalize failed: %s", exc
+            )
+            self.call_from_thread(self._on_finalize_done, None, str(exc))
+            return
+        self.call_from_thread(self._on_finalize_done, outputs, None)
 
     def _on_pipeline_done(self, counts: dict[str, int]) -> None:
         self._pipeline_finished = True
@@ -632,18 +792,54 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
         if finished:
             self._completed = max(self._completed, finished)
         self._refresh_progress_widgets()
-        interrupted = bool(counts.get("interrupted"))
-        if interrupted:
-            msg = "Interrupted — exiting."
+        if self._finalize is not None:
+            self.query_one("#status-line", Static).update(
+                "[bold]Finalizing — backlog promotion and SUMMARY.md…[/bold]"
+            )
         else:
-            msg = "Done."
-        self.query_one("#status-line", Static).update(f"[bold]{msg}[/bold]")
-        self.exit(self._final_counts())
+            interrupted = bool(counts.get("interrupted"))
+            msg = "Interrupted." if interrupted else "Done."
+            self.query_one("#status-line", Static).update(f"[bold]{msg}[/bold]")
+
+    def _on_finalize_done(
+        self,
+        outputs: SummaryOutputs | None,
+        error: str | None,
+    ) -> None:
+        self._outputs = outputs
+        self._browse_available = is_browse_available(
+            summary_only=self._meta.summary_only,
+            output_dir=self._meta.output_dir,
+            summary_path=outputs.summary_path if outputs else None,
+        )
+        body = format_done_body(
+            outputs.text if outputs else "",
+            summary_path=outputs.summary_path if outputs else None,
+            index_path=outputs.index_path if outputs else None,
+            browse_available=self._browse_available,
+            error=error,
+        )
+        interrupted = bool(self._counts.get("interrupted"))
+        if error:
+            status = f"Finalize failed: {truncate_message(error, 80)}"
+        elif interrupted:
+            status = "Interrupted."
+        else:
+            status = "Done."
+        try:
+            self.query_one("#status-line", Static).update(f"[bold]{status}[/bold]")
+        except Exception:
+            pass
+        self.push_screen(
+            DoneScreen(body, browse_available=self._browse_available)
+        )
 
     def _on_pipeline_failed(self, error: str) -> None:
         self._pipeline_finished = True
+        self._browse_available = False
+        short = truncate_message(error, 120)
         self.query_one("#status-line", Static).update(
-            f"[bold red]Pipeline failed: {truncate_message(error, 120)}[/bold red]"
+            f"[bold red]Pipeline failed: {short}[/bold red]"
         )
         self.query_one("#activity-log", RichLog).write(
             Text(
@@ -651,7 +847,19 @@ class ReviewAnalyzerApp(App[dict[str, int]]):
                 style="bold red",
             )
         )
-        self.exit(self._final_counts())
+        body = format_done_body("", error=error, browse_available=False)
+        self.push_screen(DoneScreen(body, browse_available=False))
+
+
+def _empty_tui_counts(total_findings: int) -> dict[str, int]:
+    return {
+        Verdict.VALID.value: 0,
+        Verdict.REJECTED.value: 0,
+        Verdict.BACKLOG.value: 0,
+        Verdict.TIMEOUT.value: 0,
+        "total_findings": total_findings,
+        "interrupted": 1,
+    }
 
 
 def run_review_analyzer_tui(
@@ -660,28 +868,29 @@ def run_review_analyzer_tui(
     *,
     log_level: int = logging.INFO,
     log_file: Path | None = None,
-) -> dict[str, int]:
-    """Run the full-screen TUI and return final verdict counts from the pipeline.
+    finalize: FinalizeFn | None = None,
+) -> AnalyzerTuiResult:
+    """Run the full-screen TUI and return counts plus the user's post-run action.
 
     *pipeline* is called on a worker thread as ``pipeline(on_result)`` and must
     return a counts dict (valid/rejected/backlog/timeout keys, plus optional
     ``interrupted`` / ``total_findings``).
+
+    *finalize* (optional) runs on the same worker after the pipeline so
+    promotion and SUMMARY.md happen before the done screen is shown.
     """
     app = ReviewAnalyzerApp(
         meta,
         pipeline,
         log_level=log_level,
         log_file=log_file,
+        finalize=finalize,
     )
     result = app.run()
     if result is None:
-        # User force-closed without pipeline result.
-        return {
-            Verdict.VALID.value: 0,
-            Verdict.REJECTED.value: 0,
-            Verdict.BACKLOG.value: 0,
-            Verdict.TIMEOUT.value: 0,
-            "total_findings": meta.total_findings,
-            "interrupted": 1,
-        }
+        # User force-closed without a done-screen choice.
+        return AnalyzerTuiResult(
+            counts=_empty_tui_counts(meta.total_findings),
+            action="quit",
+        )
     return result

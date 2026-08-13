@@ -326,6 +326,12 @@ class TestBrowseCli:
         rc = main([str(tmp_path / "missing")])
         assert rc == 1
 
+    def test_run_feedback_browse_missing_dir(self, tmp_path: Path) -> None:
+        from deep_architect.review_feedback_browse import run_feedback_browse
+
+        rc = run_feedback_browse(tmp_path / "missing", mode="verdict")
+        assert rc == 1
+
     def test_main_empty_dir(self, tmp_path: Path) -> None:
         from deep_architect.review_feedback_browse import main
 
