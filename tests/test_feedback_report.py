@@ -8,6 +8,7 @@ import pytest
 
 from deep_architect.feedback_report import (
     NON_FINDING_FILES,
+    FeedbackFinding,
     ReviewFinding,
     analysis_preview,
     findings_for_verdict,
@@ -505,3 +506,119 @@ class TestBrowseCli:
         detail = format_action_detail(row)
         assert "Action Taken" in detail
         assert "deadbeef" in detail
+
+
+# ---------------------------------------------------------------------------
+# Detail-pane markup safety (review-feedback-browse)
+# ---------------------------------------------------------------------------
+
+EXISTING_WITH_LIST = """    return PlantListResponse(
+        plants=[
+            PlantSummary(
+                id=p.id,
+                variety_name=p.variety_name,
+            )
+            for p in plants
+        ],
+    )
+"""
+
+
+def _list_literal_finding() -> FeedbackFinding:
+    return FeedbackFinding(
+        path=Path("82911b41-7.md"),
+        finding_id="82911b41-7",
+        source_file="backend/fastapi/src/plant_tracking_api/routes/plants.py",
+        line_start=56,
+        line_end=72,
+        verdict="VALID",
+        existing_code=EXISTING_WITH_LIST,
+        suggested_code="",
+        review_comment="Routes use uow directly.",
+        analysis="CONFIRMED: Critical runtime bug.",
+        raw_markdown="",
+        severity="high",
+    )
+
+
+class TestBrowseMarkupSafety:
+    def test_format_finding_detail_keeps_list_literal(self) -> None:
+        from deep_architect.review_feedback_browse import format_finding_detail
+
+        body = format_finding_detail(_list_literal_finding())
+        assert "plants=[" in body
+        assert "variety_name=p.variety_name" in body
+        assert "Review Comment" in body
+        assert "Existing Code" in body
+        assert "LLM Analysis" in body
+        assert "[bold" not in body
+        assert "[/bold" not in body
+
+    def test_format_finding_detail_is_not_valid_markup(self) -> None:
+        from textual.markup import MarkupError
+        from textual.widgets import Static
+
+        from deep_architect.review_feedback_browse import format_finding_detail
+
+        body = format_finding_detail(_list_literal_finding())
+        widget = Static(markup=True)
+        with pytest.raises(MarkupError):
+            widget.update(body)
+
+    def test_detail_static_update_does_not_raise(self) -> None:
+        from textual.widgets import Static
+
+        from deep_architect.review_feedback_browse import format_finding_detail
+
+        body = format_finding_detail(_list_literal_finding())
+        Static(markup=False).update(body)
+
+    def test_format_action_detail_with_list_literal(self, tmp_path: Path) -> None:
+        from textual.widgets import Static
+
+        from deep_architect.action_report import ActionFindingRow
+        from deep_architect.review_feedback_browse import format_action_detail
+
+        md = tmp_path / "list-0.md"
+        md.write_text(_finding_md(existing=EXISTING_WITH_LIST), encoding="utf-8")
+        row = ActionFindingRow(
+            finding_id="list-0",
+            path=md,
+            source_file="src/x.py",
+            status="completed",
+            outcome_label="Fixed",
+            summary="Fix applied",
+            commit_sha="deadbeef",
+            error_message=None,
+            timestamp="t",
+            severity="high",
+        )
+        detail = format_action_detail(row)
+        assert "plants=[" in detail
+        assert "variety_name=p.variety_name" in detail
+        assert "[bold" not in detail
+        Static(markup=False).update(detail)
+
+    def test_format_action_row_escapes_brackets(self, tmp_path: Path) -> None:
+        from rich.text import Text
+
+        from deep_architect.action_report import ActionFindingRow
+        from deep_architect.review_feedback_browse import format_action_row
+
+        row = ActionFindingRow(
+            finding_id="list-0",
+            path=tmp_path / "list-0.md",
+            source_file="src/x.py",
+            status="completed",
+            outcome_label="Fixed",
+            summary="plants=[ variety_name=p.variety_name,",
+            commit_sha="deadbeef",
+            error_message=None,
+            timestamp="t",
+            severity="high",
+        )
+        line = format_action_row(row, 1)
+        Text.from_markup(line)
+        assert "[bold green]" in line
+        assert "[/bold green]" in line
+        assert "Fixed" in line

@@ -14,6 +14,7 @@ import logging
 import sys
 from pathlib import Path
 
+from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
@@ -148,37 +149,80 @@ def format_action_stats(run: ActionRunBlock | None, row_count: int) -> str:
 
 
 def format_action_row(row: ActionFindingRow, index: int) -> str:
-    """One list line for an action finding."""
+    """One list line for an action finding.
+
+    Outcome labels keep Rich style tags; user-controlled fields are escaped
+    so summaries/paths that contain ``[`` cannot crash the list Label.
+    """
     bucket = outcome_filter_key(row.outcome_label)
     icon = _OUTCOME_ICON.get(bucket, "?")
     style = _OUTCOME_STYLE.get(bucket, "bold")
-    sha = row.commit_sha or "—"
-    detail = analysis_preview(row.summary or "—", max_len=72)
-    file_col = display_source_file(row.source_file)
-    sev = display_severity(row.severity)
+    sha = escape(row.commit_sha or "—")
+    detail = escape(analysis_preview(row.summary or "—", max_len=72))
+    file_col = escape(display_source_file(row.source_file))
+    sev = escape(display_severity(row.severity))
+    finding_id = escape(f"{row.finding_id:<16}")
     return (
         f"{index:3d}  {icon} [{style}]{row.outcome_label:<16}[/{style}]  "
-        f"{sev}  {file_col}  {row.finding_id:<16}  {sha}  {detail}"
+        f"{sev}  {file_col}  {finding_id}  {sha}  {detail}"
     )
 
 
+def format_finding_detail(finding: FeedbackFinding) -> str:
+    """Scrollable body for the verdict-mode finding detail screen.
+
+    Returned text is shown in a Static with markup=False — do not embed
+    Rich tags; finding code routinely contains ``[``.
+    """
+    if finding.review_comment or finding.existing_code or finding.analysis:
+        suggested = finding.suggested_code if finding.suggested_code else "*(none)*"
+        return "\n".join(
+            [
+                "Review Comment",
+                finding.review_comment or "*(empty)*",
+                "",
+                "Existing Code",
+                (
+                    f"```\n{finding.existing_code}\n```"
+                    if finding.existing_code
+                    else "*(empty)*"
+                ),
+                "",
+                "Suggested Code",
+                (
+                    f"```\n{finding.suggested_code}\n```"
+                    if finding.suggested_code
+                    else suggested
+                ),
+                "",
+                "LLM Analysis",
+                finding.analysis or "*(empty)*",
+            ]
+        )
+    return "Raw markdown\n\n" + finding.raw_markdown
+
+
 def format_action_detail(row: ActionFindingRow) -> str:
-    """Scrollable body for the action detail screen."""
+    """Scrollable body for the action detail screen.
+
+    Returned text is shown in a Static with markup=False — do not embed
+    Rich tags; finding code routinely contains ``[``.
+    """
     parts: list[str] = [
-        "[bold underline]Action Taken[/bold underline]",
+        "Action Taken",
         f"Status: {row.status or '(none)'}",
         f"Outcome: {row.outcome_label}",
         f"Timestamp: {row.timestamp or '—'}",
         f"Commit: {row.commit_sha or '—'}",
         "",
-        "[bold underline]Summary[/bold underline]",
+        "Summary",
         unescape_action_field(row.summary) if row.summary else "—",
     ]
     if row.error_message:
         parts.extend(
             [
                 "",
-                "[bold underline]Error[/bold underline]",
+                "Error",
                 unescape_action_field(row.error_message),
             ]
         )
@@ -188,13 +232,13 @@ def format_action_detail(row: ActionFindingRow) -> str:
         parts.extend(
             [
                 "",
-                "[bold underline]Review Comment[/bold underline]",
+                "Review Comment",
                 parsed.review_comment or "—",
                 "",
-                "[bold underline]Existing Code[/bold underline]",
+                "Existing Code",
                 f"```\n{parsed.existing_code}\n```" if parsed.existing_code else "—",
                 "",
-                "[bold underline]Suggested Code[/bold underline]",
+                "Suggested Code",
                 f"```\n{parsed.suggested_code}\n```" if parsed.suggested_code else "—",
             ]
         )
@@ -344,7 +388,10 @@ class FindingListScreen(Screen[None]):
             items: list[ListItem] = []
             for i, finding in enumerate(self.findings, 1):
                 items.append(
-                    ListItem(Label(format_finding_row(finding, i)), id=f"finding-{i - 1}")
+                    ListItem(
+                        Label(format_finding_row(finding, i), markup=False),
+                        id=f"finding-{i - 1}",
+                    )
                 )
             if not items:
                 items.append(ListItem(Label("(no findings)")))
@@ -408,7 +455,9 @@ class FindingDetailScreen(Screen[None]):
         with Vertical(id="detail-body"):
             yield Static(id="detail-header")
             with VerticalScroll(id="detail-scroll"):
-                yield Static(id="detail-content")
+                # markup=False: finding code must not be parsed as Rich markup
+                # (list literals like plants=[...] raise MarkupError).
+                yield Static(id="detail-content", markup=False)
             yield Static(
                 f"[dim]n next · p prev · Esc back · "
                 f"{self.index + 1}/{len(self.findings)}[/dim]",
@@ -432,30 +481,7 @@ class FindingDetailScreen(Screen[None]):
             f"{self.index + 1}/{len(self.findings)}  ·  {f.path.name}"
         )
         self.query_one("#detail-header", Static).update(header)
-
-        if f.review_comment or f.existing_code or f.analysis:
-            suggested = f.suggested_code if f.suggested_code else "*(none)*"
-            body = "\n".join(
-                [
-                    "[bold underline]Review Comment[/bold underline]",
-                    f.review_comment or "*(empty)*",
-                    "",
-                    "[bold underline]Existing Code[/bold underline]",
-                    f"```\n{f.existing_code}\n```" if f.existing_code else "*(empty)*",
-                    "",
-                    "[bold underline]Suggested Code[/bold underline]",
-                    f"```\n{f.suggested_code}\n```" if f.suggested_code else suggested,
-                    "",
-                    "[bold underline]LLM Analysis[/bold underline]",
-                    f.analysis or "*(empty)*",
-                ]
-            )
-        else:
-            body = (
-                "[bold underline]Raw markdown[/bold underline]\n\n" + f.raw_markdown
-            )
-
-        self.query_one("#detail-content", Static).update(body)
+        self.query_one("#detail-content", Static).update(format_finding_detail(f))
         self.query_one("#detail-footer-hint", Static).update(
             f"[dim]n next · p prev · Esc back · "
             f"{self.index + 1}/{len(self.findings)}[/dim]"
@@ -623,7 +649,9 @@ class ActionDetailScreen(Screen[None]):
         with Vertical(id="detail-body"):
             yield Static(id="detail-header")
             with VerticalScroll(id="detail-scroll"):
-                yield Static(id="detail-content")
+                # markup=False: finding code must not be parsed as Rich markup
+                # (list literals like plants=[...] raise MarkupError).
+                yield Static(id="detail-content", markup=False)
             yield Static(id="detail-footer-hint")
         yield Footer()
 
