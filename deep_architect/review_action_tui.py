@@ -98,14 +98,23 @@ def format_log_line(
 
 
 def format_result_line(event: ProgressEvent) -> str:
-    """One results-pane line for a finished finding."""
+    """One results-pane line for a finished finding.
+
+    Columns: icon+outcome, severity, duration, finding id, file, preview.
+    """
     icon = _OUTCOME_ICON.get(event.outcome, "?")
+    sev = (event.severity or "").strip() or "—"
+    sev_col = f"{sev:<8}" if sev != "—" else f"{'—':<8}"
+    secs = max(0, int(round(event.duration_s)))
     detail = event.summary.replace("\n", " ").strip()
     if event.commit_sha:
         detail = f"`{event.commit_sha}` {detail}"
-    detail = truncate_message(detail, max_len=120)
+    detail = truncate_message(detail, max_len=100)
     file_path = truncate_message(event.file_path, max_len=48)
-    return f"{icon} {event.outcome:<12} {event.finding_id:<16} {file_path}  {detail}"
+    return (
+        f"{icon} {event.outcome:<12} {sev_col} {secs:>4}s  "
+        f"{event.finding_id:<16} {file_path}  {detail}"
+    )
 
 
 def format_header(meta: RunMeta) -> str:
@@ -169,22 +178,22 @@ def format_progress_label(
         eta_text = "—"
         rate_text = "—"
 
-    lines = [
+    line = (
         f"[bold]Processing {completed}/{total}[/bold]  "
-        f"[dim]({fraction * 100:.0f}%)[/dim]",
+        f"[dim]({fraction * 100:.0f}%)[/dim]  "
         f"[dim]Elapsed[/dim] {format_duration(elapsed_s)}  ·  "
         f"[dim]ETA[/dim] {eta_text}  ·  "
         f"{rate_text}"
-        + (" findings/s" if rate_text != "—" else ""),
-    ]
+        + (" findings/s" if rate_text != "—" else "")
+    )
     if current_finding or current_phase:
         bits: list[str] = []
         if current_finding:
             bits.append(f"[bold]{current_finding}[/bold]")
         if current_phase:
             bits.append(f"[bold blue]{current_phase}[/bold blue]")
-        lines.append("[dim]Current:[/dim] " + "  ·  ".join(bits))
-    return "\n".join(lines)
+        line += "  [dim]Current:[/dim] " + "  ·  ".join(bits)
+    return line
 
 
 # ---------------------------------------------------------------------------
@@ -281,29 +290,22 @@ class ReviewActionApp(App[dict[str, int]]):
     }
     #header-panel {
         height: auto;
-        max-height: 5;
         border: solid cyan;
         padding: 0 1;
-        margin: 0 0 1 0;
+        margin: 0;
     }
-    #progress-panel {
+    #header-meta {
         height: auto;
-        border: solid blue;
-        padding: 0 1;
-        margin: 0 0 1 0;
     }
     #progress-label {
         height: auto;
     }
     #progress-bar {
         height: 1;
-        margin: 1 0;
+        margin: 0;
     }
-    #summary-panel {
-        height: 3;
-        border: solid magenta;
-        padding: 0 1;
-        margin: 0 0 1 0;
+    #summary-strip {
+        height: auto;
     }
     #results-panel {
         height: 1fr;
@@ -321,7 +323,7 @@ class ReviewActionApp(App[dict[str, int]]):
         height: 12;
         border: solid yellow;
         padding: 0 1;
-        margin: 1 0 0 0;
+        margin: 0;
     }
     #log-title {
         height: 1;
@@ -378,8 +380,8 @@ class ReviewActionApp(App[dict[str, int]]):
         self._capture: LoggingCapture | None = None
 
     def compose(self) -> ComposeResult:
-        yield Static(format_header(self._meta), id="header-panel")
-        with Vertical(id="progress-panel"):
+        with Vertical(id="header-panel"):
+            yield Static(format_header(self._meta), id="header-meta")
             yield Static(
                 format_progress_label(0, self._total, 0.0),
                 id="progress-label",
@@ -389,12 +391,15 @@ class ReviewActionApp(App[dict[str, int]]):
                 show_eta=False,
                 id="progress-bar",
             )
-        yield Static(
-            format_summary(self._stats, self._total, self._completed),
-            id="summary-panel",
-        )
+            yield Static(
+                format_summary(self._stats, self._total, self._completed),
+                id="summary-strip",
+            )
         with Vertical(id="results-panel"):
-            yield Static("Results (newest last)", id="results-title")
+            yield Static(
+                "Results (newest last)  ·  sev · secs=duration",
+                id="results-title",
+            )
             yield RichLog(id="results-log", highlight=False, markup=False, max_lines=500)
         with Vertical(id="log-panel"):
             yield Static("Log (agent / harness output)", id="log-title")
@@ -506,9 +511,10 @@ class ReviewActionApp(App[dict[str, int]]):
         if self._result_count > _MAX_RESULT_ROWS:
             title = (
                 f"Results (newest last; older rows trimmed at {_MAX_RESULT_ROWS})"
+                "  ·  sev · secs=duration"
             )
         else:
-            title = "Results (newest last)"
+            title = "Results (newest last)  ·  sev · secs=duration"
         self.query_one("#results-title", Static).update(title)
         self._refresh_progress_widgets()
 
@@ -545,7 +551,7 @@ class ReviewActionApp(App[dict[str, int]]):
         )
         bar = self.query_one("#progress-bar", ProgressBar)
         bar.update(total=max(self._total, 1), progress=self._completed)
-        self.query_one("#summary-panel", Static).update(
+        self.query_one("#summary-strip", Static).update(
             format_summary(self._stats, self._total, self._completed)
         )
 

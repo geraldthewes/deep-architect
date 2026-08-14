@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 # Re-export parse helpers for tests and public API compatibility.
 ReviewFinding = _feedback_report.ReviewFinding
 get_verdict = _feedback_report.get_verdict
+get_severity = _feedback_report.get_severity
 is_valid_finding = _feedback_report.is_valid_finding
 parse_markdown_finding = _feedback_report.parse_markdown_finding
 _NON_FINDING_FILES = _feedback_report.NON_FINDING_FILES
@@ -136,6 +137,8 @@ class ProgressEvent:
     elapsed_s: float
     phase: str | None = None
     stats: dict[str, int] = field(default_factory=dict)
+    severity: str = ""  # OCR label, lowercased; empty if absent
+    duration_s: float = 0.0  # wall-clock for this finding only
 
 
 class ProgressReporter(Protocol):
@@ -766,6 +769,8 @@ def _emit_result(
     commit_sha: str | None,
     t0: float,
     stats: dict[str, int],
+    severity: str = "",
+    duration_s: float = 0.0,
 ) -> None:
     if on_result is None:
         return
@@ -784,6 +789,8 @@ def _emit_result(
                 for k, v in stats.items()
                 if k != "interrupted"
             },
+            severity=severity,
+            duration_s=duration_s,
         )
     )
 
@@ -940,6 +947,8 @@ def process_findings(
         finding_index += 1
         pct = round(finding_index / total * 100) if total else 0
         file_path = _file_ref_for_finding(md_file)
+        finding_t0 = time.monotonic()
+        severity = get_severity(md_file)
         logger.info(
             "Addressing Review %d/%d (%d%%): %s",
             finding_index,
@@ -979,6 +988,8 @@ def process_findings(
                     commit_sha=existing.commit_sha,
                     t0=t0,
                     stats=stats,
+                    severity=severity,
+                    duration_s=time.monotonic() - finding_t0,
                 )
                 continue
             elif existing and existing.status == "error" and skip_errors:
@@ -1003,6 +1014,8 @@ def process_findings(
                     commit_sha=None,
                     t0=t0,
                     stats=stats,
+                    severity=severity,
+                    duration_s=time.monotonic() - finding_t0,
                 )
                 continue
             elif existing:
@@ -1069,6 +1082,8 @@ def process_findings(
             commit_sha=commit_sha,
             t0=t0,
             stats=stats,
+            severity=severity,
+            duration_s=time.monotonic() - finding_t0,
         )
 
         if status == "interrupted":

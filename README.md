@@ -691,10 +691,8 @@ When stdout is a TTY, `review-action` opens a **full-screen Textual app** (alter
 
 Live progress counts **VALID findings only**. Analyzer verdicts of `REJECTED`, `BACKLOG`, or `TIMEOUT` are not auto-fixed; they do not appear in the progress bar or results list. They are still stamped with an Action Taken record, listed in `review-action_summary.md`, and visible in `review-feedback-browse`.
 
-- **Header** — feedback directory, coding agent/model, VALID finding count, and active flags (`dry-run`, `force`, `skip-errors`)
-- **Progress** — bar with completed/total (VALID only), elapsed time, ETA, throughput, plus the current finding phase (`applying`, `quality-checks N/M`, `committing`)
-- **Summary stats** — live counters for Fixed, Skipped, Errors, Restored, and pending
-- **Results list** — scrollable list of each finished VALID finding (outcome, id, file, summary/commit)
+- **Header** — feedback directory, coding agent/model, VALID finding count, and active flags (`dry-run`, `force`, `skip-errors`); live progress (count, elapsed, ETA, bar, current finding phase); live counters for Fixed, Skipped, Errors, Restored, and pending
+- **Results list** — scrollable list of each finished VALID finding (outcome, severity, duration seconds, id, file, summary/commit)
 - **Log pane** — harness and coding-agent log lines (truncated for display); full detail is also written to `<output-dir>/review-action.log`
 - **Keys** — `q` / Ctrl-C request a graceful stop after the current finding; `l` focuses the Log pane; `r` focuses Results
 

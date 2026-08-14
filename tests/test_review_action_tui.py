@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
+
+from textual.widgets import Static
 
 from deep_architect.review_action_harness import ProgressEvent, RunMeta
 from deep_architect.review_action_tui import (
     LoggingCapture,
+    ReviewActionApp,
     TuiLogHandler,
     format_duration,
     format_header,
@@ -119,6 +123,9 @@ class TestFormatHelpers:
         assert "1/4" in text
         assert "abc-0" in text
         assert "applying" in text
+        assert "Elapsed" in text
+        assert "ETA" in text
+        assert "\n" not in text
 
     def test_result_line(self) -> None:
         event = ProgressEvent(
@@ -130,12 +137,52 @@ class TestFormatHelpers:
             summary="Fix failed after 6 attempts",
             commit_sha=None,
             elapsed_s=5.0,
+            duration_s=5.0,
         )
         line = format_result_line(event)
         assert "error" in line
         assert "abc12345-0" in line
         assert "src/foo.py" in line
         assert "Fix failed" in line
+        assert "—" in line
+        assert "   5s" in line
+
+    def test_result_line_includes_severity(self) -> None:
+        event = ProgressEvent(
+            completed=1,
+            total=1,
+            finding_id="abc12345-0",
+            file_path="src/foo.py",
+            outcome="completed",
+            summary="Fix applied",
+            commit_sha="deadbeef",
+            elapsed_s=3.0,
+            severity="high",
+            duration_s=3.0,
+        )
+        line = format_result_line(event)
+        assert "completed" in line
+        assert "high" in line
+        assert "src/foo.py" in line
+
+    def test_result_line_with_duration(self) -> None:
+        event = ProgressEvent(
+            completed=2,
+            total=2,
+            finding_id="abc12345-1",
+            file_path="src/bar.py",
+            outcome="completed",
+            summary="Fix applied",
+            commit_sha=None,
+            elapsed_s=400.0,
+            severity="medium",
+            duration_s=312.4,
+        )
+        line = format_result_line(event)
+        assert "completed" in line
+        assert "medium" in line
+        assert " 312s" in line
+        assert "src/bar.py" in line
 
 
 class TestTuiLogHandler:
@@ -188,3 +235,47 @@ class TestLoggingCapture:
         assert stream in root.handlers
         assert tui_handler not in root.handlers
         root.handlers.clear()
+
+
+class TestReviewActionAppLayout:
+    async def test_compose_has_three_panels(self) -> None:
+        release = threading.Event()
+
+        def pipeline(_on_result: object, _on_phase: object) -> dict[str, int]:
+            release.wait(timeout=10)
+            return {
+                "processed": 0,
+                "committed": 0,
+                "skipped": 0,
+                "errors": 0,
+                "restored": 0,
+                "total_findings": 2,
+            }
+
+        meta = RunMeta(
+            output_dir=Path("feedback"),
+            provider="opencode",
+            model="sonnet",
+            dry_run=False,
+            force=False,
+            skip_errors=False,
+            total_findings=2,
+            coding_agent="opencode (sonnet)",
+        )
+        app = ReviewActionApp(meta, pipeline)
+        try:
+            async with app.run_test():
+                assert app.query("#header-panel")
+                assert app.query("#results-panel")
+                assert app.query("#log-panel")
+                assert app.query("#results-log")
+                assert not app.query("#progress-panel")
+                assert not app.query("#summary-panel")
+                header = str(app.query_one("#header-meta", Static).content)
+                assert "feedback" in header
+                progress = str(app.query_one("#progress-label", Static).content)
+                assert "Processing" in progress
+                summary = str(app.query_one("#summary-strip", Static).content)
+                assert "Fixed" in summary
+        finally:
+            release.set()

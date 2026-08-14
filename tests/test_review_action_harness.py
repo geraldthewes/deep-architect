@@ -2135,6 +2135,44 @@ class TestProcessFindingsCallback:
         assert events[0].finding_id == "done-0"
         assert events[0].completed == 1
         assert events[0].total == 1
+        assert events[0].severity == ""
+        assert events[0].duration_s >= 0
         assert read_action_taken(rejected) is not None
         assert read_action_taken(rejected).status == "rejected"  # type: ignore[union-attr]
+
+    def test_on_result_includes_severity_and_duration(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+        completed = output_dir / "done-0.md"
+        completed.write_text(
+            VALID_COMMENT_MARKDOWN.replace(
+                "- **Type**: Comment\n",
+                "- **Severity**: high\n- **Type**: Comment\n",
+            )
+        )
+        write_action_taken(
+            completed,
+            FindingStatus(
+                status="completed",
+                timestamp="2026-01-01T00:00:00+00:00",
+                summary="already fixed",
+                commit_sha="abc12345",
+            ),
+        )
+
+        events: list[ProgressEvent] = []
+        agent = OpencodeAgent()
+        stats = process_findings(
+            output_dir,
+            agent,
+            0,
+            0.0,
+            HarnessConfig(),
+            on_result=events.append,
+        )
+
+        assert stats["restored"] == 1
+        assert len(events) == 1
+        assert events[0].severity == "high"
+        assert events[0].duration_s >= 0.0
 
