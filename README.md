@@ -694,9 +694,10 @@ Live progress counts **VALID findings only**. Analyzer verdicts of `REJECTED`, `
 - **Header** — feedback directory, coding agent/model, VALID finding count, and active flags (`dry-run`, `force`, `skip-errors`); live progress (count, elapsed, ETA, bar, current finding phase); live counters for Fixed, Skipped, Errors, Restored, and pending
 - **Results list** — scrollable list of each finished VALID finding (outcome, severity, duration seconds, id, file, summary/commit)
 - **Log pane** — harness and coding-agent log lines (truncated for display); full detail is also written to `<output-dir>/review-action.log`
-- **Keys** — `q` / Ctrl-C request a graceful stop after the current finding; `l` focuses the Log pane; `r` focuses Results
+- **Keys (during the run)** — `q` / Ctrl-C request a graceful stop after the current finding; `l` focuses the Log pane; `r` focuses Results
+- **Done screen** — after the last finding (and final `review-action_summary.md` write), the app stays up and shows this run’s summary. `q` / Ctrl-C quit; `b` one-way-launches `review-feedback-browse` on the output directory (action mode).
 
-Piped or CI runs (non-TTY) keep plain-text progress. Use `--tui` / `--no-tui` to override auto-detect. Disk output (`## Action Taken` blocks, `review-action_summary.md`, git commits) is the same in TUI and plain mode.
+Piped or CI runs (non-TTY) keep plain-text progress and print the full summary to stdout. Use `--tui` / `--no-tui` to override auto-detect. Disk output (`## Action Taken` blocks, `review-action_summary.md`, git commits) is the same in TUI and plain mode.
 
 ### Example
 
@@ -740,10 +741,11 @@ uv run review-feedback-browse feedback/
 
 ### Output
 
-`review-action` prints a summary of items processed, committed, skipped, and errors (plus
-a `Not actioned (non-VALID)` count when present), and writes the same counters plus a
-per-finding table to `<output-dir>/review-action_summary.md` (updated after every finding,
-so a crash mid-run still leaves an accurate record). The Findings table includes every
+`review-action` writes counters plus a per-finding table to
+`<output-dir>/review-action_summary.md` (updated after every finding, so a crash mid-run
+still leaves an accurate record). In the interactive TUI the same report is shown on the
+done screen (`q` quit, `b` browse); plain / `--no-tui` / non-TTY runs print the
+counters to stdout. The Findings table includes every
 finding file — Fixed, Error, Skipped, and Rejected (BACKLOG/REJECTED/…) — so non-VALID
 triage results remain auditable even though they never enter the live fix loop. Each run
 writes its own timestamped block — tagged with the coding agent/model that was used — and

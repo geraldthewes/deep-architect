@@ -6,19 +6,24 @@ import logging
 import threading
 from pathlib import Path
 
+import pytest
 from textual.widgets import Static
 
 from deep_architect.review_action_harness import ProgressEvent, RunMeta
 from deep_architect.review_action_tui import (
+    ActionTuiResult,
     LoggingCapture,
     ReviewActionApp,
     TuiLogHandler,
+    format_done_body,
     format_duration,
     format_header,
     format_log_line,
     format_progress_label,
     format_result_line,
     format_summary,
+    is_browse_available,
+    run_review_action_tui,
     truncate_message,
 )
 
@@ -235,6 +240,87 @@ class TestLoggingCapture:
         assert stream in root.handlers
         assert tui_handler not in root.handlers
         root.handlers.clear()
+
+
+class TestFormatDoneBody:
+    def test_includes_summary_and_path(self, tmp_path: Path) -> None:
+        summary = tmp_path / "review-action_summary.md"
+        body = format_done_body(
+            "# Review Action Summary\n\nCommitted:  1\n",
+            summary_path=summary,
+            browse_available=True,
+        )
+        assert "# Review Action Summary" in body
+        assert "Committed:  1" in body
+        assert f"Summary written to {summary}" in body
+        assert "q quit · b browse findings" in body
+
+    def test_omits_browse_when_unavailable(self) -> None:
+        body = format_done_body("hello", browse_available=False)
+        assert "hello" in body
+        assert "b browse" not in body
+        assert body.strip().endswith("q quit")
+
+    def test_includes_error(self) -> None:
+        body = format_done_body("", error="boom", browse_available=False)
+        assert "Pipeline failed: boom" in body
+        assert "q quit" in body
+
+
+class TestIsBrowseAvailable:
+    def test_true_when_summary_exists(self, tmp_path: Path) -> None:
+        summary = tmp_path / "review-action_summary.md"
+        summary.write_text("# Review Action Summary\n", encoding="utf-8")
+        assert (
+            is_browse_available(output_dir=tmp_path, summary_path=summary) is True
+        )
+
+    def test_true_when_action_taken_exists(self, tmp_path: Path) -> None:
+        (tmp_path / "abcd-0.md").write_text(
+            "# Finding\n\n## Action Taken\n\nStatus: completed\n",
+            encoding="utf-8",
+        )
+        assert (
+            is_browse_available(output_dir=tmp_path, summary_path=None) is True
+        )
+
+    def test_false_when_dir_missing(self, tmp_path: Path) -> None:
+        assert (
+            is_browse_available(
+                output_dir=tmp_path / "nope",
+                summary_path=None,
+            )
+            is False
+        )
+
+    def test_false_when_empty_dir(self, tmp_path: Path) -> None:
+        assert is_browse_available(output_dir=tmp_path, summary_path=None) is False
+
+
+class TestRunReviewActionTuiFallback:
+    def test_none_result_is_quit_interrupted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_run(self: ReviewActionApp) -> None:
+            return None
+
+        monkeypatch.setattr(ReviewActionApp, "run", fake_run)
+        meta = RunMeta(
+            output_dir=Path("feedback"),
+            provider="opencode",
+            model="sonnet",
+            dry_run=False,
+            force=False,
+            skip_errors=False,
+            total_findings=3,
+            coding_agent="opencode (sonnet)",
+        )
+        result = run_review_action_tui(meta, lambda _on_result, _on_phase: {})
+        assert isinstance(result, ActionTuiResult)
+        assert result.action == "quit"
+        assert result.stats["interrupted"] == 1
+        assert result.stats["total_findings"] == 3
+        assert result.summary_path is None
 
 
 class TestReviewActionAppLayout:

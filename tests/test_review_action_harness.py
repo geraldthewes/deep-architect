@@ -26,6 +26,7 @@ from deep_architect.review_action_harness import (
     RunMeta,
     _process_single_finding,
     build_detailed_summary,
+    current_run_summary_text,
     get_verdict,
     has_action_taken,
     is_valid_finding,
@@ -2029,6 +2030,42 @@ class TestSummaryFile:
         assert f"Run started:  {run2_started_at}" in final_text
         assert f"Coding agent: {run2_agent}" in final_text
         assert final_text.index(run1_started_at) < final_text.index(run2_started_at)
+
+
+class TestCurrentRunSummaryText:
+
+    def test_returns_only_latest_run_block(self, tmp_path: Path) -> None:
+        summary = tmp_path / "review-action_summary.md"
+        run1 = "2026-01-01 00:00:00 UTC"
+        run2 = "2026-01-02 00:00:00 UTC"
+        stats = {
+            "restored": 0,
+            "processed": 1,
+            "committed": 1,
+            "skipped": 0,
+            "errors": 0,
+            "total_findings": 1,
+            "interrupted": False,
+        }
+        write_summary_file(
+            stats, tmp_path, run_started_at=run1, coding_agent="opencode (sonnet)"
+        )
+        write_summary_file(
+            stats, tmp_path, run_started_at=run2, coding_agent="claude (opus)"
+        )
+        text = current_run_summary_text(summary, run2)
+        assert f"<!-- review-action-run: {run2} -->" in text
+        assert "claude (opus)" in text
+        assert f"<!-- review-action-run: {run1} -->" not in text
+        assert "opencode (sonnet)" not in text
+
+    def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        assert current_run_summary_text(tmp_path / "missing.md", "now") == ""
+
+    def test_unmarked_file_returns_full_text(self, tmp_path: Path) -> None:
+        summary = tmp_path / "review-action_summary.md"
+        summary.write_text("# leftover\nCommitted:  1\n", encoding="utf-8")
+        assert "leftover" in current_run_summary_text(summary, "2026-01-01 00:00:00 UTC")
 
 
 # ---------------------------------------------------------------------------

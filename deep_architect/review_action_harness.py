@@ -1308,6 +1308,23 @@ def write_summary_file(
         f.write("\n".join(lines))
 
 
+def current_run_summary_text(summary_path: Path, run_started_at: str) -> str:
+    """Return this run's block from ``review-action_summary.md``.
+
+    Prior-run blocks (everything before this run's marker) are omitted so the
+    TUI done screen shows only the just-finished run.
+    """
+    marker = f"<!-- review-action-run: {run_started_at} -->"
+    try:
+        text = summary_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    _, sep, rest = text.partition(marker)
+    if not sep:
+        return text.strip()
+    return (marker + rest).strip()
+
+
 def print_summary(
     stats: dict[str, int],
     output_dir: Path,
@@ -1457,35 +1474,79 @@ def main(argv: list[str] | None = None) -> int:
     stats: dict[str, int]
     if use_tui:
         # Lazy import keeps plain mode free of Textual at import time.
-        from deep_architect.review_action_tui import run_review_action_tui  # noqa: PLC0415
+        from deep_architect.review_action_tui import (  # noqa: PLC0415
+            ActionSummaryOutputs,
+            run_review_action_tui,
+        )
 
         log_file = args.output_dir / "review-action.log"
-        stats = run_review_action_tui(
+        finalize_box: list[ActionSummaryOutputs] = []
+
+        def _finalize(pipeline_stats: dict[str, int]) -> ActionSummaryOutputs:
+            write_summary_file(
+                pipeline_stats,
+                args.output_dir,
+                run_stats,
+                run_started_at=run_started_at,
+                coding_agent=coding_agent,
+            )
+            summary_path = args.output_dir / "review-action_summary.md"
+            outputs = ActionSummaryOutputs(
+                text=current_run_summary_text(summary_path, run_started_at),
+                summary_path=summary_path,
+            )
+            finalize_box.append(outputs)
+            return outputs
+
+        tui_result = run_review_action_tui(
             meta,
             _run_pipeline,
             log_level=log_level,
             log_file=log_file,
+            finalize=_finalize,
         )
+        stats = tui_result.stats
+
+        if tui_result.action == "browse" and args.output_dir.is_dir():
+            from deep_architect.review_feedback_browse import (  # noqa: PLC0415
+                run_feedback_browse,
+            )
+
+            return run_feedback_browse(args.output_dir, mode="action")
+
+        if not finalize_box:
+            # Force-closed or pipeline exception before finalize ran.
+            print_summary(
+                stats,
+                args.output_dir,
+                run_stats,
+                run_started_at=run_started_at,
+                coding_agent=coding_agent,
+            )
+        elif tui_result.summary_path is not None:
+            print(f"Summary written to {tui_result.summary_path}")
+
+        return 130 if stats["interrupted"] else (0 if stats["errors"] == 0 else 1)
+
+    reporter: ProgressReporter = PlainReporter()
+    reporter.start(meta)
+    stats = {
+        "processed": 0,
+        "committed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "restored": 0,
+        "not_actioned": 0,
+        "total_findings": total_findings,
+        "interrupted": 0,
+    }
+    try:
+        stats = _run_pipeline(reporter.on_result, reporter.on_phase)
+    except BaseException:
+        reporter.finish(stats)
+        raise
     else:
-        reporter: ProgressReporter = PlainReporter()
-        reporter.start(meta)
-        stats = {
-            "processed": 0,
-            "committed": 0,
-            "skipped": 0,
-            "errors": 0,
-            "restored": 0,
-            "not_actioned": 0,
-            "total_findings": total_findings,
-            "interrupted": 0,
-        }
-        try:
-            stats = _run_pipeline(reporter.on_result, reporter.on_phase)
-        except BaseException:
-            reporter.finish(stats)
-            raise
-        else:
-            reporter.finish(stats)
+        reporter.finish(stats)
 
     print_summary(
         stats, args.output_dir, run_stats, run_started_at=run_started_at, coding_agent=coding_agent
