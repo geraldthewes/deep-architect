@@ -27,3 +27,6 @@ review-feedback-browse:
 
 review-action:
     uv run review-action --help
+
+review-driver:
+    uv run review-driver --help

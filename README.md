@@ -38,7 +38,7 @@ just install    # or: uv sync && uv tool install --editable .
 
 `just install` does two things:
 - `uv sync` — sets up `deep-architect/.venv` for local development (tests, lint, type check)
-- `uv tool install --editable .` — installs `adversarial-architect`, `review-analyzer`, `review-feedback-browse`, and `review-action` into `~/.local/bin` (via `uv`'s isolated tool environments), so they're on your `PATH` in **any** terminal, in **any** repository. This matters because `review-action` and `review-analyzer` are meant to be run from inside the repo you're applying fixes to, not from inside `deep-architect` itself.
+- `uv tool install --editable .` — installs `adversarial-architect`, `review-analyzer`, `review-feedback-browse`, `review-action`, and `review-driver` into `~/.local/bin` (via `uv`'s isolated tool environments), so they're on your `PATH` in **any** terminal, in **any** repository. This matters because the review tools are meant to be run from inside the repo you're reviewing, not from inside `deep-architect` itself.
 
 `--editable` means source edits in `deep-architect/` are picked up immediately, with no reinstall needed. If you only ran `uv sync` (no `uv tool install`), the commands only exist inside `deep-architect/.venv/bin/` and must be invoked with `uv run <command>` from inside this directory — running them bare from another repo will fail with `command not found`.
 
@@ -49,6 +49,7 @@ adversarial-architect --help
 review-analyzer --help
 review-feedback-browse --help
 review-action --help
+review-driver --help
 ```
 
 ---
@@ -682,6 +683,7 @@ Defaults to `feedback/` if no directory is specified.
 | `--max-check-iterations <n>` | (from config) | Post-fix quality-check retry cap; `0` = run checks but never block or retry |
 | `--skip-llm-checks` | off | Run programmatic quality checks only, skip the LLM style-rule judge |
 | `--quality-checks <path>` | (auto-discovered) | Explicit path to a `.quality-checks.toml` file |
+| `--min-severity <low\|medium\|high>` | unset (no floor) | Skip `VALID` findings below this OCR severity. `review-driver` always passes `medium` |
 | `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
@@ -911,6 +913,94 @@ uv run review-action feedback/ --provider grok --model grok-build
 
 **Timeout.** Governed by the same `[thresholds] coding_agent_timeout` key as the other
 backends (default 300s when unset).
+
+---
+
+## Review Driver
+
+`review-driver` is the unattended PR-first orchestrator: it runs `ocr review` → `review-analyzer` → `review-action` for up to `--max-passes` iterations and stops when the count of high/medium `VALID` findings is 0 for K consecutive passes. It does **not** replace the analyzer or action CLIs; it calls them.
+
+The same command is used locally and in CI. There is no TUI and no confirm between passes.
+
+### Prerequisites
+
+- Run from the **application repo root**, on the PR branch, with a clean **tracked** tree (untracked files are allowed).
+- `ocr` (OpenCodeReview) on `PATH`. Override the binary with `OCR_BIN`.
+- **PROJ-0016** catalog/prior-feedback memory and **PROJ-0017** action gates (`--min-severity`) are required for the loop to terminate honestly. Without 0016, do not treat `converged` as “nothing left to discuss” — backlog themes can reappear as `VALID`. Without 0017 the driver will not start (it always passes `--min-severity medium` to `review-action`).
+- Add `.review-runs/` to the **application** `.gitignore`. Artifacts are CI-cacheable; committing them is the operator’s choice.
+
+### Usage
+
+```bash
+# on the PR branch, clean tree
+review-driver --source my-feature --target main --max-passes 5
+
+# CI (same command)
+review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
+```
+
+`--source` is the PR branch. `--target` defaults to `main`. These map onto OCR as `--target` → `ocr --from` and `--source` → `ocr --to`.
+
+`HEAD` must already equal `--source`. The driver does **not** checkout. Dirty **tracked** files outside the output directory are refused. Untracked files are not blocked, but `review-action` may commit every dirty file `get_modified_files` sees except the feedback dir — keep stray edits out of the tree.
+
+### Default output layout
+
+```text
+.review-runs/
+  progress.json
+  REPORT.md
+  logs/r1-ocr.log
+  logs/r1-analyzer.log
+  logs/r1-action.log
+  code-review-r1.json
+  feedback-r1/
+  code-review-r2.json
+  feedback-r2/
+```
+
+### CLI Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--source BRANCH` | (required) | PR branch or SHA; `HEAD` must already be this commit |
+| `--target BRANCH` | `main` | Base branch for the OCR diff (`ocr --from`) |
+| `--output-dir PATH` | `.review-runs` | Per-pass artifacts, progress, and `REPORT.md` |
+| `--max-passes N` | config / `5` | Safety cap on OCR→action passes |
+| `--zero-novelty-passes K` | config / `2` | Consecutive zero-novelty passes required to converge |
+| `--resume` | off | Continue from `progress.json`; fails fast if that file is missing |
+| `--exclude GLOB` | (none) | Repeatable; passed to `ocr` and `review-analyzer` |
+| `--knowledge-dir PATH` | `<cwd>/knowledge` | Catalog / backlog directory for the analyzer |
+| `--provider NAME` | (action default) | Passed through to `review-action` |
+| `--model NAME` | (action default) | Passed through to `review-action` |
+| `--config PATH` | XDG config if present | Missing file → defaults + warning (same as `review-action`) |
+| `--verbose` | off | DEBUG logging and tee child logs to stderr (still no TUI) |
+
+Thresholds also live under `[thresholds]` as `review_driver_max_passes` and `review_driver_zero_novelty_passes`.
+
+### Stop rule
+
+Stop when the count of this-pass **high/medium `VALID`** findings is 0 for K consecutive passes (default K=2), or `--max-passes` is hit. The driver never stops just because the OCR comment count is small, and it does **not** require OCR to be empty. Low-severity `VALID`, `BACKLOG`, `REJECTED`, `TIMEOUT`, and `DUPLICATE` are not novelty.
+
+### Terminal UX
+
+Quiet during a phase; one start line (`Pass 2/5 · OCR starting…`), then a compact summary after OCR, analyzer, and action, plus a pass rollup and a trend vs the previous pass (novelty, OCR high/med/low, VALID). Child live progress (`Processed 5/29`, per-finding action lines) is written only to `logs/`. `--verbose` tees those logs to stderr.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Converged **and** no recorded `review-action` errors across passes |
+| `1` | Preflight failure, a hard step fail, `max_passes` with novelty remaining, or any action errors (including converged-with-errors) |
+| `130` | Interrupted (Ctrl-C); `--resume` restarts the incomplete pass |
+
+### Failure modes
+
+- `ocr` missing from `PATH`
+- `--source` / `--target` do not resolve, or `HEAD` is not `--source`
+- Dirty tracked files outside the output directory
+- OCR or analyzer hard-fail (non-zero, including interrupt)
+- `--resume` with no `progress.json`
+- Max-passes reached with remaining high/medium `VALID`
 
 ---
 

@@ -85,6 +85,18 @@ def _sigint_handler(signum: int, frame: object) -> None:
 
 DEFAULT_OUTPUT_DIR = Path("feedback")
 
+# OCR severity rank for --min-severity. Missing / unknown ranks as 0 and
+# never meets an explicit floor.
+_SEVERITY_RANK: dict[str, int] = {"low": 1, "medium": 2, "high": 3}
+MIN_SEVERITY_CHOICES: tuple[str, ...] = ("low", "medium", "high")
+
+
+def severity_meets_floor(severity: str, min_severity: str) -> bool:
+    """True when *severity* is at or above the --min-severity floor."""
+    rank = _SEVERITY_RANK.get(severity.strip().lower(), 0)
+    floor = _SEVERITY_RANK[min_severity]
+    return rank >= floor
+
 
 def _exclude_output_dir(paths: list[Path], output_dir: Path) -> list[Path]:
     """Drop paths under output_dir.
@@ -864,6 +876,7 @@ def process_findings(
     skip_errors: bool = False,
     skip_llm_checks: bool = False,
     quality_checks_override: Path | None = None,
+    min_severity: str | None = None,
     *,
     run_started_at: str | None = None,
     coding_agent: str | None = None,
@@ -1025,6 +1038,41 @@ def process_findings(
                     md_file.name,
                 )
 
+        if min_severity is not None and not severity_meets_floor(severity, min_severity):
+            skip_msg = (
+                f"Skipped: below severity floor "
+                f"({severity or 'unknown'} < {min_severity})"
+            )
+            logger.info("%s: %s", md_file.name, skip_msg)
+            write_action_taken(
+                md_file,
+                FindingStatus(
+                    status="skipped",
+                    timestamp=_now_iso(),
+                    summary=skip_msg,
+                ),
+            )
+            stats["skipped"] += 1
+            completed += 1
+            write_summary_file(
+                stats, output_dir, run_started_at=run_started_at, coding_agent=coding_agent
+            )
+            _emit_result(
+                on_result,
+                completed=completed,
+                total=total,
+                finding_id=md_file.stem,
+                file_path=file_path,
+                outcome="skipped",
+                summary=skip_msg,
+                commit_sha=None,
+                t0=t0,
+                stats=stats,
+                severity=severity,
+                duration_s=time.monotonic() - finding_t0,
+            )
+            continue
+
         stats["processed"] += 1
 
         status, committed, error = _process_single_finding(
@@ -1170,6 +1218,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="Explicit path to a .quality-checks.toml file (overrides auto-discovery)",
+    )
+    parser.add_argument(
+        "--min-severity",
+        choices=MIN_SEVERITY_CHOICES,
+        default=None,
+        help=(
+            "Skip VALID findings below this OCR severity "
+            "(low, medium, high). Unset = no severity floor"
+        ),
     )
     tui_group = parser.add_mutually_exclusive_group()
     tui_group.add_argument(
@@ -1465,6 +1522,7 @@ def main(argv: list[str] | None = None) -> int:
             skip_errors=args.skip_errors,
             skip_llm_checks=args.skip_llm_checks,
             quality_checks_override=args.quality_checks,
+            min_severity=args.min_severity,
             run_started_at=run_started_at,
             coding_agent=coding_agent,
             on_result=on_result,

@@ -179,6 +179,14 @@ def test_threshold_review_analyzer_timeout_default() -> None:
     assert cfg.review_analyzer_timeout == 300
 
 
+def test_threshold_review_driver_defaults() -> None:
+    from deep_architect.config import ThresholdConfig
+
+    cfg = ThresholdConfig()
+    assert cfg.review_driver_max_passes == 5
+    assert cfg.review_driver_zero_novelty_passes == 2
+
+
 def test_load_config_with_review_analyzer_timeout(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text("""

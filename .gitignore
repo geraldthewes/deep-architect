@@ -37,3 +37,6 @@ env/
 
 # Checkpoints (transient — safe to delete between runs)
 .checkpoints/
+
+# review-driver artifacts (dogfood the application-repo convention)
+.review-runs/

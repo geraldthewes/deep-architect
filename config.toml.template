@@ -51,3 +51,6 @@ judge_parse_retries          = 2    # LLM style-judge JSON parse retries (attemp
 # review-analyzer: per-attempt opencode wall-clock limit (seconds).
 # Override with CLI --timeout or env REVIEW_ANALYZER_TIMEOUT (those win over this).
 review_analyzer_timeout      = 300
+# review-driver: outer-loop stop caps (CLI --max-passes / --zero-novelty-passes override)
+review_driver_max_passes            = 5
+review_driver_zero_novelty_passes   = 2

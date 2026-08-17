@@ -35,6 +35,7 @@ from deep_architect.review_action_harness import (
     print_summary,
     process_findings,
     read_action_taken,
+    severity_meets_floor,
     should_use_tui,
     write_action_taken,
     write_summary_file,
@@ -515,6 +516,67 @@ class TestProcessFindings:
         assert stats["total_findings"] == 1
         assert stats["processed"] == 1
         assert not has_action_taken(summary_file)
+
+    def test_min_severity_skips_low_and_unknown(self, tmp_path: Path) -> None:
+        """--min-severity medium skips low / missing severity; high+medium proceed."""
+        output_dir = tmp_path / "feedback"
+        output_dir.mkdir()
+        (output_dir / "high-0.md").write_text(
+            VALID_COMMENT_MARKDOWN.replace(
+                "- **Type**: Comment\n",
+                "- **Severity**: high\n- **Type**: Comment\n",
+            )
+        )
+        (output_dir / "med-0.md").write_text(
+            VALID_COMMENT_MARKDOWN.replace(
+                "- **Type**: Comment\n",
+                "- **Severity**: medium\n- **Type**: Comment\n",
+            )
+        )
+        (output_dir / "low-0.md").write_text(
+            VALID_COMMENT_MARKDOWN.replace(
+                "- **Type**: Comment\n",
+                "- **Severity**: low\n- **Type**: Comment\n",
+            )
+        )
+        (output_dir / "unknown-0.md").write_text(VALID_COMMENT_MARKDOWN)
+
+        agent = OpencodeAgent()
+        agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=_mock_repo(tmp_path),
+            ),
+            patch(
+                "deep_architect.review_action_harness.get_modified_files",
+                return_value=[],
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit",
+                return_value=True,
+            ),
+        ):
+            stats = process_findings(
+                output_dir,
+                agent,
+                0,
+                0.0,
+                HarnessConfig(),
+                min_severity="medium",
+            )
+
+        assert stats["skipped"] == 2
+        assert stats["processed"] == 2
+        assert stats["committed"] == 2
+        assert agent.apply_fix.await_count == 2
+        low_status = read_action_taken(output_dir / "low-0.md")
+        assert low_status is not None
+        assert low_status.status == "skipped"
+        assert "below severity floor" in low_status.summary
+        unknown_status = read_action_taken(output_dir / "unknown-0.md")
+        assert unknown_status is not None
+        assert unknown_status.status == "skipped"
 
     def test_dry_run_commits_without_changes(self, tmp_path: Path) -> None:
         """Test dry-run mode counts as committed but makes no changes."""
@@ -1748,6 +1810,15 @@ class TestProcessFindingsPersistence:
 # ---------------------------------------------------------------------------
 
 
+class TestSeverityMeetsFloor:
+    def test_medium_floor(self) -> None:
+        assert severity_meets_floor("high", "medium") is True
+        assert severity_meets_floor("medium", "medium") is True
+        assert severity_meets_floor("low", "medium") is False
+        assert severity_meets_floor("", "medium") is False
+        assert severity_meets_floor("unknown", "medium") is False
+
+
 class TestParseArgs:
 
     def test_provider_grok_accepted(self) -> None:
@@ -1769,6 +1840,18 @@ class TestParseArgs:
     def test_tui_mutual_exclusion(self) -> None:
         with pytest.raises(SystemExit):
             parse_args(["feedback/", "--tui", "--no-tui"])
+
+    def test_min_severity_medium(self) -> None:
+        args = parse_args(["feedback/", "--min-severity", "medium"])
+        assert args.min_severity == "medium"
+
+    def test_min_severity_default_unset(self) -> None:
+        args = parse_args(["feedback/"])
+        assert args.min_severity is None
+
+    def test_min_severity_rejects_unknown(self) -> None:
+        with pytest.raises(SystemExit):
+            parse_args(["feedback/", "--min-severity", "critical"])
 
 
 # ---------------------------------------------------------------------------

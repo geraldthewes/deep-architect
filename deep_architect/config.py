@@ -47,6 +47,9 @@ class ThresholdConfig(BaseModel):
     # review-analyzer: wall-clock limit per opencode attempt (seconds);
     # CLI --timeout and env REVIEW_ANALYZER_TIMEOUT override this when set
     review_analyzer_timeout: int = 300
+    # review-driver: outer-loop caps (CLI --max-passes / --zero-novelty-passes override)
+    review_driver_max_passes: int = 5
+    review_driver_zero_novelty_passes: int = 2
 
 
 def _default_generator() -> AgentConfig:
