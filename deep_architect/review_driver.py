@@ -10,8 +10,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -317,6 +318,103 @@ def format_pass_table(progress: DriverProgress) -> str:
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class DriverRunMeta:
+    """Immutable run metadata shown in the progress header."""
+
+    source: str
+    target: str
+    source_sha: str
+    target_sha: str
+    max_passes: int
+    k: int
+    output_dir: Path
+    resume: bool = False
+
+
+class ProgressReporter(Protocol):
+    """Progress sink used by the driver loop (plain text or TUI)."""
+
+    def start(self, meta: DriverRunMeta) -> None:
+        """Called once before the first pass."""
+
+    def phase_start(self, pass_index: int, max_passes: int, phase: str) -> None:
+        """Called when a phase (ocr / analyzer / action) begins."""
+
+    def phase_done(self, line: str) -> None:
+        """Called with a formatted phase-summary line."""
+
+    def pass_done(
+        self, rollup: str, trend: str | None, progress: DriverProgress
+    ) -> None:
+        """Called after a completed pass rollup (and optional trend)."""
+
+    def finish(self, progress: DriverProgress) -> None:
+        """Called once when the loop stops (converged, max-passes, or failed)."""
+
+
+class PlainReporter:
+    """Plain-text progress reporter for non-interactive terminals and CI."""
+
+    def start(self, meta: DriverRunMeta) -> None:
+        _ = meta
+
+    def phase_start(self, pass_index: int, max_passes: int, phase: str) -> None:
+        if phase == "ocr":
+            print(format_pass_header(pass_index, max_passes))
+            print("OCR starting…")
+            print()
+        elif phase == "analyzer":
+            print("Analyzer starting…")
+        elif phase == "action":
+            print("Action starting…")
+
+    def phase_done(self, line: str) -> None:
+        print(line)
+
+    def pass_done(
+        self, rollup: str, trend: str | None, progress: DriverProgress
+    ) -> None:
+        _ = progress
+        print()
+        print(rollup)
+        if trend is not None:
+            print(trend)
+        print(PASS_FOOTER)
+
+    def finish(self, progress: DriverProgress) -> None:
+        print(format_stop_line(progress.status, progress.k))
+        print()
+        print(format_pass_table(progress))
+
+
+def should_use_tui(
+    *,
+    force_tui: bool | None = None,
+    stream: TextIO | None = None,
+) -> bool:
+    """Return whether the live TUI should be used.
+
+    *force_tui* is ``True`` for ``--tui``, ``False`` for ``--no-tui``, and
+    ``None`` for auto-detect via ``stream.isatty()`` (default: stdout).
+    """
+    if force_tui is True:
+        return True
+    if force_tui is False:
+        return False
+    target = stream if stream is not None else sys.stdout
+    return bool(target.isatty())
+
+
+def _force_tui_from_args(args: argparse.Namespace) -> bool | None:
+    """Map ``--tui`` / ``--no-tui`` to a force flag for :func:`should_use_tui`."""
+    if getattr(args, "tui", False):
+        return True
+    if getattr(args, "no_tui", False):
+        return False
+    return None
+
+
 def write_driver_report(output_dir: Path, progress: DriverProgress) -> Path:
     """Refresh REPORT.md from *progress* so a crash still has a partial report."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -426,6 +524,7 @@ def _fail_pass(
     phase_seconds: dict[str, float],
     wall_seconds: float,
     action_errors: int = 0,
+    reporter: ProgressReporter | None = None,
 ) -> DriverProgress:
     progress.passes.append(
         DriverPassRecord(
@@ -444,9 +543,8 @@ def _fail_pass(
     progress.status = "failed"
     save_driver_progress(output_dir, progress)
     write_driver_report(output_dir, progress)
-    print(format_stop_line(progress.status, progress.k))
-    print()
-    print(format_pass_table(progress))
+    sink: ProgressReporter = reporter if reporter is not None else PlainReporter()
+    sink.finish(progress)
     return progress
 
 
@@ -463,6 +561,7 @@ def run_driver(
     exclude: list[str] | None = None,
     source_sha: str = "",
     target_sha: str = "",
+    reporter: ProgressReporter | None = None,
 ) -> DriverProgress:
     """Run OCR → analyzer → action until stop predicates fire.
 
@@ -472,6 +571,19 @@ def run_driver(
     exclude_globs = list(exclude) if exclude is not None else []
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    sink: ProgressReporter = reporter if reporter is not None else PlainReporter()
+    sink.start(
+        DriverRunMeta(
+            source=source,
+            target=target,
+            source_sha=source_sha,
+            target_sha=target_sha,
+            max_passes=max_passes,
+            k=k,
+            output_dir=output_dir,
+            resume=resume,
+        )
+    )
 
     if resume:
         progress_path = output_dir / PROGRESS_FILENAME
@@ -522,11 +634,10 @@ def run_driver(
                     feedback_dir=feedback_dir,
                     phase_seconds={},
                     wall_seconds=0.0,
+                    reporter=sink,
                 )
 
-            print(format_pass_header(pass_index, max_passes))
-            print("OCR starting…")
-            print()
+            sink.phase_start(pass_index, max_passes, "ocr")
             t_ocr = time.monotonic()
             ocr_rc = runners.run_ocr(
                 source=source,
@@ -547,13 +658,14 @@ def run_driver(
                     feedback_dir=feedback_dir,
                     phase_seconds={"ocr": ocr_wall},
                     wall_seconds=ocr_wall,
+                    reporter=sink,
                 )
 
             ocr_stats = parse_ocr_run_stats(ocr_json)
             ocr_severity = count_ocr_comments_by_severity(ocr_json)
-            print(format_ocr_summary(ocr_stats, ocr_severity, ocr_wall))
+            sink.phase_done(format_ocr_summary(ocr_stats, ocr_severity, ocr_wall))
 
-            print("Analyzer starting…")
+            sink.phase_start(pass_index, max_passes, "analyzer")
             t_an = time.monotonic()
             analyzer_rc = runners.run_analyzer(
                 ocr_json=ocr_json,
@@ -577,13 +689,16 @@ def run_driver(
                     feedback_dir=feedback_dir,
                     phase_seconds={"ocr": ocr_wall, "analyzer": analyzer_wall},
                     wall_seconds=ocr_wall + analyzer_wall,
+                    reporter=sink,
                 )
 
             verdicts = count_verdicts(feedback_dir)
             valid_by_sev = count_valid_by_severity(feedback_dir)
-            print(format_analyzer_summary(verdicts, valid_by_sev, analyzer_wall))
+            sink.phase_done(
+                format_analyzer_summary(verdicts, valid_by_sev, analyzer_wall)
+            )
 
-            print("Action starting…")
+            sink.phase_start(pass_index, max_passes, "action")
             t_act = time.monotonic()
             action_rc = runners.run_action(feedback_dir=feedback_dir)
             action_wall = time.monotonic() - t_act
@@ -607,12 +722,13 @@ def run_driver(
                     },
                     wall_seconds=ocr_wall + analyzer_wall + action_wall,
                     action_errors=errors,
+                    reporter=sink,
                 )
 
             committed, skipped, errors, cost_usd = _load_action_pass_stats(
                 feedback_dir, action_rc
             )
-            print(
+            sink.phase_done(
                 format_action_summary(
                     committed, skipped, errors, cost_usd, action_wall
                 )
@@ -651,20 +767,18 @@ def run_driver(
             )
             progress.current_pass = pass_index
 
-            print()
-            print(
+            previous = _previous_complete(progress, pass_index)
+            sink.pass_done(
                 format_pass_rollup(
                     pass_index,
                     novelty,
                     progress.consecutive_zero_novelty,
                     k,
                     wall,
-                )
+                ),
+                format_trend(previous, record) if previous is not None else None,
+                progress,
             )
-            previous = _previous_complete(progress, pass_index)
-            if previous is not None:
-                print(format_trend(previous, record))
-            print(PASS_FOOTER)
 
             reason = decide_stop(
                 novelty_history=progress.novelty_history,
@@ -688,9 +802,7 @@ def run_driver(
         write_driver_report(output_dir, progress)
         raise
 
-    print(format_stop_line(progress.status, k))
-    print()
-    print(format_pass_table(progress))
+    sink.finish(progress)
     return progress
 
 
@@ -822,7 +934,13 @@ def _ocr_log_path(output_json: Path) -> Path:
     return output_json.parent / "logs" / f"r{_pass_index_from_artifact(output_json)}-ocr.log"
 
 
-def _append_log(log_path: Path, text: str, *, tee: bool) -> None:
+def _append_log(
+    log_path: Path,
+    text: str,
+    *,
+    tee: bool,
+    on_child_log: Callable[[str], None] | None = None,
+) -> None:
     if not text:
         return
     payload = text if text.endswith("\n") else text + "\n"
@@ -831,12 +949,35 @@ def _append_log(log_path: Path, text: str, *, tee: bool) -> None:
         fh.write(payload)
     if tee:
         sys.stderr.write(payload)
+    if on_child_log is not None:
+        on_child_log(payload)
+
+
+class ChildLogFanout:
+    """Optional sink for child stdout/stderr lines (TUI log pane)."""
+
+    def __init__(self) -> None:
+        self._sink: Callable[[str], None] | None = None
+
+    def set_sink(self, sink: Callable[[str], None] | None) -> None:
+        self._sink = sink
+
+    def emit(self, text: str) -> None:
+        sink = self._sink
+        if sink is not None and text:
+            sink(text)
+
+
+class _Writable(Protocol):
+    def write(self, data: str) -> int: ...
+
+    def flush(self) -> None: ...
 
 
 class _Tee:
     """Write to several streams; never a TTY so child CLIs stay --no-tui."""
 
-    def __init__(self, *streams: TextIO) -> None:
+    def __init__(self, *streams: _Writable) -> None:
         self._streams = streams
 
     def write(self, data: str) -> int:
@@ -852,14 +993,49 @@ class _Tee:
         return False
 
 
+class _CallbackStream:
+    """Line-buffered TextIO that forwards writes to a callback. Never a TTY."""
+
+    def __init__(self, callback: Callable[[str], None]) -> None:
+        self._callback = callback
+        self._buf = ""
+
+    def write(self, data: str) -> int:
+        if not data:
+            return 0
+        self._buf += data
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            self._callback(line + "\n")
+        return len(data)
+
+    def flush(self) -> None:
+        if self._buf:
+            self._callback(self._buf)
+            self._buf = ""
+
+    def isatty(self) -> bool:
+        return False
+
+
 @contextmanager
-def _redirect_stdio(log_path: Path, *, tee: bool) -> Iterator[None]:
+def _redirect_stdio(
+    log_path: Path,
+    *,
+    tee: bool,
+    on_child_log: Callable[[str], None] | None = None,
+) -> Iterator[None]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = log_path.open("a", encoding="utf-8")
     old_out, old_err = sys.stdout, sys.stderr
+    extras: list[_Writable] = []
     if tee:
-        sys.stdout = _Tee(log_file, old_err)
-        sys.stderr = _Tee(log_file, old_err)
+        extras.append(old_err)
+    if on_child_log is not None:
+        extras.append(_CallbackStream(on_child_log))
+    if extras:
+        sys.stdout = _Tee(log_file, *extras)
+        sys.stderr = _Tee(log_file, *extras)
     else:
         sys.stdout = log_file
         sys.stderr = log_file
@@ -896,8 +1072,13 @@ def run_ocr_subprocess(
     ocr_bin: str = DEFAULT_OCR_BIN,
     log_path: Path | None = None,
     verbose: bool = False,
+    on_child_log: Callable[[str], None] | None = None,
 ) -> int:
-    """Run ``ocr review`` with ``--from`` = target and ``--to`` = source."""
+    """Run ``ocr review`` with ``--from`` = target and ``--to`` = source.
+
+    JSON is collected from stdout. stderr is streamed live into the log
+    (and optional *on_child_log*) so a long review is not a black box.
+    """
     cmd = [
         ocr_bin,
         "review",
@@ -918,34 +1099,74 @@ def run_ocr_subprocess(
     log = log_path if log_path is not None else _ocr_log_path(output_json)
     timeout = _ocr_timeout_seconds()
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             cwd=cwd,
         )
     except FileNotFoundError:
         logger.error("ocr binary not found: %s", ocr_bin)
-        _append_log(log, f"ocr binary not found: {ocr_bin}\n", tee=verbose)
-        return 1
-    except subprocess.TimeoutExpired:
-        logger.error("ocr timed out after %s seconds", timeout)
-        _append_log(log, f"ocr timed out after {timeout} seconds\n", tee=verbose)
+        _append_log(
+            log,
+            f"ocr binary not found: {ocr_bin}\n",
+            tee=verbose,
+            on_child_log=on_child_log,
+        )
         return 1
 
-    if result.stderr:
-        _append_log(log, result.stderr, tee=verbose)
-    if result.returncode != 0:
-        logger.error("ocr exited %s", result.returncode)
-        return result.returncode if result.returncode else 1
-    if not result.stdout.strip():
+    stdout_chunks: list[str] = []
+
+    def _pump_stdout() -> None:
+        if proc.stdout is None:
+            return
+        stdout_chunks.append(proc.stdout.read())
+
+    def _pump_stderr() -> None:
+        if proc.stderr is None:
+            return
+        for line in proc.stderr:
+            _append_log(log, line, tee=verbose, on_child_log=on_child_log)
+
+    out_thread = threading.Thread(target=_pump_stdout, daemon=True)
+    err_thread = threading.Thread(target=_pump_stderr, daemon=True)
+    out_thread.start()
+    err_thread.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logger.error("ocr timed out after %s seconds", timeout)
+        proc.kill()
+        out_thread.join(timeout=1)
+        err_thread.join(timeout=1)
+        _append_log(
+            log,
+            f"ocr timed out after {timeout} seconds\n",
+            tee=verbose,
+            on_child_log=on_child_log,
+        )
+        return 1
+    out_thread.join(timeout=1)
+    err_thread.join(timeout=1)
+
+    stdout = "".join(stdout_chunks)
+    rc = proc.returncode if proc.returncode is not None else 1
+    if rc != 0:
+        logger.error("ocr exited %s", rc)
+        return rc if rc else 1
+    if not stdout.strip():
         logger.error("ocr produced empty stdout")
-        _append_log(log, "ocr produced empty stdout\n", tee=verbose)
+        _append_log(
+            log,
+            "ocr produced empty stdout\n",
+            tee=verbose,
+            on_child_log=on_child_log,
+        )
         return 1
 
     output_json.parent.mkdir(parents=True, exist_ok=True)
-    output_json.write_text(result.stdout, encoding="utf-8")
+    output_json.write_text(stdout, encoding="utf-8")
     return 0
 
 
@@ -958,6 +1179,7 @@ def run_analyzer_main(
     exclude: list[str],
     output_dir: Path,
     verbose: bool = False,
+    on_child_log: Callable[[str], None] | None = None,
 ) -> int:
     from deep_architect.review_analyzer import main as analyzer_main
 
@@ -976,7 +1198,7 @@ def run_analyzer_main(
 
     pass_index = _pass_index_from_artifact(feedback_dir)
     log_path = output_dir / "logs" / f"r{pass_index}-analyzer.log"
-    with _redirect_stdio(log_path, tee=verbose):
+    with _redirect_stdio(log_path, tee=verbose, on_child_log=on_child_log):
         return _call_inprocess_main(analyzer_main, argv)
 
 
@@ -988,6 +1210,7 @@ def run_action_main(
     provider: str | None = None,
     model: str | None = None,
     config: Path | None = None,
+    on_child_log: Callable[[str], None] | None = None,
 ) -> int:
     from deep_architect.review_action_harness import main as action_main
 
@@ -1006,7 +1229,7 @@ def run_action_main(
 
     pass_index = _pass_index_from_artifact(feedback_dir)
     log_path = output_dir / "logs" / f"r{pass_index}-action.log"
-    with _redirect_stdio(log_path, tee=verbose):
+    with _redirect_stdio(log_path, tee=verbose, on_child_log=on_child_log):
         return _call_inprocess_main(action_main, argv)
 
 
@@ -1021,6 +1244,7 @@ class ProductionRunners:
     provider: str | None = None
     model: str | None = None
     config: Path | None = None
+    on_child_log: Callable[[str], None] | None = None
 
     def run_ocr(
         self, *, source: str, target: str, output_json: Path, exclude: list[str]
@@ -1033,6 +1257,7 @@ class ProductionRunners:
             cwd=self.cwd,
             ocr_bin=self.ocr_bin,
             verbose=self.verbose,
+            on_child_log=self.on_child_log,
         )
 
     def run_analyzer(
@@ -1052,6 +1277,7 @@ class ProductionRunners:
             exclude=exclude,
             output_dir=self.output_dir,
             verbose=self.verbose,
+            on_child_log=self.on_child_log,
         )
 
     def run_action(self, *, feedback_dir: Path) -> int:
@@ -1062,6 +1288,7 @@ class ProductionRunners:
             provider=self.provider,
             model=self.model,
             config=self.config,
+            on_child_log=self.on_child_log,
         )
 
 
@@ -1141,7 +1368,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="DEBUG logging and tee child logs to stderr (still no TUI)",
+        help="DEBUG logging; tee child logs to stderr in plain mode",
+    )
+    tui_group = parser.add_mutually_exclusive_group()
+    tui_group.add_argument(
+        "--tui",
+        action="store_true",
+        help="Force the interactive full-screen TUI dashboard",
+    )
+    tui_group.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="Force plain-text progress (disable TUI auto-detect)",
     )
     return parser.parse_args(argv)
 
@@ -1169,12 +1407,19 @@ def _driver_exit_code(progress: DriverProgress, *, interrupted: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for ``review-driver``. Always unattended; no TUI."""
+    """Entry point for ``review-driver``.
+
+    TTY auto-starts the observational TUI; CI / pipes stay plain-text.
+    The loop itself is unattended (no confirm between passes).
+    """
     global _interrupt_requested
     _interrupt_requested = False
     signal.signal(signal.SIGINT, _sigint_handler)
 
     args = parse_args(argv)
+
+    force_tui = _force_tui_from_args(args)
+    use_tui = should_use_tui(force_tui=force_tui)
 
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
@@ -1208,6 +1453,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    child_logs = ChildLogFanout()
     runners = ProductionRunners(
         cwd=cwd,
         output_dir=args.output_dir,
@@ -1216,10 +1462,11 @@ def main(argv: list[str] | None = None) -> int:
         provider=args.provider,
         model=args.model,
         config=args.config,
+        on_child_log=child_logs.emit,
     )
 
-    try:
-        progress = run_driver(
+    def _run_pipeline(reporter: ProgressReporter) -> DriverProgress:
+        return run_driver(
             source=args.source,
             target=args.target,
             output_dir=args.output_dir,
@@ -1231,7 +1478,52 @@ def main(argv: list[str] | None = None) -> int:
             exclude=args.exclude,
             source_sha=source_sha,
             target_sha=target_sha,
+            reporter=reporter,
         )
+
+    try:
+        if use_tui:
+            from deep_architect.review_driver_tui import (  # noqa: PLC0415
+                last_feedback_dir,
+                run_review_driver_tui,
+            )
+
+            meta = DriverRunMeta(
+                source=args.source,
+                target=args.target,
+                source_sha=source_sha,
+                target_sha=target_sha,
+                max_passes=max_passes,
+                k=k,
+                output_dir=args.output_dir,
+                resume=args.resume,
+            )
+
+            def _finalize(progress: DriverProgress) -> Path:
+                return write_driver_report(args.output_dir, progress)
+
+            tui_result = run_review_driver_tui(
+                meta,
+                _run_pipeline,
+                log_level=log_level,
+                log_file=args.output_dir / "review-driver.log",
+                finalize=_finalize,
+                attach_child_logs=child_logs.set_sink,
+            )
+            browse_dir = last_feedback_dir(tui_result.progress)
+            if tui_result.action == "browse" and browse_dir is not None:
+                from deep_architect.review_feedback_browse import (  # noqa: PLC0415
+                    run_feedback_browse,
+                )
+
+                return run_feedback_browse(browse_dir, mode="action")
+            if tui_result.report_path is not None:
+                print(f"Report written to {tui_result.report_path}")
+            return _driver_exit_code(
+                tui_result.progress, interrupted=_interrupt_requested
+            )
+
+        progress = _run_pipeline(PlainReporter())
     except FileNotFoundError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

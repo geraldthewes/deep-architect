@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -26,6 +28,7 @@ from deep_architect.review_driver import (
     run_driver,
     run_ocr_subprocess,
     save_driver_progress,
+    should_use_tui,
 )
 from deep_architect.review_novelty import OcrRunStats
 
@@ -333,6 +336,20 @@ class TestRunDriver:
         assert "Applying fixes" not in out
 
 
+class _FakePopen:
+    """Minimal Popen stand-in for OCR runner tests."""
+
+    def __init__(self, *, stdout: str, stderr: str) -> None:
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
+        self.returncode = 0
+        self.kill = MagicMock()
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        return self.returncode
+
+
 # ---------------------------------------------------------------------------
 # Preflight + production runners (Phase 3)
 # ---------------------------------------------------------------------------
@@ -476,8 +493,8 @@ class TestPreflight:
 class TestProductionRunners:
     def test_ocr_argv_from_target_to_source(self, tmp_path: Path) -> None:
         output_json = tmp_path / "code-review-r1.json"
-        completed = MagicMock(returncode=0, stdout='{"comments":[]}\n', stderr="")
-        with patch("deep_architect.review_driver.subprocess.run", return_value=completed) as mocked:
+        fake = _FakePopen(stdout='{"comments":[]}\n', stderr="")
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake) as mocked:
             rc = run_ocr_subprocess(
                 source="feat",
                 target="main",
@@ -495,6 +512,47 @@ class TestProductionRunners:
         assert "--audience" in argv and argv[argv.index("--audience") + 1] == "agent"
         assert argv[argv.index("--exclude") + 1] == "**/generated/*"
         assert output_json.read_text(encoding="utf-8") == '{"comments":[]}\n'
+
+    def test_ocr_streams_stderr_to_log_and_callback(self, tmp_path: Path) -> None:
+        output_json = tmp_path / "code-review-r1.json"
+        seen: list[str] = []
+        fake = _FakePopen(
+            stdout='{"comments":[]}\n',
+            stderr="ocr: reviewing 3 files\n",
+        )
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake):
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+                on_child_log=seen.append,
+            )
+        assert rc == 0
+        log_text = (tmp_path / "logs" / "r1-ocr.log").read_text(encoding="utf-8")
+        assert "ocr: reviewing 3 files" in log_text
+        assert any("ocr: reviewing 3 files" in chunk for chunk in seen)
+
+    def test_ocr_timeout_returns_1(self, tmp_path: Path) -> None:
+        output_json = tmp_path / "code-review-r1.json"
+        fake = _FakePopen(stdout="", stderr="")
+        fake.wait = MagicMock(side_effect=subprocess.TimeoutExpired("ocr", 1))
+        with (
+            patch("deep_architect.review_driver.subprocess.Popen", return_value=fake),
+            patch("deep_architect.review_driver._ocr_timeout_seconds", return_value=0.01),
+        ):
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+            )
+        assert rc == 1
+        fake.kill.assert_called_once()
 
     def test_analyzer_argv_has_no_tui_and_prior(self, tmp_path: Path) -> None:
         ocr_json = tmp_path / "code-review-r2.json"
@@ -536,6 +594,24 @@ class TestProductionRunners:
         assert str(feedback) in argv
 
 
+class TestShouldUseTui:
+    def test_force_true(self) -> None:
+        assert should_use_tui(force_tui=True) is True
+
+    def test_force_false(self) -> None:
+        assert should_use_tui(force_tui=False) is False
+
+    def test_auto_tty(self) -> None:
+        stream = MagicMock()
+        stream.isatty.return_value = True
+        assert should_use_tui(force_tui=None, stream=stream) is True
+
+    def test_auto_non_tty(self) -> None:
+        stream = MagicMock()
+        stream.isatty.return_value = False
+        assert should_use_tui(force_tui=None, stream=stream) is False
+
+
 class TestParseArgs:
     def test_source_required_target_and_output_defaults(self) -> None:
         args = parse_args(["--source", "feat"])
@@ -550,6 +626,18 @@ class TestParseArgs:
     def test_output_dir_override(self) -> None:
         args = parse_args(["--source", "feat", "--output-dir", "other/"])
         assert args.output_dir == Path("other/")
+
+    def test_tui_flags(self) -> None:
+        args = parse_args(["--source", "feat", "--tui"])
+        assert args.tui is True
+        assert args.no_tui is False
+        args = parse_args(["--source", "feat", "--no-tui"])
+        assert args.tui is False
+        assert args.no_tui is True
+
+    def test_tui_mutual_exclusion(self) -> None:
+        with pytest.raises(SystemExit):
+            parse_args(["--source", "feat", "--tui", "--no-tui"])
 
 
 class TestMain:
@@ -571,7 +659,16 @@ class TestMain:
             ),
             patch("deep_architect.review_driver.run_driver", return_value=progress) as mocked,
         ):
-            rc = main(["--source", "feat", "--resume", "--output-dir", str(tmp_path)])
+            rc = main(
+                [
+                    "--source",
+                    "feat",
+                    "--resume",
+                    "--output-dir",
+                    str(tmp_path),
+                    "--no-tui",
+                ]
+            )
         assert rc == 0
         assert mocked.call_args.kwargs["resume"] is True
 
@@ -594,5 +691,7 @@ class TestMain:
             ),
             patch("deep_architect.review_driver.run_driver", return_value=progress),
         ):
-            rc = main(["--source", "feat", "--output-dir", str(tmp_path)])
+            rc = main(
+                ["--source", "feat", "--output-dir", str(tmp_path), "--no-tui"]
+            )
         assert rc == 1

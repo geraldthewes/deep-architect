@@ -920,7 +920,7 @@ backends (default 300s when unset).
 
 `review-driver` is the unattended PR-first orchestrator: it runs `ocr review` → `review-analyzer` → `review-action` for up to `--max-passes` iterations and stops when the count of high/medium `VALID` findings is 0 for K consecutive passes. It does **not** replace the analyzer or action CLIs; it calls them.
 
-The same command is used locally and in CI. There is no TUI and no confirm between passes.
+The same command is used locally and in CI. There is no confirm between passes. On a TTY it opens an observational dashboard; piped or CI runs stay plain-text.
 
 ### Prerequisites
 
@@ -932,10 +932,13 @@ The same command is used locally and in CI. There is no TUI and no confirm betwe
 ### Usage
 
 ```bash
-# on the PR branch, clean tree
+# on the PR branch, clean tree (TUI on a TTY)
 review-driver --source my-feature --target main --max-passes 5
 
-# CI (same command)
+# Force plain phase summaries in a terminal (e.g. for log capture)
+review-driver --source my-feature --no-tui
+
+# CI (same command; non-TTY stays plain)
 review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
 ```
 
@@ -949,6 +952,7 @@ review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
 .review-runs/
   progress.json
   REPORT.md
+  review-driver.log
   logs/r1-ocr.log
   logs/r1-analyzer.log
   logs/r1-action.log
@@ -973,7 +977,9 @@ review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
 | `--provider NAME` | (action default) | Passed through to `review-action` |
 | `--model NAME` | (action default) | Passed through to `review-action` |
 | `--config PATH` | XDG config if present | Missing file → defaults + warning (same as `review-action`) |
-| `--verbose` | off | DEBUG logging and tee child logs to stderr (still no TUI) |
+| `--verbose` | off | DEBUG logging; tee child logs to stderr in plain mode |
+| `--tui` | auto | Force the interactive full-screen TUI dashboard |
+| `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
 Thresholds also live under `[thresholds]` as `review_driver_max_passes` and `review_driver_zero_novelty_passes`.
 
@@ -981,9 +987,23 @@ Thresholds also live under `[thresholds]` as `review_driver_max_passes` and `rev
 
 Stop when the count of this-pass **high/medium `VALID`** findings is 0 for K consecutive passes (default K=2), or `--max-passes` is hit. The driver never stops just because the OCR comment count is small, and it does **not** require OCR to be empty. Low-severity `VALID`, `BACKLOG`, `REJECTED`, `TIMEOUT`, and `DUPLICATE` are not novelty.
 
-### Terminal UX
+### Interactive TUI
 
-Quiet during a phase; one start line (`Pass 2/5 · OCR starting…`), then a compact summary after OCR, analyzer, and action, plus a pass rollup and a trend vs the previous pass (novelty, OCR high/med/low, VALID). Child live progress (`Processed 5/29`, per-finding action lines) is written only to `logs/`. `--verbose` tees those logs to stderr.
+When stdout is a TTY, `review-driver` opens a **full-screen Textual app** (alternate screen) instead of sparse phase lines. The loop stays unattended — there is no confirm between passes. Child CLIs (`review-analyzer`, `review-action`) always receive `--no-tui` so they never nest a second dashboard.
+
+- **Header** — `source → target`, short SHAs, pass `i/N`, K, output dir (plus a resume marker when `--resume`)
+- **Progress** — current phase (`OCR` / `Analyzer` / `Action`), elapsed time, pass bar
+- **Summary strip** — novelty, zeros/K, VALID H/M/L, committed, errors
+- **Results list** — scrollable phase summaries, pass rollup, and trend vs the previous pass
+- **Log pane** — driver logs plus live child lines (OCR stderr, analyzer/action stdout); full detail is also written to `.review-runs/logs/rN-*.log` and `.review-runs/review-driver.log`
+- **Keys (during the run)** — `q` / Ctrl-C request a graceful stop after the current step; `l` focuses the Log pane; `r` focuses Results
+- **Done screen** — after the last pass (and `REPORT.md` write), the app stays up and shows the report. `q` / Ctrl-C quit; `b` one-way-launches `review-feedback-browse` on the last `feedback-rN/` directory (action mode).
+
+Piped or CI runs (non-TTY) keep plain-text progress and print the full summary to stdout. Use `--tui` / `--no-tui` to override auto-detect. Disk output (`progress.json`, `REPORT.md`, `logs/`, per-pass artifacts) is the same in TUI and plain mode.
+
+### Terminal UX (plain mode)
+
+Quiet during a phase; one start line (`Pass 2/5 · OCR starting…`), then a compact summary after OCR, analyzer, and action, plus a pass rollup and a trend vs the previous pass (novelty, OCR high/med/low, VALID). Child live progress (`Processed 5/29`, per-finding action lines) is written only to `logs/` unless `--verbose` tees those logs to stderr.
 
 ### Exit codes
 
