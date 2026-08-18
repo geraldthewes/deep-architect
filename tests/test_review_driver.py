@@ -19,6 +19,7 @@ from deep_architect.review_driver import (
     DriverPreflightError,
     DriverProgress,
     format_ocr_summary,
+    format_stop_line,
     format_trend,
     load_driver_progress,
     main,
@@ -30,6 +31,7 @@ from deep_architect.review_driver import (
     run_ocr_subprocess,
     save_driver_progress,
     should_use_tui,
+    write_driver_report,
 )
 from deep_architect.review_novelty import OcrRunStats
 
@@ -172,6 +174,44 @@ class TestFormatters:
         text = format_ocr_summary(OcrRunStats(comments=4), {"high": 1}, wall_seconds=3)
         assert "tokens" not in text
 
+    def test_format_ocr_summary_partial_and_timeouts(self) -> None:
+        stats = OcrRunStats(
+            comments=1,
+            files_reviewed=16,
+            files_failed=13,
+            timeout_failures=23,
+            status="partial",
+            total_tokens=95216,
+        )
+        text = format_ocr_summary(
+            stats, {"high": 0, "medium": 1, "low": 0}, wall_seconds=1201
+        )
+        assert text.startswith("OCR      PARTIAL")
+        assert "13 failed" in text
+        assert "23 LLM timeouts" in text
+
+    def test_format_ocr_summary_failed_includes_reason(self) -> None:
+        stats = OcrRunStats(
+            comments=0,
+            files_reviewed=16,
+            files_failed=16,
+            timeout_failures=25,
+            failed_requests=25,
+            status="failed",
+        )
+        text = format_ocr_summary(stats, {}, wall_seconds=1201)
+        assert text.startswith("OCR      FAILED")
+        assert "16 failed" in text
+        assert "context deadline exceeded" in text
+        assert "API key" not in text
+
+    def test_format_stop_line_includes_detail(self) -> None:
+        assert format_stop_line("failed", 2) == "Stopped: failed."
+        assert (
+            format_stop_line("failed", 2, "context deadline exceeded")
+            == "Stopped: failed — context deadline exceeded"
+        )
+
     def test_format_trend_novelty_and_high(self) -> None:
         previous = DriverPassRecord(
             pass_index=1,
@@ -265,6 +305,24 @@ class TestRunDriver:
         assert runners.calls == ["ocr", "analyzer", "action", "ocr"]
         failed = [p for p in result.passes if p.pass_index == 2]
         assert not failed or failed[0].status == "failed"
+        assert result.stop_detail == "ocr exited rc=1"
+        assert failed and failed[0].failure_reason == "ocr exited rc=1"
+
+    def test_report_includes_stop_detail(self, tmp_path: Path) -> None:
+        progress = DriverProgress(
+            status="failed",
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            target_sha="bbb",
+            max_passes=5,
+            k=2,
+            output_dir=str(tmp_path),
+            stop_detail="context deadline exceeded (25 LLM requests timed out at ~5m)",
+        )
+        path = write_driver_report(tmp_path, progress)
+        text = path.read_text(encoding="utf-8")
+        assert "Stop reason: failed — context deadline exceeded" in text
 
     def test_action_errors_still_converge(self, tmp_path: Path) -> None:
         runners = ScriptedRunners(novelties=[0, 0], action_rcs=[1, 0])
@@ -535,6 +593,32 @@ class TestProductionRunners:
         log_text = (tmp_path / "logs" / "r1-ocr.log").read_text(encoding="utf-8")
         assert "ocr: reviewing 3 files" in log_text
         assert any("ocr: reviewing 3 files" in chunk for chunk in seen)
+
+    def test_ocr_writes_json_when_process_exits_1(self, tmp_path: Path) -> None:
+        output_json = tmp_path / "code-review-r2.json"
+        payload = (
+            '{"status":"failed","llm":{"model":"nemotron-3-super"},'
+            '"summary":{"files_reviewed":16,"comments":0}}\n'
+        )
+        fake = _FakePopen(
+            stdout=payload,
+            stderr="Error: review failed: all 16 file review(s) failed\n",
+        )
+        fake.returncode = 1
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake):
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+            )
+        assert rc == 1
+        assert output_json.is_file()
+        written = json.loads(output_json.read_text(encoding="utf-8"))
+        assert written["status"] == "failed"
+        assert written["summary"]["files_reviewed"] == 16
 
     def test_ocr_timeout_returns_1(self, tmp_path: Path) -> None:
         output_json = tmp_path / "code-review-r1.json"

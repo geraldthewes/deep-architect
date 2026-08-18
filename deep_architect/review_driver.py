@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol, TextIO
@@ -28,13 +28,16 @@ from deep_architect.logger import get_logger
 from deep_architect.review_novelty import (
     OcrRunStats,
     StopReason,
+    apply_ocr_stderr,
     consecutive_zero_novelty,
     count_high_signal_valid,
     count_ocr_comments_by_severity,
     count_valid_by_severity,
     count_verdicts,
     decide_stop,
+    load_ocr_run_stats,
     parse_ocr_run_stats,
+    summarize_ocr_failure,
 )
 
 logger = get_logger(__name__)
@@ -97,6 +100,8 @@ class DriverPassRecord(BaseModel):
     wall_seconds: float = 0.0
     action_cost_usd: float | None = None
     status: Literal["complete", "failed"]
+    failure_reason: str | None = None
+    ocr_status: str | None = None
 
 
 class DriverProgress(BaseModel):
@@ -113,6 +118,7 @@ class DriverProgress(BaseModel):
     passes: list[DriverPassRecord] = Field(default_factory=list)
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     output_dir: str
+    stop_detail: str | None = None
 
 
 class ReviewStepRunners(Protocol):
@@ -201,15 +207,32 @@ def format_ocr_summary(
     wall_seconds: float,
 ) -> str:
     """One OCR phase line. Omits the word ``tokens`` when total_tokens is None."""
+    status = (stats.status or "").lower()
+    if status == "failed":
+        prefix = "OCR      FAILED   "
+    elif status == "partial":
+        prefix = "OCR      PARTIAL  "
+    else:
+        prefix = "OCR      "
     comments = stats.comments
     if comments is None:
         comments = sum(severity.values())
     parts: list[str] = [f"comments {comments}"]
     if stats.files_reviewed is not None:
         parts.append(f"files {stats.files_reviewed}")
+    if stats.files_failed is not None:
+        parts.append(f"{stats.files_failed} failed")
     parts.append(f"high {severity.get('high', 0)}")
     parts.append(f"med {severity.get('medium', 0)}")
     parts.append(f"low {severity.get('low', 0)}")
+    if status == "failed":
+        reason = summarize_ocr_failure(stats)
+        if reason:
+            parts.append(reason)
+    elif stats.timeout_failures:
+        parts.append(f"{stats.timeout_failures} LLM timeouts")
+    elif stats.failed_requests:
+        parts.append(f"{stats.failed_requests} LLM failures")
     if stats.total_tokens is not None:
         token_bit = f"tokens {stats.total_tokens}"
         if stats.input_tokens is not None or stats.output_tokens is not None:
@@ -227,7 +250,7 @@ def format_ocr_summary(
     elif elapsed_s is not None:
         parts.append(f"elapsed {format_duration(elapsed_s)}")
     parts.append(format_duration(wall_seconds))
-    return "OCR      " + "  ".join(parts)
+    return prefix + "  ".join(parts)
 
 
 def format_analyzer_summary(
@@ -291,12 +314,14 @@ def format_trend(previous: DriverPassRecord, current: DriverPassRecord) -> str:
     )
 
 
-def format_stop_line(status: str, k: int) -> str:
+def format_stop_line(status: str, k: int, detail: str | None = None) -> str:
     if status == "converged":
         return f"Converged (K={k})."
     if status == "max_passes":
         return "Stopped: max-passes with novelty remaining."
     if status == "failed":
+        if detail:
+            return f"Stopped: failed — {detail}"
         return "Stopped: failed."
     return f"Stopped: {status}."
 
@@ -394,7 +419,7 @@ class PlainReporter:
         print(PASS_FOOTER)
 
     def finish(self, progress: DriverProgress) -> None:
-        print(format_stop_line(progress.status, progress.k))
+        print(format_stop_line(progress.status, progress.k, progress.stop_detail))
         print()
         print(format_pass_table(progress))
 
@@ -436,7 +461,8 @@ def write_driver_report(output_dir: Path, progress: DriverProgress) -> Path:
         f"- Target: `{progress.target}` (`{progress.target_sha or 'unresolved'}`)",
         f"- K: {progress.k}",
         f"- Max passes: {progress.max_passes}",
-        f"- Stop reason: {progress.status}",
+        f"- Stop reason: {progress.status}"
+        + (f" — {progress.stop_detail}" if progress.stop_detail else ""),
         f"- Novelty history: {progress.novelty_history}",
         "",
         "Stop is the count of high/medium VALID findings, **not** the OCR comment count.",
@@ -446,13 +472,20 @@ def write_driver_report(output_dir: Path, progress: DriverProgress) -> Path:
         blocks.append(f"## Pass {record.pass_index}")
         blocks.append("")
         blocks.append(format_pass_header(record.pass_index, progress.max_passes))
+        ocr_path = Path(record.ocr_json)
+        if ocr_path.is_file():
+            ocr_stats = load_ocr_run_stats(ocr_path)
+        else:
+            ocr_stats = OcrRunStats(
+                comments=sum(record.ocr_severity.values()) or None,
+                total_tokens=record.ocr_tokens_total,
+                elapsed=record.ocr_elapsed_s,
+                status=record.ocr_status,
+                message=record.failure_reason,
+            )
         blocks.append(
             format_ocr_summary(
-                OcrRunStats(
-                    comments=sum(record.ocr_severity.values()) or None,
-                    total_tokens=record.ocr_tokens_total,
-                    elapsed=record.ocr_elapsed_s,
-                ),
+                ocr_stats,
                 record.ocr_severity,
                 record.phase_seconds.get("ocr", 0.0),
             )
@@ -536,6 +569,10 @@ def _fail_pass(
     wall_seconds: float,
     action_errors: int = 0,
     reporter: ProgressReporter | None = None,
+    failure_reason: str | None = None,
+    ocr_status: str | None = None,
+    ocr_tokens_total: int | None = None,
+    ocr_elapsed_s: float | None = None,
 ) -> DriverProgress:
     progress.passes.append(
         DriverPassRecord(
@@ -546,12 +583,17 @@ def _fail_pass(
             valid_total=0,
             action_errors=action_errors,
             action_committed=0,
+            ocr_tokens_total=ocr_tokens_total,
+            ocr_elapsed_s=ocr_elapsed_s,
             phase_seconds=phase_seconds,
             wall_seconds=wall_seconds,
             status="failed",
+            failure_reason=failure_reason,
+            ocr_status=ocr_status,
         )
     )
     progress.status = "failed"
+    progress.stop_detail = failure_reason
     save_driver_progress(output_dir, progress)
     write_driver_report(output_dir, progress)
     sink: ProgressReporter = reporter if reporter is not None else PlainReporter()
@@ -660,7 +702,15 @@ def run_driver(
             if ocr_rc == 0 and _interrupt_requested:
                 ocr_rc = 130
             if ocr_rc != 0:
-                logger.error("OCR failed on pass %s (rc=%s)", pass_index, ocr_rc)
+                stderr_tail = _ocr_log_text(output_dir, pass_index)
+                ocr_stats = apply_ocr_stderr(load_ocr_run_stats(ocr_json), stderr_tail)
+                if ocr_stats.status is None:
+                    ocr_stats = replace(ocr_stats, status="failed")
+                reason = summarize_ocr_failure(ocr_stats, stderr_tail, rc=ocr_rc)
+                logger.error(
+                    "OCR failed on pass %s (rc=%s): %s", pass_index, ocr_rc, reason
+                )
+                sink.phase_done(format_ocr_summary(ocr_stats, {}, ocr_wall))
                 return _fail_pass(
                     progress,
                     output_dir,
@@ -670,11 +720,23 @@ def run_driver(
                     phase_seconds={"ocr": ocr_wall},
                     wall_seconds=ocr_wall,
                     reporter=sink,
+                    failure_reason=reason,
+                    ocr_status=ocr_stats.status or "failed",
+                    ocr_tokens_total=ocr_stats.total_tokens,
+                    ocr_elapsed_s=elapsed_to_seconds(ocr_stats.elapsed),
                 )
 
             ocr_stats = parse_ocr_run_stats(ocr_json)
             ocr_severity = count_ocr_comments_by_severity(ocr_json)
             sink.phase_done(format_ocr_summary(ocr_stats, ocr_severity, ocr_wall))
+            if (ocr_stats.status or "").lower() == "partial" or (
+                ocr_stats.failed_requests or 0
+            ) > 0:
+                logger.warning(
+                    "OCR partial on pass %s: %s",
+                    pass_index,
+                    summarize_ocr_failure(ocr_stats),
+                )
 
             sink.phase_start(pass_index, max_passes, "analyzer")
             t_an = time.monotonic()
@@ -770,6 +832,7 @@ def run_driver(
                 wall_seconds=wall,
                 action_cost_usd=cost_usd,
                 status="complete",
+                ocr_status=ocr_stats.status,
             )
             progress.novelty_history.append(novelty)
             progress.passes.append(record)
@@ -943,6 +1006,16 @@ def _pass_index_from_artifact(path: Path) -> int:
 
 def _ocr_log_path(output_json: Path) -> Path:
     return output_json.parent / "logs" / f"r{_pass_index_from_artifact(output_json)}-ocr.log"
+
+
+def _ocr_log_text(output_dir: Path, pass_index: int) -> str:
+    path = output_dir / "logs" / f"r{pass_index}-ocr.log"
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def _append_log(
@@ -1163,6 +1236,9 @@ def run_ocr_subprocess(
 
     stdout = "".join(stdout_chunks)
     rc = proc.returncode if proc.returncode is not None else 1
+    if stdout.strip():
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        output_json.write_text(stdout, encoding="utf-8")
     if rc != 0:
         logger.error("ocr exited %s", rc)
         return rc if rc else 1
@@ -1175,9 +1251,6 @@ def run_ocr_subprocess(
             on_child_log=on_child_log,
         )
         return 1
-
-    output_json.parent.mkdir(parents=True, exist_ok=True)
-    output_json.write_text(stdout, encoding="utf-8")
     return 0
 
 

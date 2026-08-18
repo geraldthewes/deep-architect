@@ -9,17 +9,20 @@ from pathlib import Path
 import pytest
 from textual.widgets import Static
 
-from deep_architect.review_driver import DriverProgress, DriverRunMeta
+from deep_architect.review_driver import DriverPassRecord, DriverProgress, DriverRunMeta
 from deep_architect.review_driver_tui import (
     DriverTuiResult,
     LoggingCapture,
     ReviewDriverApp,
     TuiLogHandler,
+    classify_child_log_level,
     format_done_body,
+    format_done_header,
     format_header,
     format_log_line,
     format_progress_label,
     format_summary,
+    infra_error_count,
     is_browse_available,
     last_feedback_dir,
     run_review_driver_tui,
@@ -195,6 +198,74 @@ class TestLoggingCapture:
         root.handlers.clear()
 
 
+class TestClassifyChildLog:
+    def test_error_lines(self) -> None:
+        assert (
+            classify_child_log_level(
+                "Error: review failed: all 16 file review(s) failed"
+            )
+            == logging.ERROR
+        )
+        assert (
+            classify_child_log_level(
+                "[ocr] Subtask error for pkg/plant.py: context deadline exceeded"
+            )
+            == logging.ERROR
+        )
+        assert classify_child_log_level("ocr exited 1") == logging.ERROR
+        assert classify_child_log_level("ocr timed out after 3600 seconds") == logging.ERROR
+
+    def test_info_lines(self) -> None:
+        assert classify_child_log_level("TUI started — logging is confined") == logging.INFO
+        assert classify_child_log_level("ocr: reviewing 3 files") == logging.INFO
+
+
+class TestInfraErrorCount:
+    def test_counts_failed_and_partial_passes(self) -> None:
+        progress = DriverProgress(
+            status="failed",
+            source="feat",
+            target="main",
+            source_sha="a",
+            target_sha="b",
+            max_passes=5,
+            k=2,
+            output_dir=".",
+            passes=[
+                DriverPassRecord(
+                    pass_index=1,
+                    ocr_json="r1.json",
+                    feedback_dir="f1",
+                    novelty=1,
+                    valid_total=1,
+                    action_errors=0,
+                    action_committed=0,
+                    status="complete",
+                    ocr_status="partial",
+                ),
+                DriverPassRecord(
+                    pass_index=2,
+                    ocr_json="r2.json",
+                    feedback_dir="f2",
+                    novelty=0,
+                    valid_total=0,
+                    action_errors=0,
+                    action_committed=0,
+                    status="failed",
+                    ocr_status="failed",
+                ),
+            ],
+        )
+        assert infra_error_count(progress) == 2
+
+
+class TestFormatDoneHeader:
+    def test_complete_vs_failed(self) -> None:
+        assert "Review complete" in format_done_header(failed=False)
+        assert "Review failed" in format_done_header(failed=True)
+        assert "red" in format_done_header(failed=True)
+
+
 class TestFormatDoneBody:
     def test_includes_report_and_path(self, tmp_path: Path) -> None:
         report = tmp_path / "REPORT.md"
@@ -218,6 +289,15 @@ class TestFormatDoneBody:
         body = format_done_body("", error="boom", browse_available=False)
         assert "Pipeline failed: boom" in body
         assert "q quit" in body
+
+    def test_stop_detail_as_error(self) -> None:
+        body = format_done_body(
+            "# Report\n",
+            error="context deadline exceeded (25 LLM requests timed out at ~5m)",
+            browse_available=False,
+        )
+        assert "Pipeline failed: context deadline exceeded" in body
+        assert "# Report" in body
 
 
 class TestIsBrowseAvailable:

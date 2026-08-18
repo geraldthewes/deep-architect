@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from deep_architect.review_novelty import (
+    OcrRunStats,
     StopReason,
+    apply_ocr_stderr,
     consecutive_zero_novelty,
     count_findings_by_severity,
     count_high_signal_valid,
@@ -16,6 +18,7 @@ from deep_architect.review_novelty import (
     count_verdicts,
     decide_stop,
     parse_ocr_run_stats,
+    summarize_ocr_failure,
 )
 
 
@@ -215,3 +218,111 @@ class TestParseOcrRunStats:
         stats = parse_ocr_run_stats(path)
         assert stats.total_tokens is None
         assert stats.elapsed is None
+        assert stats.status == "ok"
+
+    def test_partial_status_and_retry_report(self, tmp_path: Path) -> None:
+        path = tmp_path / "code-review-r1.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "partial",
+                    "message": (
+                        "Review partially complete: 1 finding(s); "
+                        "13 of 16 selected item(s) failed."
+                    ),
+                    "llm": {"model": "nemotron-3-super"},
+                    "summary": {
+                        "comments": 1,
+                        "files_reviewed": 16,
+                        "total_tokens": 95216,
+                        "elapsed": "20m1s",
+                    },
+                    "retry_report": {
+                        "failed_requests": 23,
+                        "requests": [
+                            {
+                                "outcome": "failed",
+                                "attempts": [{"error_class": "timeout"}],
+                            }
+                            for _ in range(23)
+                        ],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        stats = parse_ocr_run_stats(path)
+        assert stats.status == "partial"
+        assert stats.files_reviewed == 16
+        assert stats.files_failed == 13
+        assert stats.failed_requests == 23
+        assert stats.timeout_failures == 23
+        assert stats.model == "nemotron-3-super"
+        assert stats.comments == 1
+
+    def test_failed_status_all_files(self, tmp_path: Path) -> None:
+        path = tmp_path / "code-review-r2.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "llm": {"model": "nemotron-3-super"},
+                    "summary": {"files_reviewed": 16, "comments": 0},
+                }
+            ),
+            encoding="utf-8",
+        )
+        stats = parse_ocr_run_stats(path)
+        assert stats.status == "failed"
+        assert stats.files_reviewed == 16
+        assert stats.files_failed is None
+
+
+class TestSummarizeOcrFailure:
+    def test_all_timeouts_does_not_mention_api_key(self) -> None:
+        stats = OcrRunStats(
+            status="failed",
+            message=(
+                "review failed: all 16 file review(s) failed — "
+                "check your LLM configuration and API key"
+            ),
+            failed_requests=25,
+            timeout_failures=25,
+            files_reviewed=16,
+            files_failed=16,
+        )
+        text = summarize_ocr_failure(stats)
+        assert "API key" not in text
+        assert "context deadline exceeded" in text
+        assert "25" in text
+
+    def test_falls_back_to_stderr_error_line(self) -> None:
+        text = summarize_ocr_failure(
+            OcrRunStats(),
+            "noise\nError: review failed: all 16 file review(s) failed — "
+            "check your LLM configuration and API key\n",
+            rc=1,
+        )
+        assert "all 16 file review(s) failed" in text
+        assert "API key" not in text
+
+    def test_deadline_in_stderr_without_retry_report(self) -> None:
+        text = summarize_ocr_failure(
+            OcrRunStats(status="failed"),
+            "Error: LLM completion error: context deadline exceeded\n",
+            rc=1,
+        )
+        assert text == "context deadline exceeded"
+
+    def test_rc_fallback(self) -> None:
+        assert summarize_ocr_failure(OcrRunStats(), rc=1) == "ocr exited rc=1"
+
+    def test_apply_ocr_stderr_fills_files_failed(self) -> None:
+        stats = apply_ocr_stderr(
+            OcrRunStats(status="failed"),
+            "Error: review failed: all 16 file review(s) failed — "
+            "check your LLM configuration and API key\n",
+        )
+        assert stats.files_failed == 16
+        assert stats.message is not None
+        assert "all 16" in stats.message

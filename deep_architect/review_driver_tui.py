@@ -7,6 +7,7 @@ OCR/analyzer/action output is confined to a scrollable Log pane.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -48,7 +49,25 @@ _PHASE_LABEL: dict[str, str] = {
 }
 
 DEFAULT_LOG_MESSAGE_MAX_LEN = 500
+DEFAULT_ERROR_LOG_MESSAGE_MAX_LEN = 240
 _MAX_RESULT_ROWS = 200
+_CHILD_ERROR_RE = re.compile(
+    r"^(Error:|\[ocr\] Subtask error|ocr exited|ocr timed out)",
+    re.IGNORECASE,
+)
+
+
+def classify_child_log_level(line: str) -> int:
+    """ERROR for OCR/child failure lines; INFO otherwise."""
+    if _CHILD_ERROR_RE.match(line.strip()):
+        return logging.ERROR
+    return logging.INFO
+
+
+def child_log_display_max_len(level: int) -> int:
+    if level >= logging.ERROR:
+        return max(DEFAULT_LOG_MESSAGE_MAX_LEN, DEFAULT_ERROR_LOG_MESSAGE_MAX_LEN)
+    return DEFAULT_LOG_MESSAGE_MAX_LEN
 
 
 def truncate_message(text: str, max_len: int = DEFAULT_LOG_MESSAGE_MAX_LEN) -> str:
@@ -135,6 +154,13 @@ def format_progress_label(
     )
 
 
+def format_done_header(*, failed: bool) -> str:
+    """Markup for the DoneScreen title."""
+    if failed:
+        return "[bold red]Review failed[/bold red]"
+    return "[bold]Review complete[/bold]"
+
+
 def format_done_body(
     report_text: str,
     *,
@@ -177,6 +203,17 @@ def last_feedback_dir(progress: DriverProgress | None) -> Path | None:
 def is_browse_available(feedback_dir: Path | None) -> bool:
     """True when review-feedback-browse can open a pass feedback dir."""
     return feedback_dir is not None and feedback_dir.is_dir()
+
+
+def infra_error_count(progress: DriverProgress) -> int:
+    """Action errors plus one per failed or partial OCR pass."""
+    total = 0
+    for record in progress.passes:
+        total += record.action_errors
+        ocr_status = (record.ocr_status or "").lower()
+        if record.status == "failed" or ocr_status in {"failed", "partial"}:
+            total += 1
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -280,14 +317,17 @@ class DoneScreen(Screen[None]):
         Binding("b", "launch_browse", "Browse"),
     ]
 
-    def __init__(self, body: str, *, browse_available: bool) -> None:
+    def __init__(
+        self, body: str, *, browse_available: bool, failed: bool = False
+    ) -> None:
         super().__init__()
         self._body = body
         self._browse_available = browse_available
+        self._failed = failed
 
     def compose(self) -> ComposeResult:
         with Vertical(id="done-body"):
-            yield Static("[bold]Review complete[/bold]", id="done-header")
+            yield Static(format_done_header(failed=self._failed), id="done-header")
             with VerticalScroll(id="done-scroll"):
                 yield Static(self._body, id="done-content", markup=False)
         yield Footer()
@@ -592,15 +632,28 @@ class ReviewDriverApp(App[DriverTuiResult]):
 
     def _on_child_log(self, text: str) -> None:
         for raw in text.splitlines():
-            line = truncate_message(raw, max_len=DEFAULT_LOG_MESSAGE_MAX_LEN)
+            level = classify_child_log_level(raw)
+            line = truncate_message(raw, max_len=child_log_display_max_len(level))
             if line:
-                self.call_from_thread(self._append_log, line, logging.INFO)
+                self.call_from_thread(self._append_log, line, level)
+                if level >= logging.ERROR:
+                    self.call_from_thread(self._show_live_error, line)
 
     def _append_log(self, line: str, levelno: int) -> None:
         style = _LEVEL_STYLE.get(levelno, "")
         content: Text | str = Text(line, style=style) if style else line
         try:
             self.query_one("#activity-log", RichLog).write(content)
+        except Exception:
+            pass
+
+    def _show_live_error(self, line: str) -> None:
+        if self._pipeline_finished:
+            return
+        try:
+            self.query_one("#status-line", Static).update(
+                f"[bold red]{truncate_message(line, 120)}[/bold red]"
+            )
         except Exception:
             pass
 
@@ -654,7 +707,12 @@ class ReviewDriverApp(App[DriverTuiResult]):
 
     def _write_result(self, line: str) -> None:
         results = self.query_one("#results-log", RichLog)
-        results.write(line)
+        if line.startswith("OCR      FAILED"):
+            results.write(Text(line, style="bold red"))
+        elif line.startswith("OCR      PARTIAL"):
+            results.write(Text(line, style="yellow"))
+        else:
+            results.write(line)
         if line:
             self._result_count += 1
         if self._result_count > _MAX_RESULT_ROWS:
@@ -674,7 +732,7 @@ class ReviewDriverApp(App[DriverTuiResult]):
         self._valid_medium = latest.valid_by_severity.get("medium", 0)
         self._valid_low = latest.valid_by_severity.get("low", 0)
         self._committed = latest.action_committed
-        self._errors = latest.action_errors
+        self._errors = infra_error_count(progress)
 
     def _refresh_progress_widgets(self) -> None:
         shown_pass = self._pass_index
@@ -763,18 +821,32 @@ class ReviewDriverApp(App[DriverTuiResult]):
                 report_text = report_path.read_text(encoding="utf-8")
             except OSError:
                 report_text = ""
+        display_error = error
+        if display_error is None and self._progress is not None:
+            if self._progress.status == "failed" and self._progress.stop_detail:
+                display_error = self._progress.stop_detail
         body = format_done_body(
             report_text,
             report_path=report_path,
             browse_available=self._browse_available,
-            error=error,
+            error=display_error,
         )
         status = self._done_status(self._progress, error)
+        failed = display_error is not None or (
+            self._progress is not None and self._progress.status == "failed"
+        )
         try:
-            self.query_one("#status-line", Static).update(f"[bold]{status}[/bold]")
+            markup = f"[bold red]{status}[/bold red]" if failed else f"[bold]{status}[/bold]"
+            self.query_one("#status-line", Static).update(markup)
         except Exception:
             pass
-        self.push_screen(DoneScreen(body, browse_available=self._browse_available))
+        self.push_screen(
+            DoneScreen(
+                body,
+                browse_available=self._browse_available,
+                failed=failed,
+            )
+        )
 
     def _on_pipeline_failed(self, error: str) -> None:
         self._pipeline_finished = True
@@ -790,17 +862,20 @@ class ReviewDriverApp(App[DriverTuiResult]):
             )
         )
         body = format_done_body("", error=error, browse_available=False)
-        self.push_screen(DoneScreen(body, browse_available=False))
+        self.push_screen(DoneScreen(body, browse_available=False, failed=True))
 
     def _done_status(
         self, progress: DriverProgress | None, error: str | None
     ) -> str:
-        if error:
+        if error and (progress is None or progress.status != "failed"):
             return f"Finalize failed: {truncate_message(error, 80)}"
-        if self._stop_requested or (
-            progress is not None and progress.status == "failed"
-        ):
-            return "Interrupted." if self._stop_requested else "Stopped: failed."
+        if self._stop_requested:
+            return "Interrupted."
+        if progress is not None and progress.status == "failed":
+            detail = progress.stop_detail or error
+            if detail:
+                return f"Stopped: failed — {truncate_message(detail, 120)}"
+            return "Stopped: failed."
         if progress is None:
             return "Done."
         if progress.status == "converged":
