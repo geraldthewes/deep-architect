@@ -471,7 +471,7 @@ uv run review-analyzer <ocr-file.json> [options]
 | `--include <glob>` | (none) | Only process findings matching this path pattern (repeatable) |
 | `--exclude <glob>` | (none) | Skip findings matching this path pattern (repeatable) |
 | `--model <name>` | `standard/coder` | LLM model for analysis |
-| `--concurrency <n>` | `5` | Maximum parallel LLM requests |
+| `--concurrency <n>` | config / `5` | Maximum parallel LLM requests |
 | `--timeout <seconds>` | `300` (config / env) | Wall-clock limit per opencode attempt; timed-out calls retry once by default |
 | `--output-dir <dir>` | `feedback/` | Directory for per-finding Markdown reports |
 | `--summary-only` | off | Print summary counts without writing individual files |
@@ -580,16 +580,17 @@ Each promoted feedback file gains a `## Backlog disposition` section. `SUMMARY.m
 export OPENCODE_BIN=/path/to/your/opencode
 ```
 
-Per-attempt timeout resolution (highest wins):
+Per-attempt timeout and concurrency resolution (highest wins):
 
-1. CLI `--timeout SECONDS`
-2. Env `REVIEW_ANALYZER_TIMEOUT`
-3. Config `~/.config/deep-architect/config.toml` → `[thresholds] review_analyzer_timeout` (default **300**)
-4. Built-in default **300**
+1. CLI `--timeout SECONDS` / `--concurrency N`
+2. Env `REVIEW_ANALYZER_TIMEOUT` / `REVIEW_ANALYZER_CONCURRENCY`
+3. Config `~/.config/deep-architect/config.toml` (or legacy `~/.deep-architect.toml`) → `[thresholds]`
+4. Built-in defaults **300** seconds and **5** concurrent calls
 
 ```toml
 [thresholds]
-review_analyzer_timeout = 300  # seconds per opencode attempt
+review_analyzer_timeout     = 300  # seconds per opencode attempt
+review_analyzer_concurrency = 2    # parallel opencode calls
 ```
 
 ---
@@ -976,12 +977,14 @@ review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
 | `--knowledge-dir PATH` | `<cwd>/knowledge` | Catalog / backlog directory for the analyzer |
 | `--provider NAME` | (action default) | Passed through to `review-action` |
 | `--model NAME` | (action default) | Passed through to `review-action` |
+| `--ocr-timeout MINUTES` | config / `10` | Per-file OCR timeout (`ocr --timeout`; **minutes**, not seconds) |
+| `--ocr-concurrency N` | config / `8` | Concurrent OCR file reviews (`ocr --concurrency`) |
 | `--config PATH` | XDG config if present | Missing file → defaults + warning (same as `review-action`) |
 | `--verbose` | off | DEBUG logging; tee child logs to stderr in plain mode |
 | `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
-Thresholds also live under `[thresholds]` as `review_driver_max_passes` and `review_driver_zero_novelty_passes`.
+Thresholds also live under `[thresholds]`: `review_driver_max_passes`, `review_driver_zero_novelty_passes`, `review_driver_ocr_timeout_minutes`, `review_driver_ocr_concurrency`. Analyzer concurrency/timeout come from the same file (`review_analyzer_concurrency`, `review_analyzer_timeout`) when the driver invokes the analyzer. OCR `--timeout` is **minutes**; analyzer `--timeout` is **seconds**.
 
 ### Stop rule
 

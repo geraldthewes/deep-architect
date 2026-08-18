@@ -52,6 +52,7 @@ from deep_architect.review_analyzer import (
     parse_severity_from_markdown,
     process_findings_concurrently,
     request_shutdown,
+    resolve_analyzer_concurrency,
     resolve_opencode_timeout,
     select_catalog_bodies_to_expand,
     select_timeout_findings_for_retry,
@@ -964,6 +965,49 @@ class TestDefaultOpencodeTimeout:
             lambda: 240,
         )
         assert resolve_opencode_timeout(45) == 45
+
+
+class TestResolveAnalyzerConcurrency:
+
+    def test_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("REVIEW_ANALYZER_CONCURRENCY", raising=False)
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer._concurrency_from_config",
+            lambda: None,
+        )
+        assert resolve_analyzer_concurrency() == 5
+
+    def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("REVIEW_ANALYZER_CONCURRENCY", "2")
+        assert resolve_analyzer_concurrency() == 2
+
+    def test_invalid_env_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("REVIEW_ANALYZER_CONCURRENCY", "nope")
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer._concurrency_from_config",
+            lambda: None,
+        )
+        assert resolve_analyzer_concurrency() == 5
+
+    def test_config_used_when_env_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("REVIEW_ANALYZER_CONCURRENCY", raising=False)
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer._concurrency_from_config",
+            lambda: 2,
+        )
+        assert resolve_analyzer_concurrency() == 2
+
+    def test_cli_wins_over_env_and_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REVIEW_ANALYZER_CONCURRENCY", "2")
+        monkeypatch.setattr(
+            "deep_architect.review_analyzer._concurrency_from_config",
+            lambda: 3,
+        )
+        assert resolve_analyzer_concurrency(7) == 7
 
 
 # ---------------------------------------------------------------------------

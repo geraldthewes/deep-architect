@@ -34,6 +34,9 @@ __OPENCODE_BIN = os.environ.get(
 DEFAULT_OPENCODE_TIMEOUT = 300
 # Extra attempts after the first timeout (1 = one retry → two total attempts).
 DEFAULT_TIMEOUT_RETRIES = 1
+# Max parallel opencode calls. CLI --concurrency > REVIEW_ANALYZER_CONCURRENCY
+# env > config.toml [thresholds] review_analyzer_concurrency > this constant.
+DEFAULT_ANALYZER_CONCURRENCY = 5
 
 # Global flag for graceful shutdown on SIGINT / TUI stop.
 _shutdown_requested = False
@@ -107,6 +110,68 @@ def resolve_opencode_timeout(cli_timeout: int | None = None) -> int:
 def default_opencode_timeout() -> int:
     """Resolve timeout without a CLI override (env > config > default)."""
     return resolve_opencode_timeout(None)
+
+
+def _concurrency_from_env() -> int | None:
+    """Parse ``REVIEW_ANALYZER_CONCURRENCY``; return None if unset or invalid."""
+    raw = os.environ.get("REVIEW_ANALYZER_CONCURRENCY")
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("Invalid REVIEW_ANALYZER_CONCURRENCY=%r; ignoring", raw)
+        return None
+    if value < 1:
+        log.warning(
+            "REVIEW_ANALYZER_CONCURRENCY=%d must be >= 1; ignoring",
+            value,
+        )
+        return None
+    return value
+
+
+def _concurrency_from_config() -> int | None:
+    """Load ``thresholds.review_analyzer_concurrency`` from config.toml."""
+    try:
+        from deep_architect.config import load_config  # noqa: PLC0415
+
+        cfg = load_config()
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        log.warning(
+            "Could not load config for review_analyzer_concurrency: %s",
+            exc,
+        )
+        return None
+
+    value = int(cfg.thresholds.review_analyzer_concurrency)
+    if value < 1:
+        log.warning(
+            "thresholds.review_analyzer_concurrency=%d must be >= 1; ignoring",
+            value,
+        )
+        return None
+    return value
+
+
+def resolve_analyzer_concurrency(cli_concurrency: int | None = None) -> int:
+    """Resolve analyzer concurrency: CLI > env > config.toml > hard-coded default."""
+    if cli_concurrency is not None:
+        if cli_concurrency < 1:
+            raise ValueError(f"concurrency must be >= 1, got {cli_concurrency}")
+        return cli_concurrency
+
+    env_value = _concurrency_from_env()
+    if env_value is not None:
+        return env_value
+
+    config_value = _concurrency_from_config()
+    if config_value is not None:
+        return config_value
+
+    return DEFAULT_ANALYZER_CONCURRENCY
 
 
 def request_shutdown() -> None:
@@ -2101,8 +2166,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--concurrency",
         type=int,
-        default=5,
-        help="Maximum concurrent LLM requests (default: 5)",
+        default=None,
+        metavar="N",
+        help=(
+            "Maximum concurrent LLM requests "
+            f"(default: CLI unset → env REVIEW_ANALYZER_CONCURRENCY → "
+            f"config review_analyzer_concurrency → {DEFAULT_ANALYZER_CONCURRENCY})"
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -2203,9 +2273,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         timeout_seconds = resolve_opencode_timeout(args.timeout)
+        concurrency = resolve_analyzer_concurrency(args.concurrency)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    args.concurrency = concurrency
 
     ocr_data = load_ocr_json(args.ocr_file)
     findings = extract_findings(ocr_data)

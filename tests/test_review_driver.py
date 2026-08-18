@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import git
 import pytest
 
+from deep_architect.config import HarnessConfig
 from deep_architect.review_driver import (
     DEFAULT_OUTPUT_DIR,
     DriverPassRecord,
@@ -25,6 +26,8 @@ from deep_architect.review_driver import (
     main,
     parse_args,
     preflight_driver,
+    resolve_ocr_concurrency,
+    resolve_ocr_timeout_minutes,
     run_action_main,
     run_analyzer_main,
     run_driver,
@@ -569,8 +572,29 @@ class TestProductionRunners:
         assert argv[argv.index("--to") + 1] == "feat"
         assert "--format" in argv and argv[argv.index("--format") + 1] == "json"
         assert "--audience" in argv and argv[argv.index("--audience") + 1] == "agent"
+        assert argv[argv.index("--timeout") + 1] == "10"
+        assert argv[argv.index("--concurrency") + 1] == "8"
         assert argv[argv.index("--exclude") + 1] == "**/generated/*"
         assert output_json.read_text(encoding="utf-8") == '{"comments":[]}\n'
+
+    def test_ocr_argv_uses_timeout_and_concurrency(self, tmp_path: Path) -> None:
+        output_json = tmp_path / "code-review-r1.json"
+        fake = _FakePopen(stdout='{"comments":[]}\n', stderr="")
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake) as mocked:
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+                ocr_timeout_minutes=30,
+                ocr_concurrency=3,
+            )
+        assert rc == 0
+        argv = mocked.call_args[0][0]
+        assert argv[argv.index("--timeout") + 1] == "30"
+        assert argv[argv.index("--concurrency") + 1] == "3"
 
     def test_ocr_streams_stderr_to_log_and_callback(self, tmp_path: Path) -> None:
         output_json = tmp_path / "code-review-r1.json"
@@ -771,6 +795,36 @@ class TestParseArgs:
     def test_tui_mutual_exclusion(self) -> None:
         with pytest.raises(SystemExit):
             parse_args(["--source", "feat", "--tui", "--no-tui"])
+
+    def test_ocr_timeout_and_concurrency_flags(self) -> None:
+        args = parse_args(
+            ["--source", "feat", "--ocr-timeout", "30", "--ocr-concurrency", "3"]
+        )
+        assert args.ocr_timeout == 30
+        assert args.ocr_concurrency == 3
+
+
+class TestResolveOcrLimits:
+    def test_cli_wins(self) -> None:
+        cfg = HarnessConfig()
+        assert resolve_ocr_timeout_minutes(30, cfg) == 30
+        assert resolve_ocr_concurrency(3, cfg) == 3
+
+    def test_config_when_cli_unset(self) -> None:
+        cfg = HarnessConfig()
+        cfg.thresholds.review_driver_ocr_timeout_minutes = 30
+        cfg.thresholds.review_driver_ocr_concurrency = 3
+        assert resolve_ocr_timeout_minutes(None, cfg) == 30
+        assert resolve_ocr_concurrency(None, cfg) == 3
+
+    def test_env_overrides_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("REVIEW_DRIVER_OCR_FILE_TIMEOUT", "25")
+        monkeypatch.setenv("REVIEW_DRIVER_OCR_CONCURRENCY", "4")
+        cfg = HarnessConfig()
+        cfg.thresholds.review_driver_ocr_timeout_minutes = 30
+        cfg.thresholds.review_driver_ocr_concurrency = 3
+        assert resolve_ocr_timeout_minutes(None, cfg) == 25
+        assert resolve_ocr_concurrency(None, cfg) == 4
 
 
 class TestMain:

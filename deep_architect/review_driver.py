@@ -49,6 +49,8 @@ DEFAULT_OUTPUT_DIR = Path(".review-runs")
 DEFAULT_TARGET = "main"
 DEFAULT_OCR_BIN = "ocr"
 DEFAULT_OCR_TIMEOUT_SECONDS = 3600
+DEFAULT_OCR_FILE_TIMEOUT_MINUTES = 10
+DEFAULT_OCR_CONCURRENCY = 8
 ACTION_MIN_SEVERITY = "medium"
 
 _interrupt_requested = False
@@ -1157,6 +1159,8 @@ def run_ocr_subprocess(
     log_path: Path | None = None,
     verbose: bool = False,
     on_child_log: Callable[[str], None] | None = None,
+    ocr_timeout_minutes: int = DEFAULT_OCR_FILE_TIMEOUT_MINUTES,
+    ocr_concurrency: int = DEFAULT_OCR_CONCURRENCY,
 ) -> int:
     """Run ``ocr review`` with ``--from`` = target and ``--to`` = source.
 
@@ -1176,6 +1180,10 @@ def run_ocr_subprocess(
         "agent",
         "--repo",
         str(cwd),
+        "--timeout",
+        str(ocr_timeout_minutes),
+        "--concurrency",
+        str(ocr_concurrency),
     ]
     if exclude:
         cmd.extend(["--exclude", ",".join(exclude)])
@@ -1329,6 +1337,8 @@ class ProductionRunners:
     model: str | None = None
     config: Path | None = None
     on_child_log: Callable[[str], None] | None = None
+    ocr_timeout_minutes: int = DEFAULT_OCR_FILE_TIMEOUT_MINUTES
+    ocr_concurrency: int = DEFAULT_OCR_CONCURRENCY
 
     def run_ocr(
         self, *, source: str, target: str, output_json: Path, exclude: list[str]
@@ -1342,6 +1352,8 @@ class ProductionRunners:
             ocr_bin=self.ocr_bin,
             verbose=self.verbose,
             on_child_log=self.on_child_log,
+            ocr_timeout_minutes=self.ocr_timeout_minutes,
+            ocr_concurrency=self.ocr_concurrency,
         )
 
     def run_analyzer(
@@ -1450,6 +1462,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to deep-architect config.toml (defaults if missing)",
     )
     parser.add_argument(
+        "--ocr-timeout",
+        type=int,
+        default=None,
+        metavar="MINUTES",
+        help=(
+            "OCR per-file timeout in minutes (ocr --timeout). "
+            "Default: env REVIEW_DRIVER_OCR_FILE_TIMEOUT → "
+            "config review_driver_ocr_timeout_minutes → "
+            f"{DEFAULT_OCR_FILE_TIMEOUT_MINUTES}"
+        ),
+    )
+    parser.add_argument(
+        "--ocr-concurrency",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "OCR max concurrent file reviews (ocr --concurrency). "
+            "Default: env REVIEW_DRIVER_OCR_CONCURRENCY → "
+            "config review_driver_ocr_concurrency → "
+            f"{DEFAULT_OCR_CONCURRENCY}"
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="DEBUG logging; tee child logs to stderr in plain mode",
@@ -1466,6 +1502,64 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Force plain-text progress (disable TUI auto-detect)",
     )
     return parser.parse_args(argv)
+
+
+def _positive_int_from_env(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; ignoring", name, raw)
+        return None
+    if value < 1:
+        logger.warning("%s=%d must be >= 1; ignoring", name, value)
+        return None
+    return value
+
+
+def resolve_ocr_timeout_minutes(
+    cli_value: int | None, cfg: HarnessConfig
+) -> int:
+    """CLI > REVIEW_DRIVER_OCR_FILE_TIMEOUT > TOML > default (minutes)."""
+    if cli_value is not None:
+        if cli_value < 1:
+            raise ValueError(f"ocr-timeout must be >= 1, got {cli_value}")
+        return cli_value
+    env_value = _positive_int_from_env("REVIEW_DRIVER_OCR_FILE_TIMEOUT")
+    if env_value is not None:
+        return env_value
+    value = int(cfg.thresholds.review_driver_ocr_timeout_minutes)
+    if value < 1:
+        logger.warning(
+            "thresholds.review_driver_ocr_timeout_minutes=%d must be >= 1; "
+            "using %s",
+            value,
+            DEFAULT_OCR_FILE_TIMEOUT_MINUTES,
+        )
+        return DEFAULT_OCR_FILE_TIMEOUT_MINUTES
+    return value
+
+
+def resolve_ocr_concurrency(cli_value: int | None, cfg: HarnessConfig) -> int:
+    """CLI > REVIEW_DRIVER_OCR_CONCURRENCY > TOML > default."""
+    if cli_value is not None:
+        if cli_value < 1:
+            raise ValueError(f"ocr-concurrency must be >= 1, got {cli_value}")
+        return cli_value
+    env_value = _positive_int_from_env("REVIEW_DRIVER_OCR_CONCURRENCY")
+    if env_value is not None:
+        return env_value
+    value = int(cfg.thresholds.review_driver_ocr_concurrency)
+    if value < 1:
+        logger.warning(
+            "thresholds.review_driver_ocr_concurrency=%d must be >= 1; using %s",
+            value,
+            DEFAULT_OCR_CONCURRENCY,
+        )
+        return DEFAULT_OCR_CONCURRENCY
+    return value
 
 
 def _load_driver_config(config_path: Path | None) -> HarnessConfig:
@@ -1522,6 +1616,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.zero_novelty_passes is not None
         else cfg.thresholds.review_driver_zero_novelty_passes
     )
+    try:
+        ocr_timeout_minutes = resolve_ocr_timeout_minutes(args.ocr_timeout, cfg)
+        ocr_concurrency = resolve_ocr_concurrency(args.ocr_concurrency, cfg)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     cwd = Path.cwd()
     ocr_bin = os.environ.get("OCR_BIN", DEFAULT_OCR_BIN)
@@ -1547,6 +1647,8 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model,
         config=args.config,
         on_child_log=child_logs.emit,
+        ocr_timeout_minutes=ocr_timeout_minutes,
+        ocr_concurrency=ocr_concurrency,
     )
 
     def _run_pipeline(reporter: ProgressReporter) -> DriverProgress:
