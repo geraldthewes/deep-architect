@@ -55,9 +55,21 @@ DEFAULT_OCR_CONCURRENCY = 8
 DEFAULT_OCR_AUDIENCE = "agent"
 OCR_SESSION_POLL_SECONDS = 0.25
 OCR_SESSION_DISCOVER_SLACK_SECONDS = 5.0
+OCR_WAIT_POLL_SECONDS = 0.25
+OCR_FORCE_KILL_GRACE_SECONDS = 2.0
 ACTION_MIN_SEVERITY = "medium"
 
 _interrupt_requested = False
+_force_stop_requested = False
+_ocr_proc_lock = threading.Lock()
+_ocr_proc: subprocess.Popen[str] | None = None
+
+
+def _reset_interrupt_state() -> None:
+    """Clear graceful / force-stop flags. Called at CLI start and from tests."""
+    global _interrupt_requested, _force_stop_requested
+    _interrupt_requested = False
+    _force_stop_requested = False
 
 
 def request_interrupt() -> None:
@@ -66,9 +78,61 @@ def request_interrupt() -> None:
     _interrupt_requested = True
 
 
-def _sigint_handler(signum: int, frame: object) -> None:
+def request_force_stop() -> None:
+    """Kill the in-flight OCR subprocess (second q / Ctrl-C).
+
+    Also marks a graceful driver interrupt so the loop does not start the
+    next phase. Safe to call from the TUI thread.
+    """
+    global _force_stop_requested
+    _force_stop_requested = True
     request_interrupt()
-    logger.info("CTRL-C received, finishing current step before shutdown...")
+    with _ocr_proc_lock:
+        proc = _ocr_proc
+    if proc is None:
+        return
+    logger.info("Force stop: signalling OCR pid %s", proc.pid)
+    _kill_ocr_process(proc, force=False)
+
+
+def _kill_ocr_process(proc: subprocess.Popen[str], *, force: bool) -> None:
+    """Send SIGTERM (or SIGKILL if *force*) to the OCR process group."""
+    if proc.poll() is not None:
+        return
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    pid = proc.pid
+    if os.name == "posix" and pid:
+        try:
+            os.killpg(pid, sig)
+            return
+        except ProcessLookupError:
+            return
+        except OSError as exc:
+            logger.warning(
+                "killpg(%s, %s) failed: %s; falling back to the parent process",
+                pid,
+                sig,
+                exc,
+            )
+    try:
+        if force:
+            proc.kill()
+        else:
+            proc.terminate()
+    except ProcessLookupError:
+        return
+
+
+def _sigint_handler(signum: int, frame: object) -> None:
+    if _interrupt_requested:
+        request_force_stop()
+        logger.info("CTRL-C received again, killing current OCR subprocess...")
+        return
+    request_interrupt()
+    logger.info(
+        "CTRL-C received, finishing current step before shutdown "
+        "(press Ctrl-C again to kill it)..."
+    )
 
 
 def _install_sigint_handler() -> None:
@@ -719,10 +783,20 @@ def run_driver(
                 ocr_stats = apply_ocr_stderr(load_ocr_run_stats(ocr_json), stderr_tail)
                 if ocr_stats.status is None:
                     ocr_stats = replace(ocr_stats, status="failed")
-                reason = summarize_ocr_failure(ocr_stats, stderr_tail, rc=ocr_rc)
-                logger.error(
-                    "OCR failed on pass %s (rc=%s): %s", pass_index, ocr_rc, reason
-                )
+                interrupted = ocr_rc == 130 or _interrupt_requested
+                if interrupted:
+                    reason = "interrupted"
+                    logger.info(
+                        "OCR interrupted on pass %s (rc=%s)", pass_index, ocr_rc
+                    )
+                else:
+                    reason = summarize_ocr_failure(ocr_stats, stderr_tail, rc=ocr_rc)
+                    logger.error(
+                        "OCR failed on pass %s (rc=%s): %s",
+                        pass_index,
+                        ocr_rc,
+                        reason,
+                    )
                 sink.phase_done(format_ocr_summary(ocr_stats, {}, ocr_wall))
                 return _fail_pass(
                     progress,
@@ -1417,14 +1491,16 @@ def run_ocr_subprocess(
         tee=verbose,
         on_child_log=on_child_log,
     )
+    popen_kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "cwd": cwd,
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=cwd,
-        )
+        proc = subprocess.Popen(cmd, **popen_kwargs)
     except FileNotFoundError:
         logger.error("ocr binary not found: %s", ocr_bin)
         _append_log(
@@ -1470,12 +1546,38 @@ def run_ocr_subprocess(
     out_thread.start()
     err_thread.start()
     session_thread.start()
+    global _ocr_proc
+    with _ocr_proc_lock:
+        _ocr_proc = proc
     try:
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        deadline = time.monotonic() + timeout
+        timed_out = False
+        while True:
+            if _force_stop_requested:
+                _kill_ocr_process(proc, force=False)
+                try:
+                    proc.wait(timeout=OCR_FORCE_KILL_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    logger.warning("OCR did not exit after SIGTERM; sending SIGKILL")
+                    _kill_ocr_process(proc, force=True)
+                    try:
+                        proc.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        logger.error("OCR still running after SIGKILL")
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                proc.wait(timeout=min(OCR_WAIT_POLL_SECONDS, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        if timed_out:
             logger.error("ocr timed out after %s seconds", timeout)
-            proc.kill()
+            _kill_ocr_process(proc, force=True)
             out_thread.join(timeout=1)
             err_thread.join(timeout=1)
             _append_log(
@@ -1493,6 +1595,15 @@ def run_ocr_subprocess(
         if stdout.strip():
             output_json.parent.mkdir(parents=True, exist_ok=True)
             output_json.write_text(stdout, encoding="utf-8")
+        if _force_stop_requested:
+            logger.info("ocr killed by force stop (rc=%s)", rc)
+            _append_log(
+                log,
+                "ocr killed (force stop)\n",
+                tee=verbose,
+                on_child_log=on_child_log,
+            )
+            return 130
         if rc != 0:
             logger.error("ocr exited %s", rc)
             return rc if rc else 1
@@ -1507,6 +1618,9 @@ def run_ocr_subprocess(
             return 1
         return 0
     finally:
+        with _ocr_proc_lock:
+            if _ocr_proc is proc:
+                _ocr_proc = None
         session_stop.set()
         session_thread.join(timeout=2)
 
@@ -1845,8 +1959,7 @@ def main(argv: list[str] | None = None) -> int:
     TTY auto-starts the observational TUI; CI / pipes stay plain-text.
     The loop itself is unattended (no confirm between passes).
     """
-    global _interrupt_requested
-    _interrupt_requested = False
+    _reset_interrupt_state()
     _install_sigint_handler()
 
     args = parse_args(argv)

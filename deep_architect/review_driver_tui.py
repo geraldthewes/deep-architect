@@ -27,6 +27,7 @@ from deep_architect.review_driver import (
     DriverRunMeta,
     ProgressReporter,
     format_duration,
+    request_force_stop,
     request_interrupt,
 )
 
@@ -216,6 +217,19 @@ def infra_error_count(progress: DriverProgress) -> int:
         if record.status == "failed" or ocr_status in {"failed", "partial"}:
             total += 1
     return total
+
+
+def _request_nested_shutdown() -> None:
+    """Ask in-process analyzer/action to stop after current in-flight work."""
+    from deep_architect.review_action_harness import (  # noqa: PLC0415
+        request_shutdown as action_shutdown,
+    )
+    from deep_architect.review_analyzer import (  # noqa: PLC0415
+        request_shutdown as analyzer_shutdown,
+    )
+
+    analyzer_shutdown()
+    action_shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +504,7 @@ class ReviewDriverApp(App[DriverTuiResult]):
         self._errors = 0
         self._result_count = 0
         self._stop_requested = False
+        self._force_stop_requested = False
         self._pipeline_finished = False
         self._browse_available = False
         self._progress: DriverProgress | None = None
@@ -534,7 +549,7 @@ class ReviewDriverApp(App[DriverTuiResult]):
                 id="activity-log", highlight=False, markup=False, max_lines=2000
             )
         yield Static(
-            "Running…  q = graceful stop after the current step",
+            "Running…  q = stop after the current step; second q kills it",
             id="status-line",
         )
         yield Footer()
@@ -562,14 +577,30 @@ class ReviewDriverApp(App[DriverTuiResult]):
             self.exit_with_action("quit")
             return
         if self._stop_requested:
+            if self._force_stop_requested:
+                self.query_one("#status-line", Static).update(
+                    "[yellow]Force stop already requested — "
+                    "waiting for the process to exit…[/yellow]"
+                )
+                return
+            self._force_stop_requested = True
+            request_force_stop()
             self.query_one("#status-line", Static).update(
-                "[yellow]Stop already requested — finishing current step…[/yellow]"
+                "[red]Force stop — killing current OCR process…[/red]"
+            )
+            self.query_one("#activity-log", RichLog).write(
+                Text(
+                    "WARN    tui: force stop requested (second q / Ctrl-C)",
+                    style="yellow",
+                )
             )
             return
         self._stop_requested = True
         request_interrupt()
+        _request_nested_shutdown()
         self.query_one("#status-line", Static).update(
-            "[yellow]Stop requested — finishing current step before exit…[/yellow]"
+            "[yellow]Stop requested — finishing current step. "
+            "Press q again to kill it.[/yellow]"
         )
         self.query_one("#activity-log", RichLog).write(
             Text("WARN    tui: graceful stop requested (q / Ctrl-C)", style="yellow")
@@ -650,7 +681,7 @@ class ReviewDriverApp(App[DriverTuiResult]):
             pass
 
     def _show_live_error(self, line: str) -> None:
-        if self._pipeline_finished:
+        if self._pipeline_finished or self._stop_requested:
             return
         try:
             self.query_one("#status-line", Static).update(
@@ -679,10 +710,11 @@ class ReviewDriverApp(App[DriverTuiResult]):
         self._max_passes = max_passes
         self._phase = phase
         self._refresh_progress_widgets()
-        label = _PHASE_LABEL.get(phase, phase)
-        self.query_one("#status-line", Static).update(
-            f"Running {label}…  q = graceful stop after the current step"
-        )
+        if not self._stop_requested:
+            label = _PHASE_LABEL.get(phase, phase)
+            self.query_one("#status-line", Static).update(
+                f"Running {label}…  q = stop after this step; second q kills it"
+            )
 
     def apply_phase_done(self, line: str) -> None:
         self._write_result(line)

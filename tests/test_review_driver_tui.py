@@ -427,3 +427,59 @@ class TestReviewDriverAppLayout:
                 assert "novelty" in summary
         finally:
             release.set()
+
+
+def _blocking_progress() -> DriverProgress:
+    return DriverProgress(
+        status="converged",
+        source="feat",
+        target="main",
+        source_sha="a",
+        target_sha="b",
+        max_passes=5,
+        k=2,
+        output_dir=".",
+    )
+
+
+class TestReviewDriverAppStop:
+    async def test_first_q_is_graceful_second_q_force_stops(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "deep_architect.review_driver_tui.request_interrupt",
+            lambda: calls.append("interrupt"),
+        )
+        monkeypatch.setattr(
+            "deep_architect.review_driver_tui.request_force_stop",
+            lambda: calls.append("force"),
+        )
+        monkeypatch.setattr(
+            "deep_architect.review_driver_tui._request_nested_shutdown",
+            lambda: calls.append("nested"),
+        )
+        release = threading.Event()
+
+        def pipeline(_reporter: object) -> DriverProgress:
+            release.wait(timeout=10)
+            return _blocking_progress()
+
+        app = ReviewDriverApp(_meta(), pipeline)
+        try:
+            async with app.run_test() as pilot:
+                await pilot.press("q")
+                status = str(app.query_one("#status-line", Static).content)
+                assert "Press q again" in status
+                assert calls == ["interrupt", "nested"]
+                await pilot.press("q")
+                status = str(app.query_one("#status-line", Static).content)
+                assert "Force stop" in status
+                assert "killing current OCR" in status
+                assert calls == ["interrupt", "nested", "force"]
+                await pilot.press("q")
+                status = str(app.query_one("#status-line", Static).content)
+                assert "already requested" in status
+                assert calls == ["interrupt", "nested", "force"]
+        finally:
+            release.set()

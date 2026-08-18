@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import git
 import pytest
 
+from deep_architect import review_driver as review_driver_mod
 from deep_architect.config import HarnessConfig
 from deep_architect.review_driver import (
     DEFAULT_OUTPUT_DIR,
@@ -29,6 +30,8 @@ from deep_architect.review_driver import (
     ocr_session_dir,
     parse_args,
     preflight_driver,
+    request_force_stop,
+    request_interrupt,
     resolve_ocr_concurrency,
     resolve_ocr_timeout_minutes,
     run_action_main,
@@ -40,6 +43,13 @@ from deep_architect.review_driver import (
     write_driver_report,
 )
 from deep_architect.review_novelty import OcrRunStats
+
+
+@pytest.fixture(autouse=True)
+def _clear_driver_interrupt_flags() -> object:
+    review_driver_mod._reset_interrupt_state()
+    yield
+    review_driver_mod._reset_interrupt_state()
 
 
 def _finding_md(
@@ -314,6 +324,47 @@ class TestRunDriver:
         assert result.stop_detail == "ocr exited rc=1"
         assert failed and failed[0].failure_reason == "ocr exited rc=1"
 
+    def test_interrupt_before_pass_skips_ocr(self, tmp_path: Path) -> None:
+        review_driver_mod._reset_interrupt_state()
+        request_interrupt()
+        try:
+            runners = ScriptedRunners(novelties=[1])
+            result = _run(tmp_path, runners, max_passes=2, k=2)
+        finally:
+            review_driver_mod._reset_interrupt_state()
+        assert result.status == "failed"
+        assert runners.calls == []
+
+    def test_interrupt_after_ocr_skips_analyzer(self, tmp_path: Path) -> None:
+        review_driver_mod._reset_interrupt_state()
+
+        class InterruptingRunners(ScriptedRunners):
+            def run_ocr(
+                self,
+                *,
+                source: str,
+                target: str,
+                output_json: Path,
+                exclude: list[str],
+            ) -> int:
+                rc = super().run_ocr(
+                    source=source,
+                    target=target,
+                    output_json=output_json,
+                    exclude=exclude,
+                )
+                request_interrupt()
+                return rc
+
+        try:
+            runners = InterruptingRunners(novelties=[1])
+            result = _run(tmp_path, runners, max_passes=2, k=2)
+        finally:
+            review_driver_mod._reset_interrupt_state()
+        assert result.status == "failed"
+        assert result.stop_detail == "interrupted"
+        assert runners.calls == ["ocr"]
+
     def test_report_includes_stop_detail(self, tmp_path: Path) -> None:
         progress = DriverProgress(
             status="failed",
@@ -467,7 +518,12 @@ class _FakePopen:
         self.stdout = io.StringIO(stdout)
         self.stderr = io.StringIO(stderr)
         self.returncode = 0
+        self.pid: int | None = None
         self.kill = MagicMock()
+        self.terminate = MagicMock()
+
+    def poll(self) -> int | None:
+        return None
 
     def wait(self, timeout: float | None = None) -> int:
         del timeout
@@ -843,6 +899,84 @@ class TestProductionRunners:
             )
         assert rc == 1
         fake.kill.assert_called_once()
+
+    def test_ocr_force_stop_kills_child_and_returns_130(self, tmp_path: Path) -> None:
+        review_driver_mod._reset_interrupt_state()
+        script = tmp_path / "fake-ocr"
+        script.write_text("#!/bin/sh\nexec sleep 60\n", encoding="utf-8")
+        script.chmod(0o755)
+        output_json = tmp_path / "code-review-r1.json"
+        started = threading.Event()
+        real_popen = subprocess.Popen
+
+        def _started_popen(
+            *args: object, **kwargs: object
+        ) -> subprocess.Popen[str]:
+            proc = real_popen(*args, **kwargs)  # type: ignore[arg-type]
+            started.set()
+            return proc
+
+        def _kill_after_start() -> None:
+            assert started.wait(timeout=5)
+            time.sleep(0.1)
+            request_force_stop()
+
+        killer = threading.Thread(target=_kill_after_start)
+        t0 = time.monotonic()
+        try:
+            with patch("deep_architect.review_driver.subprocess.Popen", _started_popen):
+                killer.start()
+                rc = run_ocr_subprocess(
+                    source="feat",
+                    target="main",
+                    output_json=output_json,
+                    exclude=[],
+                    cwd=tmp_path,
+                    ocr_bin=str(script),
+                )
+            killer.join(timeout=5)
+        finally:
+            review_driver_mod._reset_interrupt_state()
+        elapsed = time.monotonic() - t0
+        assert rc == 130
+        assert elapsed < 10
+        log_text = (tmp_path / "logs" / "r1-ocr.log").read_text(encoding="utf-8")
+        assert "force stop" in log_text
+
+    def test_request_force_stop_without_child_sets_flags(self) -> None:
+        review_driver_mod._reset_interrupt_state()
+        try:
+            request_force_stop()
+            assert review_driver_mod._interrupt_requested is True
+            assert review_driver_mod._force_stop_requested is True
+        finally:
+            review_driver_mod._reset_interrupt_state()
+
+    def test_second_sigint_requests_force_stop(self) -> None:
+        review_driver_mod._reset_interrupt_state()
+        try:
+            review_driver_mod._sigint_handler(2, None)
+            assert review_driver_mod._interrupt_requested is True
+            assert review_driver_mod._force_stop_requested is False
+            review_driver_mod._sigint_handler(2, None)
+            assert review_driver_mod._force_stop_requested is True
+        finally:
+            review_driver_mod._reset_interrupt_state()
+
+    def test_ocr_popen_starts_new_session(self, tmp_path: Path) -> None:
+        output_json = tmp_path / "code-review-r1.json"
+        fake = _FakePopen(stdout='{"comments":[]}\n', stderr="")
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake) as mocked:
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+            )
+        assert rc == 0
+        assert mocked.call_args.kwargs.get("start_new_session") is True
 
     def test_analyzer_redirects_stdout_to_on_child_log(self, tmp_path: Path) -> None:
         ocr_json = tmp_path / "code-review-r1.json"
