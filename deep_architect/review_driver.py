@@ -615,7 +615,7 @@ def run_driver(
     runners: ReviewStepRunners,
     max_passes: int,
     k: int,
-    resume: bool = False,
+    resume: bool = True,
     knowledge_dir: Path | None = None,
     exclude: list[str] | None = None,
     source_sha: str = "",
@@ -625,40 +625,32 @@ def run_driver(
     """Run OCR → analyzer → action until stop predicates fire.
 
     All external tools go through *runners*. Mid-pass crash is not recorded as
-    a completed pass; ``--resume`` restarts that pass and overwrites artifacts.
+    a completed pass; resume restarts that pass and overwrites artifacts.
+    Resume is on by default when ``progress.json`` exists; pass ``resume=False``
+    (``--no-resume``) to start a new run.
     """
     exclude_globs = list(exclude) if exclude is not None else []
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     sink: ProgressReporter = reporter if reporter is not None else PlainReporter()
-    sink.start(
-        DriverRunMeta(
-            source=source,
-            target=target,
-            source_sha=source_sha,
-            target_sha=target_sha,
-            max_passes=max_passes,
-            k=k,
-            output_dir=output_dir,
-            resume=resume,
-        )
-    )
+    progress_path = output_dir / PROGRESS_FILENAME
 
-    if resume:
-        progress_path = output_dir / PROGRESS_FILENAME
-        if not progress_path.is_file():
-            raise FileNotFoundError(
-                f"Cannot --resume: {progress_path} is missing. "
-                "Omit --resume to start a new run."
-            )
+    actually_resuming = False
+    already_done = False
+    start = 1
+    if resume and progress_path.is_file():
         progress = load_driver_progress(output_dir)
         if progress.source != source or progress.target != target:
             raise ValueError(
                 f"Resume state is for {progress.source} → {progress.target}, "
-                f"not {source} → {target}"
+                f"not {source} → {target}. Pass --no-resume to start a new run."
             )
-        progress.status = "running"
-        start = progress.current_pass + 1
+        actually_resuming = True
+        if progress.status in ("converged", "max_passes"):
+            already_done = True
+        else:
+            progress.status = "running"
+            start = progress.current_pass + 1
     else:
         progress = DriverProgress(
             source=source,
@@ -669,7 +661,22 @@ def run_driver(
             k=k,
             output_dir=str(output_dir),
         )
-        start = 1
+
+    sink.start(
+        DriverRunMeta(
+            source=source,
+            target=target,
+            source_sha=source_sha,
+            target_sha=target_sha,
+            max_passes=max_passes,
+            k=k,
+            output_dir=output_dir,
+            resume=actually_resuming,
+        )
+    )
+    if already_done:
+        sink.finish(progress)
+        return progress
 
     save_driver_progress(output_dir, progress)
 
@@ -1674,8 +1681,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--resume",
-        action="store_true",
-        help="Continue from output-dir/progress.json (fails if the file is missing)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Continue from output-dir/progress.json when present (default). "
+            "Pass --no-resume to start a new run."
+        ),
     )
     parser.add_argument(
         "--exclude",

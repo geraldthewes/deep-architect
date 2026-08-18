@@ -143,7 +143,7 @@ def _run(
     *,
     max_passes: int = 5,
     k: int = 2,
-    resume: bool = False,
+    resume: bool = True,
     source: str = "feat",
     target: str = "main",
 ) -> DriverProgress:
@@ -371,7 +371,7 @@ class TestRunDriver:
         save_driver_progress(tmp_path, seed)
 
         runners = ScriptedRunners(novelties=[3, 0, 0])
-        result = _run(tmp_path, runners, resume=True)
+        result = _run(tmp_path, runners)
         ocr_names = [p.name for p in runners.ocr_outputs]
         assert "code-review-r1.json" not in ocr_names
         assert ocr_names[0] == "code-review-r2.json"
@@ -379,10 +379,69 @@ class TestRunDriver:
         assert result.novelty_history[0] == 3
         assert result.current_pass >= 2
 
-    def test_resume_missing_progress_fails_fast(self, tmp_path: Path) -> None:
+    def test_resume_missing_progress_starts_fresh(self, tmp_path: Path) -> None:
+        runners = ScriptedRunners(novelties=[0, 0])
+        result = _run(tmp_path, runners, max_passes=2, k=2)
+        ocr_names = [p.name for p in runners.ocr_outputs]
+        assert ocr_names[0] == "code-review-r1.json"
+        assert result.status == "converged"
+
+    def test_no_resume_starts_at_pass_1(self, tmp_path: Path) -> None:
+        seed = DriverProgress(
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            target_sha="bbb",
+            max_passes=5,
+            k=2,
+            current_pass=1,
+            consecutive_zero_novelty=0,
+            novelty_history=[3],
+            output_dir=str(tmp_path),
+        )
+        save_driver_progress(tmp_path, seed)
+
+        runners = ScriptedRunners(novelties=[0, 0])
+        result = _run(tmp_path, runners, resume=False, max_passes=2, k=2)
+        ocr_names = [p.name for p in runners.ocr_outputs]
+        assert ocr_names[0] == "code-review-r1.json"
+        assert result.status == "converged"
+
+    def test_resume_source_mismatch_fails(self, tmp_path: Path) -> None:
+        seed = DriverProgress(
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            target_sha="bbb",
+            max_passes=5,
+            k=2,
+            output_dir=str(tmp_path),
+        )
+        save_driver_progress(tmp_path, seed)
         runners = ScriptedRunners(novelties=[0])
-        with pytest.raises(FileNotFoundError, match="Omit --resume"):
-            _run(tmp_path, runners, resume=True)
+        with pytest.raises(ValueError, match="--no-resume"):
+            _run(tmp_path, runners, source="other")
+        assert runners.calls == []
+
+    def test_resume_terminal_status_does_not_rerun(self, tmp_path: Path) -> None:
+        seed = DriverProgress(
+            status="converged",
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            target_sha="bbb",
+            max_passes=5,
+            k=2,
+            current_pass=2,
+            consecutive_zero_novelty=2,
+            novelty_history=[0, 0],
+            output_dir=str(tmp_path),
+        )
+        save_driver_progress(tmp_path, seed)
+        runners = ScriptedRunners(novelties=[9, 9, 9])
+        result = _run(tmp_path, runners)
+        assert result.status == "converged"
+        assert result.current_pass == 2
         assert runners.calls == []
 
     def test_loop_stdout_is_phase_summaries(
@@ -986,6 +1045,15 @@ class TestParseArgs:
         assert args.source == "feat"
         assert args.target == "main"
         assert args.output_dir == DEFAULT_OUTPUT_DIR
+        assert args.resume is True
+
+    def test_resume_flags(self) -> None:
+        args = parse_args(["--source", "feat"])
+        assert args.resume is True
+        args = parse_args(["--source", "feat", "--resume"])
+        assert args.resume is True
+        args = parse_args(["--source", "feat", "--no-resume"])
+        assert args.resume is False
 
     def test_missing_source_exits(self) -> None:
         with pytest.raises(SystemExit):
@@ -1069,6 +1137,59 @@ class TestMain:
             )
         assert rc == 0
         assert mocked.call_args.kwargs["resume"] is True
+
+    def test_default_resume_threaded(self, tmp_path: Path) -> None:
+        progress = DriverProgress(
+            status="converged",
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            target_sha="bbb",
+            max_passes=5,
+            k=2,
+            output_dir=str(tmp_path),
+        )
+        with (
+            patch(
+                "deep_architect.review_driver.preflight_driver",
+                return_value=(None, "aaa", "bbb"),
+            ),
+            patch("deep_architect.review_driver.run_driver", return_value=progress) as mocked,
+        ):
+            rc = main(["--source", "feat", "--output-dir", str(tmp_path), "--no-tui"])
+        assert rc == 0
+        assert mocked.call_args.kwargs["resume"] is True
+
+    def test_no_resume_threaded(self, tmp_path: Path) -> None:
+        progress = DriverProgress(
+            status="converged",
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            target_sha="bbb",
+            max_passes=5,
+            k=2,
+            output_dir=str(tmp_path),
+        )
+        with (
+            patch(
+                "deep_architect.review_driver.preflight_driver",
+                return_value=(None, "aaa", "bbb"),
+            ),
+            patch("deep_architect.review_driver.run_driver", return_value=progress) as mocked,
+        ):
+            rc = main(
+                [
+                    "--source",
+                    "feat",
+                    "--no-resume",
+                    "--output-dir",
+                    str(tmp_path),
+                    "--no-tui",
+                ]
+            )
+        assert rc == 0
+        assert mocked.call_args.kwargs["resume"] is False
 
     def test_max_passes_exit_1(self, tmp_path: Path) -> None:
         progress = DriverProgress(

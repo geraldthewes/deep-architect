@@ -936,6 +936,9 @@ The same command is used locally and in CI. There is no confirm between passes. 
 # on the PR branch, clean tree (TUI on a TTY)
 review-driver --source my-feature --target main --max-passes 5
 
+# Start over instead of continuing .review-runs/progress.json
+review-driver --source my-feature --no-resume
+
 # Force plain phase summaries in a terminal (e.g. for log capture)
 review-driver --source my-feature --no-tui
 
@@ -972,7 +975,7 @@ review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
 | `--output-dir PATH` | `.review-runs` | Per-pass artifacts, progress, and `REPORT.md` |
 | `--max-passes N` | config / `5` | Safety cap on OCR→action passes |
 | `--zero-novelty-passes K` | config / `2` | Consecutive zero-novelty passes required to converge |
-| `--resume` | off | Continue from `progress.json`; fails fast if that file is missing |
+| `--resume` / `--no-resume` | resume | Continue from `progress.json` when present. `--no-resume` starts a new run |
 | `--exclude GLOB` | (none) | Repeatable; passed to `ocr` and `review-analyzer` |
 | `--knowledge-dir PATH` | `<cwd>/knowledge` | Catalog / backlog directory for the analyzer |
 | `--provider NAME` | (action default) | Passed through to `review-action` |
@@ -994,7 +997,7 @@ Stop when the count of this-pass **high/medium `VALID`** findings is 0 for K con
 
 When stdout is a TTY, `review-driver` opens a **full-screen Textual app** (alternate screen) instead of sparse phase lines. The loop stays unattended — there is no confirm between passes. Child CLIs (`review-analyzer`, `review-action`) always receive `--no-tui` so they never nest a second dashboard.
 
-- **Header** — `source → target`, short SHAs, pass `i/N`, K, output dir (plus a resume marker when `--resume`)
+- **Header** — `source → target`, short SHAs, pass `i/N`, K, output dir (plus a resume marker when continuing an existing run)
 - **Progress** — current phase (`OCR` / `Analyzer` / `Action`), elapsed time, pass bar
 - **Summary strip** — novelty, zeros/K, VALID H/M/L, committed, errors
 - **Results list** — scrollable phase summaries, pass rollup, and trend vs the previous pass. Partial or failed OCR is labeled `PARTIAL` / `FAILED` with the file-failure count and error class (for example `context deadline exceeded`), not just a comment count.
@@ -1014,7 +1017,7 @@ Quiet during a phase; one start line (`Pass 2/5 · OCR starting…`), then a com
 |------|---------|
 | `0` | Converged **and** no recorded `review-action` errors across passes |
 | `1` | Preflight failure, a hard step fail, `max_passes` with novelty remaining, or any action errors (including converged-with-errors) |
-| `130` | Interrupted (Ctrl-C); `--resume` restarts the incomplete pass |
+| `130` | Interrupted (Ctrl-C); the next run resumes and restarts the incomplete pass |
 
 ### Failure modes
 
@@ -1022,7 +1025,7 @@ Quiet during a phase; one start line (`Pass 2/5 · OCR starting…`), then a com
 - `--source` / `--target` do not resolve, or `HEAD` is not `--source`
 - Dirty tracked files outside the output directory
 - OCR or analyzer hard-fail (non-zero, including interrupt)
-- `--resume` with no `progress.json`
+- Resume state is for a different `--source` / `--target` (pass `--no-resume` to start over)
 - Max-passes reached with remaining high/medium `VALID`
 
 ---
