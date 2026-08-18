@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -592,6 +593,54 @@ class TestProductionRunners:
         assert "--tui" not in argv
         assert argv[argv.index("--min-severity") + 1] == "medium"
         assert str(feedback) in argv
+
+
+class TestInstallSigintHandler:
+    def test_worker_thread_does_not_raise(self) -> None:
+        from deep_architect.review_driver import _install_sigint_handler
+
+        errors: list[BaseException] = []
+
+        def _run() -> None:
+            try:
+                _install_sigint_handler()
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        thread.join()
+        assert errors == []
+
+    def test_run_analyzer_main_from_worker_thread(self, tmp_path: Path) -> None:
+        ocr_json = tmp_path / "code-review-r1.json"
+        ocr_json.write_text(
+            json.dumps({"status": "success", "comments": [], "warnings": []}),
+            encoding="utf-8",
+        )
+        errors: list[BaseException] = []
+        codes: list[int] = []
+
+        def _run() -> None:
+            try:
+                codes.append(
+                    run_analyzer_main(
+                        ocr_json=ocr_json,
+                        feedback_dir=tmp_path / "feedback-r1",
+                        prior_feedback=[],
+                        knowledge_dir=tmp_path / "knowledge",
+                        exclude=[],
+                        output_dir=tmp_path,
+                    )
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        thread.join()
+        assert errors == []
+        assert codes == [0]
 
 
 class TestShouldUseTui:

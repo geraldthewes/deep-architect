@@ -9,6 +9,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -123,6 +124,18 @@ def _sigint_handler(signum: int, frame: object) -> None:
     log.info(
         "CTRL-C received, finishing in-flight analyses before shutdown..."
     )
+
+
+def _install_sigint_handler() -> None:
+    """Install the SIGINT handler when running on the main thread.
+
+    ``signal.signal`` raises ``ValueError`` off the main thread. review-driver
+    invokes this ``main()`` in-process from a Textual worker; the parent
+    already owns SIGINT on the main thread.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    signal.signal(signal.SIGINT, _sigint_handler)
 
 
 class Verdict(StrEnum):
@@ -2172,7 +2185,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     global _shutdown_requested
     _shutdown_requested = False
-    signal.signal(signal.SIGINT, _sigint_handler)
+    _install_sigint_handler()
 
     args = parse_args(argv)
 

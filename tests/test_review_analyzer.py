@@ -48,6 +48,7 @@ from deep_architect.review_analyzer import (
     is_timeout_report,
     load_ocr_json,
     load_prior_feedback_index,
+    main,
     parse_severity_from_markdown,
     process_findings_concurrently,
     request_shutdown,
@@ -1551,6 +1552,43 @@ class TestGenerateIndexReport:
 # ---------------------------------------------------------------------------
 # should_use_tui / PlainReporter / progress callbacks
 # ---------------------------------------------------------------------------
+
+
+class TestInstallSigintHandler:
+    def test_worker_thread_does_not_raise(self) -> None:
+        errors: list[BaseException] = []
+
+        def _run() -> None:
+            try:
+                review_analyzer_mod._install_sigint_handler()
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        thread.join()
+        assert errors == []
+
+    def test_main_from_worker_thread_empty_ocr(self, tmp_path: Path) -> None:
+        ocr = tmp_path / "ocr.json"
+        ocr.write_text(
+            json.dumps({"status": "success", "comments": [], "warnings": []}),
+            encoding="utf-8",
+        )
+        errors: list[BaseException] = []
+        codes: list[int] = []
+
+        def _run() -> None:
+            try:
+                codes.append(main([str(ocr), "--summary-only", "--no-tui"]))
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        thread.join()
+        assert errors == []
+        assert codes == [0]
 
 
 class TestShouldUseTui:

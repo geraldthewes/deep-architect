@@ -6,6 +6,7 @@ import logging
 import re
 import signal
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -77,6 +78,18 @@ def _sigint_handler(signum: int, frame: object) -> None:
     """Signal handler for SIGINT (CTRL-C). Sets shutdown flag and logs."""
     request_shutdown()
     logger.info("CTRL-C received, finishing current finding before shutdown...")
+
+
+def _install_sigint_handler() -> None:
+    """Install the SIGINT handler when running on the main thread.
+
+    ``signal.signal`` raises ``ValueError`` off the main thread. review-driver
+    invokes this ``main()`` in-process from a Textual worker; the parent
+    already owns SIGINT on the main thread.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    signal.signal(signal.SIGINT, _sigint_handler)
 
 
 # ---------------------------------------------------------------------------
@@ -1423,7 +1436,7 @@ def main(argv: list[str] | None = None) -> int:
     # Reset shutdown flag and set up signal handler for graceful interrupt
     global _shutdown_requested
     _shutdown_requested = False
-    signal.signal(signal.SIGINT, _sigint_handler)
+    _install_sigint_handler()
 
     force_tui = _force_tui_from_args(args)
     use_tui = should_use_tui(force_tui=force_tui)

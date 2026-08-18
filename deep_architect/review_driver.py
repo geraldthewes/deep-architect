@@ -61,6 +61,17 @@ def _sigint_handler(signum: int, frame: object) -> None:
     request_interrupt()
     logger.info("CTRL-C received, finishing current step before shutdown...")
 
+
+def _install_sigint_handler() -> None:
+    """Install the SIGINT handler when running on the main thread.
+
+    ``signal.signal`` raises ``ValueError`` off the main thread. The TUI
+    worker must not reinstall this; the CLI entry point already did.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    signal.signal(signal.SIGINT, _sigint_handler)
+
 _COST_RE = re.compile(r"\$([0-9]+(?:\.[0-9]+)?)")
 _ELAPSED_RE = re.compile(
     r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$",
@@ -1414,7 +1425,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     global _interrupt_requested
     _interrupt_requested = False
-    signal.signal(signal.SIGINT, _sigint_handler)
+    _install_sigint_handler()
 
     args = parse_args(argv)
 

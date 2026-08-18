@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2154,6 +2155,24 @@ class TestCurrentRunSummaryText:
 # ---------------------------------------------------------------------------
 # should_use_tui / PlainReporter / progress callbacks
 # ---------------------------------------------------------------------------
+
+
+class TestInstallSigintHandler:
+    def test_worker_thread_does_not_raise(self) -> None:
+        from deep_architect.review_action_harness import _install_sigint_handler
+
+        errors: list[BaseException] = []
+
+        def _run() -> None:
+            try:
+                _install_sigint_handler()
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        thread.join()
+        assert errors == []
 
 
 class TestShouldUseTui:
