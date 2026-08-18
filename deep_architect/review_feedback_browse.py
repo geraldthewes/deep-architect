@@ -824,23 +824,30 @@ class FeedbackBrowseApp(App[None]):
         else:
             self.exit(message="No report data to display")
 
+    def _show_mode_screen(self, screen: Screen[None]) -> None:
+        """Replace the current mode root. Never switch_screen the implicit _default.
+
+        on_mount push_screens the first mode onto Textual's empty base screen.
+        switch_screen on that base screen pops an empty result-callback stack
+        (IndexError). Pop overlays, then push the new mode the same way.
+        """
+        while len(self.screen_stack) > 1:
+            self.pop_screen()
+        self.push_screen(screen)
+
     def switch_to_action(self) -> None:
         """Switch to action-results mode if data is available."""
         if self.action_report is None:
             self.notify("No review-action results in this directory", severity="warning")
             return
-        while len(self.screen_stack) > 1:
-            self.pop_screen()
-        self.switch_screen(ActionSummaryScreen(self.action_report))
+        self._show_mode_screen(ActionSummaryScreen(self.action_report))
 
     def switch_to_verdict(self) -> None:
         """Switch to analyzer verdict mode if data is available."""
         if self.feedback_report is None:
             self.notify("No analyzer findings to browse", severity="warning")
             return
-        while len(self.screen_stack) > 1:
-            self.pop_screen()
-        self.switch_screen(SummaryScreen(self.feedback_report))
+        self._show_mode_screen(SummaryScreen(self.feedback_report))
 
 
 # ---------------------------------------------------------------------------
