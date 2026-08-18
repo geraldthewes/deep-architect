@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -19,11 +20,13 @@ from deep_architect.review_driver import (
     DriverPassRecord,
     DriverPreflightError,
     DriverProgress,
+    format_ocr_session_event,
     format_ocr_summary,
     format_stop_line,
     format_trend,
     load_driver_progress,
     main,
+    ocr_session_dir,
     parse_args,
     preflight_driver,
     resolve_ocr_concurrency,
@@ -644,6 +647,125 @@ class TestProductionRunners:
         assert written["status"] == "failed"
         assert written["summary"]["files_reviewed"] == 16
 
+    def test_ocr_audience_human_when_requested(self, tmp_path: Path) -> None:
+        output_json = tmp_path / "code-review-r1.json"
+        fake = _FakePopen(stdout='{"comments":[]}\n', stderr="")
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake) as mocked:
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+                audience="human",
+            )
+        assert rc == 0
+        argv = mocked.call_args[0][0]
+        assert argv[argv.index("--audience") + 1] == "human"
+
+    def test_ocr_writes_start_line_to_log_and_callback(self, tmp_path: Path) -> None:
+        output_json = tmp_path / "code-review-r1.json"
+        seen: list[str] = []
+        fake = _FakePopen(stdout='{"comments":[]}\n', stderr="")
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake):
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+                on_child_log=seen.append,
+            )
+        assert rc == 0
+        log_text = (tmp_path / "logs" / "r1-ocr.log").read_text(encoding="utf-8")
+        assert "OCR starting:" in log_text
+        assert "concurrency=8" in log_text
+        assert any("OCR starting:" in chunk for chunk in seen)
+
+    def test_ocr_tails_session_jsonl_into_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        output_json = tmp_path / "code-review-r1.json"
+        session_dir = tmp_path / "ocr-sessions"
+        session_dir.mkdir()
+        session_file = session_dir / "sess.jsonl"
+        monkeypatch.setattr(
+            "deep_architect.review_driver.OCR_SESSION_POLL_SECONDS", 0.05
+        )
+        events = [
+            {
+                "type": "session_start",
+                "sessionId": "abc-123",
+                "cwd": str(tmp_path),
+                "diffFrom": "main",
+                "diffTo": "feat",
+            },
+            {
+                "type": "llm_request",
+                "filePath": "src/a.py",
+                "taskType": "plan_task",
+            },
+            {
+                "type": "llm_request",
+                "filePath": "src/a.py",
+                "taskType": "main_task",
+            },
+            {"type": "tool_call", "filePath": "src/a.py", "tool_name": "file_read"},
+            {
+                "type": "review_item_done",
+                "filePath": "src/a.py",
+            },
+            {
+                "type": "llm_error",
+                "filePath": "src/b.py",
+                "error": "context deadline exceeded",
+            },
+            {
+                "type": "review_item_failed",
+                "filePath": "src/b.py",
+                "error": "LLM completion error: context deadline exceeded",
+            },
+        ]
+        payload = "".join(json.dumps(ev) + "\n" for ev in events)
+        seen: list[str] = []
+
+        class _WaitWritesJsonl(_FakePopen):
+            def wait(self, timeout: float | None = None) -> int:
+                del timeout
+                session_file.write_text(payload, encoding="utf-8")
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline:
+                    if any("[ocr] failed src/b.py" in chunk for chunk in seen):
+                        break
+                    time.sleep(0.05)
+                return self.returncode
+
+        fake = _WaitWritesJsonl(stdout='{"comments":[]}\n', stderr="")
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake):
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+                on_child_log=seen.append,
+                session_dir=session_dir,
+            )
+        assert rc == 0
+        joined = "".join(seen)
+        assert "[ocr] session abc-123 main..feat" in joined
+        assert "[ocr] reviewing src/a.py (plan_task)" in joined
+        assert joined.count("[ocr] reviewing src/a.py") == 1
+        assert "[ocr] done src/a.py" in joined
+        assert "[ocr] llm error src/b.py: context deadline exceeded" in joined
+        assert "[ocr] failed src/b.py: LLM completion error: context deadline exceeded" in joined
+        assert "file_read" not in joined
+        log_text = (tmp_path / "logs" / "r1-ocr.log").read_text(encoding="utf-8")
+        assert "[ocr] done src/a.py" in log_text
+
     def test_ocr_timeout_returns_1(self, tmp_path: Path) -> None:
         output_json = tmp_path / "code-review-r1.json"
         fake = _FakePopen(stdout="", stderr="")
@@ -662,6 +784,31 @@ class TestProductionRunners:
             )
         assert rc == 1
         fake.kill.assert_called_once()
+
+    def test_analyzer_redirects_stdout_to_on_child_log(self, tmp_path: Path) -> None:
+        ocr_json = tmp_path / "code-review-r1.json"
+        feedback = tmp_path / "feedback-r1"
+        seen: list[str] = []
+
+        def _fake_main(argv: list[str]) -> int:
+            del argv
+            print("  Processed 5/29 findings...")
+            return 0
+
+        with patch("deep_architect.review_analyzer.main", _fake_main):
+            rc = run_analyzer_main(
+                ocr_json=ocr_json,
+                feedback_dir=feedback,
+                prior_feedback=[],
+                knowledge_dir=None,
+                exclude=[],
+                output_dir=tmp_path,
+                on_child_log=seen.append,
+            )
+        assert rc == 0
+        assert any("Processed 5/29 findings..." in chunk for chunk in seen)
+        log_text = (tmp_path / "logs" / "r1-analyzer.log").read_text(encoding="utf-8")
+        assert "Processed 5/29 findings..." in log_text
 
     def test_analyzer_argv_has_no_tui_and_prior(self, tmp_path: Path) -> None:
         ocr_json = tmp_path / "code-review-r2.json"
@@ -749,6 +896,70 @@ class TestInstallSigintHandler:
         thread.join()
         assert errors == []
         assert codes == [0]
+
+
+class TestOcrSessionHelpers:
+    def test_session_dir_slug(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+        repo = tmp_path / "repos" / "app"
+        repo.mkdir(parents=True)
+        expected_slug = str(repo.resolve()).lstrip("/").replace("/", "-")
+        got = ocr_session_dir(repo)
+        assert got == tmp_path / "home" / ".opencodereview" / "sessions" / expected_slug
+
+    def test_format_session_start(self) -> None:
+        line = format_ocr_session_event(
+            {
+                "type": "session_start",
+                "sessionId": "abc",
+                "diffFrom": "main",
+                "diffTo": "feat",
+            }
+        )
+        assert line == "[ocr] session abc main..feat"
+
+    def test_format_first_llm_request_only(self) -> None:
+        event = {
+            "type": "llm_request",
+            "filePath": "src/a.py",
+            "taskType": "plan_task",
+            "messages": [{"role": "system", "content": "SECRET PROMPT"}],
+        }
+        first = format_ocr_session_event(event, first_request_for_file=True)
+        again = format_ocr_session_event(event, first_request_for_file=False)
+        assert first == "[ocr] reviewing src/a.py (plan_task)"
+        assert again is None
+        assert first is not None and "SECRET" not in first
+
+    def test_format_done_failed_llm_error(self) -> None:
+        assert (
+            format_ocr_session_event({"type": "review_item_done", "filePath": "src/a.py"})
+            == "[ocr] done src/a.py"
+        )
+        assert (
+            format_ocr_session_event(
+                {
+                    "type": "review_item_failed",
+                    "filePath": "src/b.py",
+                    "error": "context deadline exceeded",
+                }
+            )
+            == "[ocr] failed src/b.py: context deadline exceeded"
+        )
+        assert (
+            format_ocr_session_event(
+                {
+                    "type": "llm_error",
+                    "filePath": "src/b.py",
+                    "error": "context deadline exceeded",
+                }
+            )
+            == "[ocr] llm error src/b.py: context deadline exceeded"
+        )
+
+    def test_format_skips_noisy_types(self) -> None:
+        assert format_ocr_session_event({"type": "tool_call", "filePath": "src/a.py"}) is None
+        assert format_ocr_session_event({"type": "llm_response", "filePath": "src/a.py"}) is None
 
 
 class TestShouldUseTui:

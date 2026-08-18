@@ -52,7 +52,9 @@ DEFAULT_LOG_MESSAGE_MAX_LEN = 500
 DEFAULT_ERROR_LOG_MESSAGE_MAX_LEN = 240
 _MAX_RESULT_ROWS = 200
 _CHILD_ERROR_RE = re.compile(
-    r"^(Error:|\[ocr\] Subtask error|ocr exited|ocr timed out)",
+    r"^(Error:|\[ocr\] Subtask error|ocr exited|ocr timed out|"
+    r"\[ocr\] failed |\[ocr\] llm error )"
+    r"|context deadline exceeded",
     re.IGNORECASE,
 )
 

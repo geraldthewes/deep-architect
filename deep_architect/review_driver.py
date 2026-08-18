@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -17,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Protocol, TextIO
+from typing import Any, Literal, Protocol, TextIO
 
 import git
 from pydantic import BaseModel, Field
@@ -51,6 +52,9 @@ DEFAULT_OCR_BIN = "ocr"
 DEFAULT_OCR_TIMEOUT_SECONDS = 3600
 DEFAULT_OCR_FILE_TIMEOUT_MINUTES = 10
 DEFAULT_OCR_CONCURRENCY = 8
+DEFAULT_OCR_AUDIENCE = "agent"
+OCR_SESSION_POLL_SECONDS = 0.25
+OCR_SESSION_DISCOVER_SLACK_SECONDS = 5.0
 ACTION_MIN_SEVERITY = "medium"
 
 _interrupt_requested = False
@@ -1020,6 +1024,208 @@ def _ocr_log_text(output_dir: Path, pass_index: int) -> str:
         return ""
 
 
+_LOG_LOCK = threading.Lock()
+
+
+def ocr_session_dir(cwd: Path) -> Path:
+    """Directory where OCR writes ``<session-id>.jsonl`` for *cwd*."""
+    slug = str(cwd.resolve()).lstrip("/").replace("/", "-")
+    return Path.home() / ".opencodereview" / "sessions" / slug
+
+
+def _event_file_path(event: Mapping[str, Any]) -> str:
+    raw = event.get("filePath", event.get("file_path", ""))
+    return str(raw) if raw else ""
+
+
+def format_ocr_session_event(
+    event: Mapping[str, Any],
+    *,
+    first_request_for_file: bool = False,
+) -> str | None:
+    """Compact one-liner for an OCR session JSONL event, or ``None`` to skip."""
+    event_type = str(event.get("type") or "")
+    path = _event_file_path(event)
+    if event_type == "session_start":
+        session_id = event.get("sessionId", event.get("session_id", ""))
+        diff_from = event.get("diffFrom", event.get("diff_from", ""))
+        diff_to = event.get("diffTo", event.get("diff_to", ""))
+        return f"[ocr] session {session_id} {diff_from}..{diff_to}"
+    if event_type == "llm_request":
+        if not first_request_for_file or not path:
+            return None
+        task = event.get("taskType", event.get("task_type", "review"))
+        return f"[ocr] reviewing {path} ({task})"
+    if event_type == "review_item_done":
+        if not path:
+            return None
+        return f"[ocr] done {path}"
+    if event_type == "review_item_failed":
+        error = event.get("error") or "failed"
+        return f"[ocr] failed {path}: {error}"
+    if event_type == "llm_error":
+        error = event.get("error") or "error"
+        return f"[ocr] llm error {path}: {error}"
+    return None
+
+
+def _parse_jsonl_object(line: str) -> dict[str, Any] | None:
+    text = line.strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _first_jsonl_event(path: Path) -> dict[str, Any] | None:
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                event = _parse_jsonl_object(raw)
+                if event is not None:
+                    return event
+    except OSError:
+        return None
+    return None
+
+
+def _session_start_matches(
+    event: Mapping[str, Any],
+    *,
+    cwd: Path,
+    source: str,
+    target: str,
+) -> bool:
+    if event.get("type") != "session_start":
+        return False
+    ev_cwd = event.get("cwd")
+    if ev_cwd:
+        try:
+            if Path(str(ev_cwd)).resolve() != cwd.resolve():
+                return False
+        except OSError:
+            return False
+    ev_from = event.get("diffFrom", event.get("diff_from"))
+    ev_to = event.get("diffTo", event.get("diff_to"))
+    if ev_from is not None and str(ev_from) != target:
+        return False
+    if ev_to is not None and str(ev_to) != source:
+        return False
+    return True
+
+
+def _discover_ocr_session_file(
+    session_dir: Path,
+    *,
+    cwd: Path,
+    source: str,
+    target: str,
+    not_before: float,
+) -> Path | None:
+    if not session_dir.is_dir():
+        return None
+    candidates: list[tuple[float, Path]] = []
+    try:
+        paths = list(session_dir.glob("*.jsonl"))
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < not_before - OCR_SESSION_DISCOVER_SLACK_SECONDS:
+            continue
+        first = _first_jsonl_event(path)
+        if first is None or not _session_start_matches(
+            first, cwd=cwd, source=source, target=target
+        ):
+            continue
+        candidates.append((mtime, path))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _follow_ocr_session_jsonl(
+    path: Path,
+    *,
+    stop: threading.Event,
+    emit: Callable[[str], None],
+    poll_s: float | None = None,
+) -> None:
+    interval = OCR_SESSION_POLL_SECONDS if poll_s is None else poll_s
+    seen_files: set[str] = set()
+    offset = 0
+    buf = ""
+
+    def _handle_line(raw: str) -> None:
+        event = _parse_jsonl_object(raw)
+        if event is None:
+            return
+        file_path = _event_file_path(event)
+        first = False
+        if event.get("type") == "llm_request" and file_path:
+            first = file_path not in seen_files
+            if first:
+                seen_files.add(file_path)
+        formatted = format_ocr_session_event(event, first_request_for_file=first)
+        if formatted:
+            emit(formatted)
+
+    while True:
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                fh.seek(offset)
+                chunk = fh.read()
+                offset = fh.tell()
+        except OSError:
+            chunk = ""
+        if chunk:
+            buf += chunk
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                _handle_line(line)
+        if stop.is_set():
+            if buf.strip():
+                _handle_line(buf)
+            return
+        stop.wait(interval)
+
+
+def _ocr_session_follow_loop(
+    *,
+    cwd: Path,
+    source: str,
+    target: str,
+    launched_at: float,
+    stop: threading.Event,
+    emit: Callable[[str], None],
+    session_dir: Path | None = None,
+    poll_s: float | None = None,
+) -> None:
+    interval = OCR_SESSION_POLL_SECONDS if poll_s is None else poll_s
+    directory = session_dir if session_dir is not None else ocr_session_dir(cwd)
+    path: Path | None = None
+    while not stop.is_set() and path is None:
+        path = _discover_ocr_session_file(
+            directory,
+            cwd=cwd,
+            source=source,
+            target=target,
+            not_before=launched_at,
+        )
+        if path is None:
+            stop.wait(interval)
+    if path is None:
+        return
+    _follow_ocr_session_jsonl(path, stop=stop, emit=emit, poll_s=interval)
+
+
 def _append_log(
     log_path: Path,
     text: str,
@@ -1031,8 +1237,9 @@ def _append_log(
         return
     payload = text if text.endswith("\n") else text + "\n"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as fh:
-        fh.write(payload)
+    with _LOG_LOCK:
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(payload)
     if tee:
         sys.stderr.write(payload)
     if on_child_log is not None:
@@ -1161,11 +1368,14 @@ def run_ocr_subprocess(
     on_child_log: Callable[[str], None] | None = None,
     ocr_timeout_minutes: int = DEFAULT_OCR_FILE_TIMEOUT_MINUTES,
     ocr_concurrency: int = DEFAULT_OCR_CONCURRENCY,
+    audience: str = DEFAULT_OCR_AUDIENCE,
+    session_dir: Path | None = None,
 ) -> int:
     """Run ``ocr review`` with ``--from`` = target and ``--to`` = source.
 
     JSON is collected from stdout. stderr is streamed live into the log
-    (and optional *on_child_log*) so a long review is not a black box.
+    (and optional *on_child_log*). OCR session JSONL events are tailed into
+    the same log so a ``--format json`` review is not a black box.
     """
     cmd = [
         ocr_bin,
@@ -1177,7 +1387,7 @@ def run_ocr_subprocess(
         "--format",
         "json",
         "--audience",
-        "agent",
+        audience,
         "--repo",
         str(cwd),
         "--timeout",
@@ -1190,6 +1400,16 @@ def run_ocr_subprocess(
 
     log = log_path if log_path is not None else _ocr_log_path(output_json)
     timeout = _ocr_timeout_seconds()
+    _append_log(
+        log,
+        (
+            f"OCR starting: {' '.join(cmd)}\n"
+            f"concurrency={ocr_concurrency} file-timeout={ocr_timeout_minutes}m "
+            f"log={log}\n"
+        ),
+        tee=verbose,
+        on_child_log=on_child_log,
+    )
     try:
         proc = subprocess.Popen(
             cmd,
@@ -1209,6 +1429,8 @@ def run_ocr_subprocess(
         return 1
 
     stdout_chunks: list[str] = []
+    session_stop = threading.Event()
+    launched_at = time.time()
 
     def _pump_stdout() -> None:
         if proc.stdout is None:
@@ -1221,45 +1443,65 @@ def run_ocr_subprocess(
         for line in proc.stderr:
             _append_log(log, line, tee=verbose, on_child_log=on_child_log)
 
+    def _emit_session(text: str) -> None:
+        _append_log(log, text, tee=verbose, on_child_log=on_child_log)
+
+    def _pump_session() -> None:
+        _ocr_session_follow_loop(
+            cwd=cwd,
+            source=source,
+            target=target,
+            launched_at=launched_at,
+            stop=session_stop,
+            emit=_emit_session,
+            session_dir=session_dir,
+        )
+
     out_thread = threading.Thread(target=_pump_stdout, daemon=True)
     err_thread = threading.Thread(target=_pump_stderr, daemon=True)
+    session_thread = threading.Thread(target=_pump_session, daemon=True)
     out_thread.start()
     err_thread.start()
+    session_thread.start()
     try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        logger.error("ocr timed out after %s seconds", timeout)
-        proc.kill()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.error("ocr timed out after %s seconds", timeout)
+            proc.kill()
+            out_thread.join(timeout=1)
+            err_thread.join(timeout=1)
+            _append_log(
+                log,
+                f"ocr timed out after {timeout} seconds\n",
+                tee=verbose,
+                on_child_log=on_child_log,
+            )
+            return 1
         out_thread.join(timeout=1)
         err_thread.join(timeout=1)
-        _append_log(
-            log,
-            f"ocr timed out after {timeout} seconds\n",
-            tee=verbose,
-            on_child_log=on_child_log,
-        )
-        return 1
-    out_thread.join(timeout=1)
-    err_thread.join(timeout=1)
 
-    stdout = "".join(stdout_chunks)
-    rc = proc.returncode if proc.returncode is not None else 1
-    if stdout.strip():
-        output_json.parent.mkdir(parents=True, exist_ok=True)
-        output_json.write_text(stdout, encoding="utf-8")
-    if rc != 0:
-        logger.error("ocr exited %s", rc)
-        return rc if rc else 1
-    if not stdout.strip():
-        logger.error("ocr produced empty stdout")
-        _append_log(
-            log,
-            "ocr produced empty stdout\n",
-            tee=verbose,
-            on_child_log=on_child_log,
-        )
-        return 1
-    return 0
+        stdout = "".join(stdout_chunks)
+        rc = proc.returncode if proc.returncode is not None else 1
+        if stdout.strip():
+            output_json.parent.mkdir(parents=True, exist_ok=True)
+            output_json.write_text(stdout, encoding="utf-8")
+        if rc != 0:
+            logger.error("ocr exited %s", rc)
+            return rc if rc else 1
+        if not stdout.strip():
+            logger.error("ocr produced empty stdout")
+            _append_log(
+                log,
+                "ocr produced empty stdout\n",
+                tee=verbose,
+                on_child_log=on_child_log,
+            )
+            return 1
+        return 0
+    finally:
+        session_stop.set()
+        session_thread.join(timeout=2)
 
 
 def run_analyzer_main(
@@ -1339,6 +1581,7 @@ class ProductionRunners:
     on_child_log: Callable[[str], None] | None = None
     ocr_timeout_minutes: int = DEFAULT_OCR_FILE_TIMEOUT_MINUTES
     ocr_concurrency: int = DEFAULT_OCR_CONCURRENCY
+    ocr_audience: str = DEFAULT_OCR_AUDIENCE
 
     def run_ocr(
         self, *, source: str, target: str, output_json: Path, exclude: list[str]
@@ -1354,6 +1597,7 @@ class ProductionRunners:
             on_child_log=self.on_child_log,
             ocr_timeout_minutes=self.ocr_timeout_minutes,
             ocr_concurrency=self.ocr_concurrency,
+            audience=self.ocr_audience,
         )
 
     def run_analyzer(
@@ -1649,6 +1893,7 @@ def main(argv: list[str] | None = None) -> int:
         on_child_log=child_logs.emit,
         ocr_timeout_minutes=ocr_timeout_minutes,
         ocr_concurrency=ocr_concurrency,
+        ocr_audience="human" if use_tui else DEFAULT_OCR_AUDIENCE,
     )
 
     def _run_pipeline(reporter: ProgressReporter) -> DriverProgress:

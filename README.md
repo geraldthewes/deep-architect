@@ -998,7 +998,7 @@ When stdout is a TTY, `review-driver` opens a **full-screen Textual app** (alter
 - **Progress** — current phase (`OCR` / `Analyzer` / `Action`), elapsed time, pass bar
 - **Summary strip** — novelty, zeros/K, VALID H/M/L, committed, errors
 - **Results list** — scrollable phase summaries, pass rollup, and trend vs the previous pass. Partial or failed OCR is labeled `PARTIAL` / `FAILED` with the file-failure count and error class (for example `context deadline exceeded`), not just a comment count.
-- **Log pane** — driver logs plus live child lines (OCR stderr, analyzer/action stdout). Lines such as `Error:` and `[ocr] Subtask error` are shown in red. Full detail is also written to `.review-runs/logs/rN-*.log` and `.review-runs/review-driver.log`. `REPORT.md` records the same stop reason.
+- **Log pane** — driver logs plus live child lines: OCR session file-progress (`reviewing` / `done` / `failed`, plus stderr if OCR emits it) and analyzer/action `--no-tui` prints (`Processed 5/29`, per-finding action lines). Lines such as `Error:`, `[ocr] failed`, and `context deadline exceeded` are shown in red. The same lines are written to `.review-runs/logs/rN-*.log`; the driver logger also goes to `.review-runs/review-driver.log`. `REPORT.md` records the same stop reason.
 - **Keys (during the run)** — `q` / Ctrl-C request a graceful stop after the current step; `l` focuses the Log pane; `r` focuses Results
 - **Done screen** — after the last pass (and `REPORT.md` write), the app stays up and shows the report. `q` / Ctrl-C quit; `b` one-way-launches `review-feedback-browse` on the last `feedback-rN/` directory (action mode).
 

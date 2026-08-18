@@ -214,10 +214,25 @@ class TestClassifyChildLog:
         )
         assert classify_child_log_level("ocr exited 1") == logging.ERROR
         assert classify_child_log_level("ocr timed out after 3600 seconds") == logging.ERROR
+        assert (
+            classify_child_log_level(
+                "[ocr] failed frontend/src/api/plantTrackingAPI.ts: "
+                "LLM completion error: context deadline exceeded"
+            )
+            == logging.ERROR
+        )
+        assert (
+            classify_child_log_level(
+                "[ocr] llm error src/a.py: context deadline exceeded"
+            )
+            == logging.ERROR
+        )
 
     def test_info_lines(self) -> None:
         assert classify_child_log_level("TUI started — logging is confined") == logging.INFO
         assert classify_child_log_level("ocr: reviewing 3 files") == logging.INFO
+        assert classify_child_log_level("[ocr] done src/a.py") == logging.INFO
+        assert classify_child_log_level("[ocr] reviewing src/a.py (plan_task)") == logging.INFO
 
 
 class TestInfraErrorCount:
