@@ -45,9 +45,14 @@ logger = get_logger(__name__)
 
 PROGRESS_FILENAME = "progress.json"
 REPORT_FILENAME = "REPORT.md"
+LATEST_FILENAME = "LATEST"
 PASS_FOOTER = "─────────────────────────────────────────────────────"
 DEFAULT_OUTPUT_DIR = Path(".review-runs")
 DEFAULT_TARGET = "main"
+RUN_ID_FORMAT = "%Y%m%dT%H%M%SZ"
+MAX_RUN_SLUG_LEN = 80
+_TERMINAL_RUN_STATUSES = frozenset({"converged", "max_passes"})
+_RESUMABLE_RUN_STATUSES = frozenset({"running", "failed"})
 DEFAULT_OCR_BIN = "ocr"
 DEFAULT_OCR_TIMEOUT_SECONDS = 3600
 DEFAULT_OCR_FILE_TIMEOUT_MINUTES = 10
@@ -150,6 +155,8 @@ _ELAPSED_RE = re.compile(
     r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$",
     re.IGNORECASE,
 )
+_SLUG_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_SLUG_DASH_RE = re.compile(r"-{2,}")
 
 
 class DriverPassRecord(BaseModel):
@@ -221,6 +228,212 @@ def save_driver_progress(output_dir: Path, progress: DriverProgress) -> Path:
 def load_driver_progress(output_dir: Path) -> DriverProgress:
     path = output_dir / PROGRESS_FILENAME
     return DriverProgress.model_validate_json(path.read_text())
+
+
+def sanitize_run_slug(name: str, *, fallback: str = "") -> str:
+    """Make *name* safe as a single path component.
+
+    Empty or punctuation-only names fall back to *fallback* (truncated) or
+    ``unnamed``.
+    """
+    slug = _normalize_run_slug(name)
+    if not slug:
+        slug = _normalize_run_slug(fallback)[:12]
+    if not slug:
+        slug = "unnamed"
+    return slug[:MAX_RUN_SLUG_LEN]
+
+
+def _normalize_run_slug(name: str) -> str:
+    slug = _SLUG_UNSAFE_RE.sub("-", name)
+    slug = _SLUG_DASH_RE.sub("-", slug)
+    return slug.strip(".-")
+
+
+def branch_run_parent(
+    root: Path,
+    source: str,
+    target: str,
+    *,
+    source_sha: str = "",
+) -> Path:
+    """Directory that groups all runs of *source* (vs *target*) under *root*."""
+    source_slug = sanitize_run_slug(source, fallback=source_sha)
+    if target == DEFAULT_TARGET:
+        return Path(root) / source_slug
+    target_slug = sanitize_run_slug(target)
+    return Path(root) / f"{source_slug}__{target_slug}"
+
+
+def default_output_excludes(root: Path, cwd: Path) -> list[str]:
+    """Glob that keeps OCR/analyzer from reviewing the output tree.
+
+    Returns empty when *root* is the repo cwd (would hide the whole tree)
+    or is outside *cwd* (OCR will not see those files as repo paths).
+    """
+    resolved_root = _resolve_output_dir(cwd, root)
+    resolved_cwd = cwd.resolve()
+    if resolved_root == resolved_cwd:
+        return []
+    try:
+        relative = resolved_root.relative_to(resolved_cwd)
+    except ValueError:
+        return []
+    posix = relative.as_posix()
+    if posix in ("", "."):
+        return []
+    return [f"{posix}/**"]
+
+
+def resolve_driver_run_dir(
+    root: Path,
+    *,
+    source: str,
+    target: str,
+    source_sha: str,
+    resume: bool,
+    target_sha: str = "",
+    now: datetime | None = None,
+) -> tuple[Path, bool]:
+    """Pick or create the directory for one driver run.
+
+    Returns ``(run_dir, is_resume)``. ``run_dir`` is where ``progress.json``
+    and per-pass artifacts live. ``is_resume`` is True when an existing run
+    is being continued (including an already-terminal run that should
+    no-op).
+
+    ``root`` is the operator-facing ``--output-dir``. Nested layout is
+    ``{root}/{branch}/{timestamp}/``. A legacy flat ``{root}/progress.json``
+    is resumed in place; ``--no-resume`` against that layout creates a
+    nested sibling so the flat files are not overwritten.
+    """
+    root = Path(root)
+    stamp = _utc_stamp(now)
+    flat_progress = root / PROGRESS_FILENAME
+    if flat_progress.is_file():
+        return _resolve_legacy_flat_run(
+            root,
+            source=source,
+            target=target,
+            source_sha=source_sha,
+            target_sha=target_sha,
+            resume=resume,
+            stamp=stamp,
+        )
+
+    parent = branch_run_parent(root, source, target, source_sha=source_sha)
+    if resume:
+        existing = _newest_matching_run(parent, source, target)
+        if existing is not None:
+            progress = load_driver_progress(existing)
+            if _should_reuse_existing_run(
+                progress, source_sha=source_sha, target_sha=target_sha
+            ):
+                _write_latest(parent, existing.name)
+                return existing, True
+
+    return _create_new_run_dir(parent, stamp), False
+
+
+def _resolve_legacy_flat_run(
+    root: Path,
+    *,
+    source: str,
+    target: str,
+    source_sha: str,
+    target_sha: str,
+    resume: bool,
+    stamp: str,
+) -> tuple[Path, bool]:
+    if resume:
+        progress = load_driver_progress(root)
+        if progress.source != source or progress.target != target:
+            # Let run_driver raise the existing mismatch error.
+            return root, True
+        if _should_reuse_existing_run(
+            progress, source_sha=source_sha, target_sha=target_sha
+        ):
+            return root, True
+    parent = branch_run_parent(root, source, target, source_sha=source_sha)
+    return _create_new_run_dir(parent, stamp), False
+
+
+def _should_reuse_existing_run(
+    progress: DriverProgress, *, source_sha: str, target_sha: str
+) -> bool:
+    if progress.status in _RESUMABLE_RUN_STATUSES:
+        return True
+    if progress.status not in _TERMINAL_RUN_STATUSES:
+        return False
+    return _shas_unchanged(progress, source_sha=source_sha, target_sha=target_sha)
+
+
+def _shas_unchanged(
+    progress: DriverProgress, *, source_sha: str, target_sha: str
+) -> bool:
+    if source_sha and progress.source_sha and progress.source_sha != source_sha:
+        return False
+    if target_sha and progress.target_sha and progress.target_sha != target_sha:
+        return False
+    return True
+
+
+def _newest_matching_run(parent: Path, source: str, target: str) -> Path | None:
+    for run_dir in reversed(_list_run_dirs(parent)):
+        progress = _try_load_progress(run_dir)
+        if progress is None:
+            continue
+        if progress.source == source and progress.target == target:
+            return run_dir
+    return None
+
+
+def _list_run_dirs(parent: Path) -> list[Path]:
+    if not parent.is_dir():
+        return []
+    runs = [
+        child
+        for child in parent.iterdir()
+        if child.is_dir() and (child / PROGRESS_FILENAME).is_file()
+    ]
+    return sorted(runs, key=lambda path: path.name)
+
+
+def _try_load_progress(run_dir: Path) -> DriverProgress | None:
+    try:
+        return load_driver_progress(run_dir)
+    except Exception as exc:
+        logger.warning("Skipping unreadable run state %s: %s", run_dir, exc)
+        return None
+
+
+def _create_new_run_dir(parent: Path, stamp: str) -> Path:
+    parent.mkdir(parents=True, exist_ok=True)
+    run_dir = parent / stamp
+    suffix = 2
+    while run_dir.exists():
+        run_dir = parent / f"{stamp}-{suffix}"
+        suffix += 1
+    run_dir.mkdir(parents=True)
+    _write_latest(parent, run_dir.name)
+    return run_dir
+
+
+def _write_latest(parent: Path, run_id: str) -> None:
+    path = parent / LATEST_FILENAME
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(f"{run_id}\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _utc_stamp(now: datetime | None) -> str:
+    if now is None:
+        stamp = datetime.now(UTC)
+    elif now.tzinfo is None:
+        stamp = now.replace(tzinfo=UTC)
+    else:
+        stamp = now.astimezone(UTC)
+    return stamp.strftime(RUN_ID_FORMAT)
 
 
 def format_duration(seconds: float) -> str:
@@ -1779,7 +1992,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
-        help="Directory for per-pass artifacts (default: .review-runs)",
+        help=(
+            "Root directory for review runs (default: .review-runs). "
+            "Each run is stored under {root}/{branch}/{timestamp}/"
+        ),
     )
     parser.add_argument(
         "--max-passes",
@@ -1798,15 +2014,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Continue from output-dir/progress.json when present (default). "
-            "Pass --no-resume to start a new run."
+            "Continue a stopped run for this source/target when present "
+            "(default). Pass --no-resume to start a new timestamped run "
+            "without overwriting previous artifacts."
         ),
     )
     parser.add_argument(
         "--exclude",
         action="append",
         default=[],
-        help="Glob passed to ocr and review-analyzer (repeatable)",
+        help=(
+            "Glob passed to ocr and review-analyzer (repeatable). "
+            "The output root is always excluded."
+        ),
     )
     parser.add_argument(
         "--knowledge-dir",
@@ -2005,10 +2225,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    output_root = args.output_dir
+    run_dir, resuming_run = resolve_driver_run_dir(
+        output_root,
+        source=args.source,
+        target=args.target,
+        source_sha=source_sha,
+        target_sha=target_sha,
+        resume=args.resume,
+    )
+    logger.info(
+        "Review run directory: %s (%s)",
+        run_dir,
+        "resume" if resuming_run else "new",
+    )
+    exclude = [
+        *default_output_excludes(output_root, cwd),
+        *list(args.exclude),
+    ]
+
     child_logs = ChildLogFanout()
     runners = ProductionRunners(
         cwd=cwd,
-        output_dir=args.output_dir,
+        output_dir=run_dir,
         ocr_bin=ocr_bin,
         verbose=args.verbose,
         provider=args.provider,
@@ -2024,13 +2263,13 @@ def main(argv: list[str] | None = None) -> int:
         return run_driver(
             source=args.source,
             target=args.target,
-            output_dir=args.output_dir,
+            output_dir=run_dir,
             runners=runners,
             max_passes=max_passes,
             k=k,
             resume=args.resume,
             knowledge_dir=args.knowledge_dir,
-            exclude=args.exclude,
+            exclude=exclude,
             source_sha=source_sha,
             target_sha=target_sha,
             reporter=reporter,
@@ -2050,18 +2289,18 @@ def main(argv: list[str] | None = None) -> int:
                 target_sha=target_sha,
                 max_passes=max_passes,
                 k=k,
-                output_dir=args.output_dir,
-                resume=args.resume,
+                output_dir=run_dir,
+                resume=resuming_run,
             )
 
             def _finalize(progress: DriverProgress) -> Path:
-                return write_driver_report(args.output_dir, progress)
+                return write_driver_report(run_dir, progress)
 
             tui_result = run_review_driver_tui(
                 meta,
                 _run_pipeline,
                 log_level=log_level,
-                log_file=args.output_dir / "review-driver.log",
+                log_file=run_dir / "review-driver.log",
                 finalize=_finalize,
                 attach_child_logs=child_logs.set_sink,
             )
@@ -2086,7 +2325,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    write_driver_report(args.output_dir, progress)
+    write_driver_report(run_dir, progress)
     return _driver_exit_code(progress, interrupted=_interrupt_requested)
 
 

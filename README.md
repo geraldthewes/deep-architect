@@ -936,7 +936,7 @@ The same command is used locally and in CI. There is no confirm between passes. 
 # on the PR branch, clean tree (TUI on a TTY)
 review-driver --source my-feature --target main --max-passes 5
 
-# Start over instead of continuing .review-runs/progress.json
+# Start a new timestamped run (previous artifacts are kept)
 review-driver --source my-feature --no-resume
 
 # Force plain phase summaries in a terminal (e.g. for log capture)
@@ -952,19 +952,32 @@ review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
 
 ### Default output layout
 
+`--output-dir` (default `.review-runs`) is the **root**. Each run is isolated under `{root}/{source}/{timestamp}/` so a later review never overwrites an earlier one. `--target` is appended to the folder name only when it is not `main` (`feat__develop`).
+
 ```text
 .review-runs/
-  progress.json
-  REPORT.md
-  review-driver.log
-  logs/r1-ocr.log
-  logs/r1-analyzer.log
-  logs/r1-action.log
-  code-review-r1.json
-  feedback-r1/
-  code-review-r2.json
-  feedback-r2/
+  PROJ-0013/
+    LATEST
+    20260819T143022Z/
+      progress.json
+      REPORT.md
+      review-driver.log
+      logs/r1-ocr.log
+      logs/r1-analyzer.log
+      logs/r1-action.log
+      code-review-r1.json
+      feedback-r1/
+      code-review-r2.json
+      feedback-r2/
+    20260819T181105Z/          # --no-resume, or a later commit of the same branch
+      ...
 ```
+
+Resume (the default) continues the newest **stopped** run (`running` / `failed`) for that source/target. A finished run (`converged` / `max_passes`) is reused only when the source SHA is unchanged; a new commit starts a sibling directory. `--no-resume` always creates a new timestamped directory and never deletes siblings.
+
+A legacy flat `{output-dir}/progress.json` (the original layout) is still resumed in place so an in-flight run is not migrated mid-pass. `--no-resume` against that layout creates a nested sibling and leaves the flat files untouched.
+
+The output root is always passed to `ocr` and `review-analyzer` as an exclude glob (`.review-runs/**`) so the driver does not review its own artifacts.
 
 ### CLI Options
 
@@ -972,11 +985,11 @@ review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
 |------|---------|-------------|
 | `--source BRANCH` | (required) | PR branch or SHA; `HEAD` must already be this commit |
 | `--target BRANCH` | `main` | Base branch for the OCR diff (`ocr --from`) |
-| `--output-dir PATH` | `.review-runs` | Per-pass artifacts, progress, and `REPORT.md` |
+| `--output-dir PATH` | `.review-runs` | Root for review runs. Artifacts land in `{root}/{branch}/{timestamp}/` |
 | `--max-passes N` | config / `5` | Safety cap on OCR→action passes |
 | `--zero-novelty-passes K` | config / `2` | Consecutive zero-novelty passes required to converge |
-| `--resume` / `--no-resume` | resume | Continue from `progress.json` when present. `--no-resume` starts a new run |
-| `--exclude GLOB` | (none) | Repeatable; passed to `ocr` and `review-analyzer` |
+| `--resume` / `--no-resume` | resume | Continue a stopped run for this source/target. `--no-resume` starts a new timestamped run and never overwrites |
+| `--exclude GLOB` | output root | Repeatable; passed to `ocr` and `review-analyzer`. The output root is always excluded |
 | `--knowledge-dir PATH` | `<cwd>/knowledge` | Catalog / backlog directory for the analyzer |
 | `--provider NAME` | (action default) | Passed through to `review-action` |
 | `--model NAME` | (action default) | Passed through to `review-action` |
@@ -997,11 +1010,11 @@ Stop when the count of this-pass **high/medium `VALID`** findings is 0 for K con
 
 When stdout is a TTY, `review-driver` opens a **full-screen Textual app** (alternate screen) instead of sparse phase lines. The loop stays unattended — there is no confirm between passes. Child CLIs (`review-analyzer`, `review-action`) always receive `--no-tui` so they never nest a second dashboard.
 
-- **Header** — `source → target`, short SHAs, pass `i/N`, K, output dir (plus a resume marker when continuing an existing run)
+- **Header** — `source → target`, short SHAs, pass `i/N`, K, resolved run dir (plus a resume marker when continuing an existing run)
 - **Progress** — current phase (`OCR` / `Analyzer` / `Action`), elapsed time, pass bar
 - **Summary strip** — novelty, zeros/K, VALID H/M/L, committed, errors
 - **Results list** — scrollable phase summaries, pass rollup, and trend vs the previous pass. Partial or failed OCR is labeled `PARTIAL` / `FAILED` with the file-failure count and error class (for example `context deadline exceeded`), not just a comment count.
-- **Log pane** — driver logs plus live child lines: OCR session file-progress (`reviewing` / `done` / `failed`, plus stderr if OCR emits it) and analyzer/action `--no-tui` prints (`Processed 5/29`, per-finding action lines). Lines such as `Error:`, `[ocr] failed`, and `context deadline exceeded` are shown in red. The same lines are written to `.review-runs/logs/rN-*.log`; the driver logger also goes to `.review-runs/review-driver.log`. `REPORT.md` records the same stop reason.
+- **Log pane** — driver logs plus live child lines: OCR session file-progress (`reviewing` / `done` / `failed`, plus stderr if OCR emits it) and analyzer/action `--no-tui` prints (`Processed 5/29`, per-finding action lines). Lines such as `Error:`, `[ocr] failed`, and `context deadline exceeded` are shown in red. The same lines are written to `{run-dir}/logs/rN-*.log`; the driver logger also goes to `{run-dir}/review-driver.log`. `REPORT.md` records the same stop reason.
 - **Keys (during the run)** — first `q` / Ctrl-C request a graceful stop after the current step; a second `q` / Ctrl-C kills the in-flight OCR subprocess. `l` focuses the Log pane; `r` focuses Results
 - **Done screen** — after the last pass (and `REPORT.md` write), the app stays up and shows the report. `q` / Ctrl-C quit; `b` one-way-launches `review-feedback-browse` on the last `feedback-rN/` directory (action mode).
 
@@ -1025,7 +1038,7 @@ Quiet during a phase; one start line (`Pass 2/5 · OCR starting…`), then a com
 - `--source` / `--target` do not resolve, or `HEAD` is not `--source`
 - Dirty tracked files outside the output directory
 - OCR or analyzer hard-fail (non-zero, including interrupt)
-- Resume state is for a different `--source` / `--target` (pass `--no-resume` to start over)
+- Resume state is for a different `--source` / `--target` (legacy flat layout only; pass `--no-resume` to start a nested sibling)
 - Max-passes reached with remaining high/medium `VALID`
 
 ---

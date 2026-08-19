@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,8 @@ from deep_architect.review_driver import (
     DriverPassRecord,
     DriverPreflightError,
     DriverProgress,
+    branch_run_parent,
+    default_output_excludes,
     format_ocr_session_event,
     format_ocr_summary,
     format_stop_line,
@@ -32,12 +35,14 @@ from deep_architect.review_driver import (
     preflight_driver,
     request_force_stop,
     request_interrupt,
+    resolve_driver_run_dir,
     resolve_ocr_concurrency,
     resolve_ocr_timeout_minutes,
     run_action_main,
     run_analyzer_main,
     run_driver,
     run_ocr_subprocess,
+    sanitize_run_slug,
     save_driver_progress,
     should_use_tui,
     write_driver_report,
@@ -1240,6 +1245,288 @@ class TestResolveOcrLimits:
         assert resolve_ocr_concurrency(None, cfg) == 4
 
 
+def _stamp(hour: int = 14, minute: int = 30, second: int = 22) -> datetime:
+    return datetime(2026, 8, 19, hour, minute, second, tzinfo=UTC)
+
+
+def _seed_progress(
+    run_dir: Path,
+    *,
+    status: str = "running",
+    source: str = "feat",
+    target: str = "main",
+    source_sha: str = "aaa",
+    target_sha: str = "bbb",
+) -> DriverProgress:
+    progress = DriverProgress(
+        status=status,  # type: ignore[arg-type]
+        source=source,
+        target=target,
+        source_sha=source_sha,
+        target_sha=target_sha,
+        max_passes=5,
+        k=2,
+        output_dir=str(run_dir),
+    )
+    save_driver_progress(run_dir, progress)
+    return progress
+
+
+class TestSanitizeRunSlug:
+    def test_slashes_become_dashes(self) -> None:
+        assert sanitize_run_slug("feature/foo") == "feature-foo"
+
+    def test_punctuation_collapsed(self) -> None:
+        assert sanitize_run_slug("feat: x") == "feat-x"
+
+    def test_empty_falls_back_then_unnamed(self) -> None:
+        assert sanitize_run_slug("") == "unnamed"
+        assert sanitize_run_slug("...") == "unnamed"
+        assert sanitize_run_slug("...", fallback="0123456789abcdef") == "0123456789ab"
+
+    def test_branch_parent_omits_default_target(self, tmp_path: Path) -> None:
+        assert branch_run_parent(tmp_path, "PROJ-0013", "main").name == "PROJ-0013"
+
+    def test_branch_parent_includes_non_default_target(self, tmp_path: Path) -> None:
+        parent = branch_run_parent(tmp_path, "feat", "develop")
+        assert parent.name == "feat__develop"
+
+    def test_branch_parent_uses_sha_fallback(self, tmp_path: Path) -> None:
+        parent = branch_run_parent(
+            tmp_path, "...", "main", source_sha="deadbeefcafebabe"
+        )
+        assert parent.name == "deadbeefcafe"
+
+
+class TestDefaultOutputExcludes:
+    def test_relative_root_under_cwd(self, tmp_path: Path) -> None:
+        assert default_output_excludes(Path(".review-runs"), tmp_path) == [
+            ".review-runs/**"
+        ]
+
+    def test_skips_when_root_is_cwd(self, tmp_path: Path) -> None:
+        assert default_output_excludes(tmp_path, tmp_path) == []
+
+    def test_skips_when_root_outside_cwd(self, tmp_path: Path) -> None:
+        other = tmp_path / "outside"
+        other.mkdir()
+        cwd = tmp_path / "repo"
+        cwd.mkdir()
+        assert default_output_excludes(other, cwd) == []
+
+
+class TestResolveDriverRunDir:
+    def test_first_run_creates_nested_timestamp_dir(self, tmp_path: Path) -> None:
+        now = _stamp()
+        run_dir, is_resume = resolve_driver_run_dir(
+            tmp_path,
+            source="PROJ-0013",
+            target="main",
+            source_sha="aaa",
+            target_sha="bbb",
+            resume=True,
+            now=now,
+        )
+        assert is_resume is False
+        assert run_dir == tmp_path / "PROJ-0013" / "20260819T143022Z"
+        assert run_dir.is_dir()
+        assert (tmp_path / "PROJ-0013" / "LATEST").read_text(
+            encoding="utf-8"
+        ) == "20260819T143022Z\n"
+
+    def test_no_resume_creates_sibling_and_preserves_bytes(
+        self, tmp_path: Path
+    ) -> None:
+        first, _ = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(),
+        )
+        artifact = first / "code-review-r1.json"
+        artifact.write_text("keep-me", encoding="utf-8")
+        _seed_progress(first, status="failed")
+
+        second, is_resume = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=False,
+            now=_stamp(hour=18),
+        )
+        assert is_resume is False
+        assert second != first
+        assert second == tmp_path / "feat" / "20260819T183022Z"
+        assert artifact.read_text(encoding="utf-8") == "keep-me"
+
+    def test_resume_failed_returns_same_path(self, tmp_path: Path) -> None:
+        run_dir, _ = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(),
+        )
+        _seed_progress(run_dir, status="failed", source_sha="aaa")
+        again, is_resume = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(hour=18),
+        )
+        assert is_resume is True
+        assert again == run_dir
+
+    def test_resume_running_returns_same_path(self, tmp_path: Path) -> None:
+        run_dir, _ = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(),
+        )
+        _seed_progress(run_dir, status="running")
+        again, is_resume = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(hour=18),
+        )
+        assert is_resume is True
+        assert again == run_dir
+
+    def test_terminal_same_sha_reuses_run(self, tmp_path: Path) -> None:
+        run_dir, _ = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(),
+        )
+        _seed_progress(run_dir, status="converged", source_sha="aaa")
+        again, is_resume = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(hour=18),
+        )
+        assert is_resume is True
+        assert again == run_dir
+
+    def test_terminal_different_source_sha_starts_new_run(
+        self, tmp_path: Path
+    ) -> None:
+        first, _ = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(),
+        )
+        artifact = first / "code-review-r1.json"
+        artifact.write_text("original", encoding="utf-8")
+        _seed_progress(first, status="converged", source_sha="aaa")
+
+        second, is_resume = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="ccc",
+            resume=True,
+            now=_stamp(hour=18),
+        )
+        assert is_resume is False
+        assert second != first
+        assert artifact.read_text(encoding="utf-8") == "original"
+
+    def test_non_default_target_uses_combined_slug(self, tmp_path: Path) -> None:
+        run_dir, _ = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="develop",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(),
+        )
+        assert run_dir.parent.name == "feat__develop"
+
+    def test_legacy_flat_progress_resumes_in_place(self, tmp_path: Path) -> None:
+        _seed_progress(tmp_path, status="running")
+        run_dir, is_resume = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(),
+        )
+        assert run_dir == tmp_path
+        assert is_resume is True
+
+    def test_legacy_no_resume_creates_nested_sibling(self, tmp_path: Path) -> None:
+        artifact = tmp_path / "code-review-r1.json"
+        artifact.write_text("legacy", encoding="utf-8")
+        _seed_progress(tmp_path, status="running")
+        run_dir, is_resume = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=False,
+            now=_stamp(),
+        )
+        assert is_resume is False
+        assert run_dir == tmp_path / "feat" / "20260819T143022Z"
+        assert artifact.read_text(encoding="utf-8") == "legacy"
+        assert not (run_dir / "code-review-r1.json").exists()
+
+    def test_legacy_mismatch_returns_root(self, tmp_path: Path) -> None:
+        _seed_progress(tmp_path, source="feat", status="running")
+        run_dir, is_resume = resolve_driver_run_dir(
+            tmp_path,
+            source="other",
+            target="main",
+            source_sha="aaa",
+            resume=True,
+            now=_stamp(),
+        )
+        assert run_dir == tmp_path
+        assert is_resume is True
+
+    def test_timestamp_collision_suffixes(self, tmp_path: Path) -> None:
+        first, _ = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=False,
+            now=_stamp(),
+        )
+        second, _ = resolve_driver_run_dir(
+            tmp_path,
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            resume=False,
+            now=_stamp(),
+        )
+        assert first == tmp_path / "feat" / "20260819T143022Z"
+        assert second == tmp_path / "feat" / "20260819T143022Z-2"
+
+
 class TestMain:
     def test_resume_threaded_and_converged_exit_0(self, tmp_path: Path) -> None:
         progress = DriverProgress(
@@ -1348,3 +1635,65 @@ class TestMain:
                 ["--source", "feat", "--output-dir", str(tmp_path), "--no-tui"]
             )
         assert rc == 1
+
+    def test_nests_run_dir_under_source_slug(self, tmp_path: Path) -> None:
+        progress = DriverProgress(
+            status="converged",
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            target_sha="bbb",
+            max_passes=5,
+            k=2,
+            output_dir=str(tmp_path),
+        )
+        with (
+            patch(
+                "deep_architect.review_driver.preflight_driver",
+                return_value=(None, "aaa", "bbb"),
+            ),
+            patch("deep_architect.review_driver.run_driver", return_value=progress) as mocked,
+        ):
+            rc = main(
+                ["--source", "feat", "--output-dir", str(tmp_path), "--no-tui"]
+            )
+        assert rc == 0
+        out = mocked.call_args.kwargs["output_dir"]
+        assert out.parent.name == "feat"
+        assert out.parent.parent == tmp_path
+        assert (tmp_path / "feat" / "LATEST").is_file()
+
+    def test_merges_default_output_exclude(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        progress = DriverProgress(
+            status="converged",
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            target_sha="bbb",
+            max_passes=5,
+            k=2,
+            output_dir=".review-runs",
+        )
+        with (
+            patch(
+                "deep_architect.review_driver.preflight_driver",
+                return_value=(None, "aaa", "bbb"),
+            ),
+            patch("deep_architect.review_driver.run_driver", return_value=progress) as mocked,
+        ):
+            rc = main(
+                [
+                    "--source",
+                    "feat",
+                    "--output-dir",
+                    ".review-runs",
+                    "--exclude",
+                    "vendor/**",
+                    "--no-tui",
+                ]
+            )
+        assert rc == 0
+        assert mocked.call_args.kwargs["exclude"] == [".review-runs/**", "vendor/**"]
