@@ -57,6 +57,7 @@ DEFAULT_OCR_BIN = "ocr"
 DEFAULT_OCR_TIMEOUT_SECONDS = 3600
 DEFAULT_OCR_FILE_TIMEOUT_MINUTES = 10
 DEFAULT_OCR_CONCURRENCY = 8
+DEFAULT_OCR_LLM_TIMEOUT_SECONDS = 0
 DEFAULT_OCR_AUDIENCE = "agent"
 OCR_SESSION_POLL_SECONDS = 0.25
 OCR_SESSION_DISCOVER_SLACK_SECONDS = 5.0
@@ -283,6 +284,19 @@ def default_output_excludes(root: Path, cwd: Path) -> list[str]:
     if posix in ("", "."):
         return []
     return [f"{posix}/**"]
+
+
+def _dedupe_globs(*groups: list[str]) -> list[str]:
+    """Preserve order while dropping duplicate exclude globs."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for group in groups:
+        for glob in group:
+            if glob in seen:
+                continue
+            seen.add(glob)
+            out.append(glob)
+    return out
 
 
 def resolve_driver_run_dir(
@@ -1662,6 +1676,7 @@ def run_ocr_subprocess(
     on_child_log: Callable[[str], None] | None = None,
     ocr_timeout_minutes: int = DEFAULT_OCR_FILE_TIMEOUT_MINUTES,
     ocr_concurrency: int = DEFAULT_OCR_CONCURRENCY,
+    ocr_llm_timeout_seconds: int = DEFAULT_OCR_LLM_TIMEOUT_SECONDS,
     audience: str = DEFAULT_OCR_AUDIENCE,
     session_dir: Path | None = None,
 ) -> int:
@@ -1694,12 +1709,17 @@ def run_ocr_subprocess(
 
     log = log_path if log_path is not None else _ocr_log_path(output_json)
     timeout = _ocr_timeout_seconds()
+    llm_timeout_label = (
+        f"{ocr_llm_timeout_seconds}s"
+        if ocr_llm_timeout_seconds > 0
+        else "ocr-default"
+    )
     _append_log(
         log,
         (
             f"OCR starting: {' '.join(cmd)}\n"
             f"concurrency={ocr_concurrency} file-timeout={ocr_timeout_minutes}m "
-            f"log={log}\n"
+            f"llm-http-timeout={llm_timeout_label} log={log}\n"
         ),
         tee=verbose,
         on_child_log=on_child_log,
@@ -1710,6 +1730,10 @@ def run_ocr_subprocess(
         "text": True,
         "cwd": cwd,
     }
+    if ocr_llm_timeout_seconds > 0:
+        env = os.environ.copy()
+        env["OCR_LLM_TIMEOUT"] = str(ocr_llm_timeout_seconds)
+        popen_kwargs["env"] = env
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
     try:
@@ -1915,22 +1939,29 @@ class ProductionRunners:
     on_child_log: Callable[[str], None] | None = None
     ocr_timeout_minutes: int = DEFAULT_OCR_FILE_TIMEOUT_MINUTES
     ocr_concurrency: int = DEFAULT_OCR_CONCURRENCY
+    ocr_llm_timeout_seconds: int = DEFAULT_OCR_LLM_TIMEOUT_SECONDS
     ocr_audience: str = DEFAULT_OCR_AUDIENCE
 
     def run_ocr(
         self, *, source: str, target: str, output_json: Path, exclude: list[str]
     ) -> int:
+        merged_exclude = _dedupe_globs(
+            default_output_excludes(DEFAULT_OUTPUT_DIR, self.cwd),
+            default_output_excludes(self.output_dir, self.cwd),
+            exclude,
+        )
         return run_ocr_subprocess(
             source=source,
             target=target,
             output_json=output_json,
-            exclude=exclude,
+            exclude=merged_exclude,
             cwd=self.cwd,
             ocr_bin=self.ocr_bin,
             verbose=self.verbose,
             on_child_log=self.on_child_log,
             ocr_timeout_minutes=self.ocr_timeout_minutes,
             ocr_concurrency=self.ocr_concurrency,
+            ocr_llm_timeout_seconds=self.ocr_llm_timeout_seconds,
             audience=self.ocr_audience,
         )
 
@@ -2075,6 +2106,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--ocr-llm-timeout",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "OCR per-request HTTP timeout in seconds (OCR_LLM_TIMEOUT). "
+            "Default: env REVIEW_DRIVER_OCR_LLM_TIMEOUT → "
+            "config review_driver_ocr_llm_timeout_seconds → "
+            f"{DEFAULT_OCR_LLM_TIMEOUT_SECONDS} (0 = do not export; OCR "
+            "uses timeout_sec or its 300s client default)"
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="DEBUG logging; tee child logs to stderr in plain mode",
@@ -2151,6 +2195,44 @@ def resolve_ocr_concurrency(cli_value: int | None, cfg: HarnessConfig) -> int:
     return value
 
 
+def resolve_ocr_llm_timeout_seconds(
+    cli_value: int | None, cfg: HarnessConfig
+) -> int:
+    """CLI > REVIEW_DRIVER_OCR_LLM_TIMEOUT > TOML > 0 (do not export)."""
+    if cli_value is not None:
+        if cli_value < 0:
+            raise ValueError(f"ocr-llm-timeout must be >= 0, got {cli_value}")
+        return cli_value
+    env_value = _non_negative_int_from_env("REVIEW_DRIVER_OCR_LLM_TIMEOUT")
+    if env_value is not None:
+        return env_value
+    value = int(cfg.thresholds.review_driver_ocr_llm_timeout_seconds)
+    if value < 0:
+        logger.warning(
+            "thresholds.review_driver_ocr_llm_timeout_seconds=%d must be >= 0; "
+            "using %s",
+            value,
+            DEFAULT_OCR_LLM_TIMEOUT_SECONDS,
+        )
+        return DEFAULT_OCR_LLM_TIMEOUT_SECONDS
+    return value
+
+
+def _non_negative_int_from_env(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; ignoring", name, raw)
+        return None
+    if value < 0:
+        logger.warning("%s=%d must be >= 0; ignoring", name, value)
+        return None
+    return value
+
+
 def _load_driver_config(config_path: Path | None) -> HarnessConfig:
     cfg = HarnessConfig()
     path = config_path if config_path is not None else _resolve_default_config_path()
@@ -2207,6 +2289,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         ocr_timeout_minutes = resolve_ocr_timeout_minutes(args.ocr_timeout, cfg)
         ocr_concurrency = resolve_ocr_concurrency(args.ocr_concurrency, cfg)
+        ocr_llm_timeout_seconds = resolve_ocr_llm_timeout_seconds(
+            args.ocr_llm_timeout, cfg
+        )
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -2239,10 +2324,11 @@ def main(argv: list[str] | None = None) -> int:
         run_dir,
         "resume" if resuming_run else "new",
     )
-    exclude = [
-        *default_output_excludes(output_root, cwd),
-        *list(args.exclude),
-    ]
+    exclude = _dedupe_globs(
+        default_output_excludes(DEFAULT_OUTPUT_DIR, cwd),
+        default_output_excludes(output_root, cwd),
+        list(args.exclude),
+    )
 
     child_logs = ChildLogFanout()
     runners = ProductionRunners(
@@ -2256,6 +2342,7 @@ def main(argv: list[str] | None = None) -> int:
         on_child_log=child_logs.emit,
         ocr_timeout_minutes=ocr_timeout_minutes,
         ocr_concurrency=ocr_concurrency,
+        ocr_llm_timeout_seconds=ocr_llm_timeout_seconds,
         ocr_audience="human" if use_tui else DEFAULT_OCR_AUDIENCE,
     )
 

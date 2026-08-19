@@ -295,6 +295,8 @@ class TestSummarizeOcrFailure:
         assert "API key" not in text
         assert "context deadline exceeded" in text
         assert "25" in text
+        assert "per-request HTTP deadline" in text
+        assert "~5m" not in text
 
     def test_falls_back_to_stderr_error_line(self) -> None:
         text = summarize_ocr_failure(

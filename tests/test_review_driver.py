@@ -22,6 +22,7 @@ from deep_architect.review_driver import (
     DriverPassRecord,
     DriverPreflightError,
     DriverProgress,
+    ProductionRunners,
     branch_run_parent,
     default_output_excludes,
     format_ocr_session_event,
@@ -37,6 +38,7 @@ from deep_architect.review_driver import (
     request_interrupt,
     resolve_driver_run_dir,
     resolve_ocr_concurrency,
+    resolve_ocr_llm_timeout_seconds,
     resolve_ocr_timeout_minutes,
     run_action_main,
     run_analyzer_main,
@@ -719,6 +721,65 @@ class TestProductionRunners:
         assert argv[argv.index("--timeout") + 1] == "30"
         assert argv[argv.index("--concurrency") + 1] == "3"
 
+    def test_ocr_exports_llm_timeout_env(self, tmp_path: Path) -> None:
+        output_json = tmp_path / "code-review-r1.json"
+        fake = _FakePopen(stdout='{"comments":[]}\n', stderr="")
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake) as mocked:
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+                ocr_llm_timeout_seconds=1200,
+            )
+        assert rc == 0
+        env = mocked.call_args.kwargs["env"]
+        assert env["OCR_LLM_TIMEOUT"] == "1200"
+        log_text = (tmp_path / "logs" / "r1-ocr.log").read_text(encoding="utf-8")
+        assert "llm-http-timeout=1200s" in log_text
+
+    def test_ocr_omits_llm_timeout_env_when_unset(self, tmp_path: Path) -> None:
+        output_json = tmp_path / "code-review-r1.json"
+        fake = _FakePopen(stdout='{"comments":[]}\n', stderr="")
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake) as mocked:
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+            )
+        assert rc == 0
+        assert "env" not in mocked.call_args.kwargs
+        log_text = (tmp_path / "logs" / "r1-ocr.log").read_text(encoding="utf-8")
+        assert "llm-http-timeout=ocr-default" in log_text
+
+    def test_production_runners_merges_output_excludes(self, tmp_path: Path) -> None:
+        (tmp_path / ".review-runs").mkdir()
+        runners = ProductionRunners(
+            cwd=tmp_path,
+            output_dir=tmp_path / ".review-runs",
+            ocr_llm_timeout_seconds=1200,
+        )
+        with patch(
+            "deep_architect.review_driver.run_ocr_subprocess", return_value=0
+        ) as mocked:
+            rc = runners.run_ocr(
+                source="feat",
+                target="main",
+                output_json=tmp_path / "code-review-r1.json",
+                exclude=["vendor/**"],
+            )
+        assert rc == 0
+        assert mocked.call_args.kwargs["exclude"] == [
+            ".review-runs/**",
+            "vendor/**",
+        ]
+        assert mocked.call_args.kwargs["ocr_llm_timeout_seconds"] == 1200
+
     def test_ocr_streams_stderr_to_log_and_callback(self, tmp_path: Path) -> None:
         output_json = tmp_path / "code-review-r1.json"
         seen: list[str] = []
@@ -1216,10 +1277,20 @@ class TestParseArgs:
 
     def test_ocr_timeout_and_concurrency_flags(self) -> None:
         args = parse_args(
-            ["--source", "feat", "--ocr-timeout", "30", "--ocr-concurrency", "3"]
+            [
+                "--source",
+                "feat",
+                "--ocr-timeout",
+                "30",
+                "--ocr-concurrency",
+                "3",
+                "--ocr-llm-timeout",
+                "1200",
+            ]
         )
         assert args.ocr_timeout == 30
         assert args.ocr_concurrency == 3
+        assert args.ocr_llm_timeout == 1200
 
 
 class TestResolveOcrLimits:
@@ -1227,22 +1298,33 @@ class TestResolveOcrLimits:
         cfg = HarnessConfig()
         assert resolve_ocr_timeout_minutes(30, cfg) == 30
         assert resolve_ocr_concurrency(3, cfg) == 3
+        assert resolve_ocr_llm_timeout_seconds(1200, cfg) == 1200
 
     def test_config_when_cli_unset(self) -> None:
         cfg = HarnessConfig()
         cfg.thresholds.review_driver_ocr_timeout_minutes = 30
         cfg.thresholds.review_driver_ocr_concurrency = 3
+        cfg.thresholds.review_driver_ocr_llm_timeout_seconds = 1200
         assert resolve_ocr_timeout_minutes(None, cfg) == 30
         assert resolve_ocr_concurrency(None, cfg) == 3
+        assert resolve_ocr_llm_timeout_seconds(None, cfg) == 1200
 
     def test_env_overrides_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("REVIEW_DRIVER_OCR_FILE_TIMEOUT", "25")
         monkeypatch.setenv("REVIEW_DRIVER_OCR_CONCURRENCY", "4")
+        monkeypatch.setenv("REVIEW_DRIVER_OCR_LLM_TIMEOUT", "900")
         cfg = HarnessConfig()
         cfg.thresholds.review_driver_ocr_timeout_minutes = 30
         cfg.thresholds.review_driver_ocr_concurrency = 3
+        cfg.thresholds.review_driver_ocr_llm_timeout_seconds = 1200
         assert resolve_ocr_timeout_minutes(None, cfg) == 25
         assert resolve_ocr_concurrency(None, cfg) == 4
+        assert resolve_ocr_llm_timeout_seconds(None, cfg) == 900
+
+    def test_llm_timeout_zero_is_valid(self) -> None:
+        cfg = HarnessConfig()
+        assert resolve_ocr_llm_timeout_seconds(0, cfg) == 0
+        assert resolve_ocr_llm_timeout_seconds(None, cfg) == 0
 
 
 def _stamp(hour: int = 14, minute: int = 30, second: int = 22) -> datetime:

@@ -323,7 +323,10 @@ def summarize_ocr_failure(
     if _looks_like_timeout(stats, combined):
         count = stats.timeout_failures or stats.failed_requests
         if count:
-            return f"context deadline exceeded ({count} LLM requests timed out at ~5m)"
+            return (
+                f"context deadline exceeded ({count} LLM requests timed out "
+                "at the per-request HTTP deadline)"
+            )
         return "context deadline exceeded"
 
     if stats.message:

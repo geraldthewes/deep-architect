@@ -188,6 +188,7 @@ def test_threshold_review_driver_defaults() -> None:
     assert cfg.review_analyzer_concurrency == 5
     assert cfg.review_driver_ocr_timeout_minutes == 10
     assert cfg.review_driver_ocr_concurrency == 8
+    assert cfg.review_driver_ocr_llm_timeout_seconds == 0
 
 
 def test_load_config_with_review_pipeline_limits(tmp_path: Path) -> None:
@@ -201,11 +202,13 @@ model = "sonnet"
 review_analyzer_concurrency = 2
 review_driver_ocr_timeout_minutes = 30
 review_driver_ocr_concurrency = 3
+review_driver_ocr_llm_timeout_seconds = 1200
 """)
     cfg = load_config(cfg_file)
     assert cfg.thresholds.review_analyzer_concurrency == 2
     assert cfg.thresholds.review_driver_ocr_timeout_minutes == 30
     assert cfg.thresholds.review_driver_ocr_concurrency == 3
+    assert cfg.thresholds.review_driver_ocr_llm_timeout_seconds == 1200
 
 
 def test_load_config_with_review_analyzer_timeout(tmp_path: Path) -> None:

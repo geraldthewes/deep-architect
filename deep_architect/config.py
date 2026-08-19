@@ -57,6 +57,9 @@ class ThresholdConfig(BaseModel):
     review_driver_ocr_timeout_minutes: int = 10
     # review-driver → ocr review --concurrency
     review_driver_ocr_concurrency: int = 8
+    # review-driver → OCR_LLM_TIMEOUT (seconds, per HTTP request).
+    # 0 = do not export; OCR uses timeout_sec / its 300s client default.
+    review_driver_ocr_llm_timeout_seconds: int = 0
 
 
 def _default_generator() -> AgentConfig:

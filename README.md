@@ -995,12 +995,13 @@ The output root is always passed to `ocr` and `review-analyzer` as an exclude gl
 | `--model NAME` | (action default) | Passed through to `review-action` |
 | `--ocr-timeout MINUTES` | config / `10` | Per-file OCR timeout (`ocr --timeout`; **minutes**, not seconds) |
 | `--ocr-concurrency N` | config / `8` | Concurrent OCR file reviews (`ocr --concurrency`) |
+| `--ocr-llm-timeout SECONDS` | config / `0` | Per-request OCR HTTP timeout, exported as `OCR_LLM_TIMEOUT`. `0` leaves OCR's `timeout_sec` / 300s default in place |
 | `--config PATH` | XDG config if present | Missing file → defaults + warning (same as `review-action`) |
 | `--verbose` | off | DEBUG logging; tee child logs to stderr in plain mode |
 | `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
-Thresholds also live under `[thresholds]`: `review_driver_max_passes`, `review_driver_zero_novelty_passes`, `review_driver_ocr_timeout_minutes`, `review_driver_ocr_concurrency`. Analyzer concurrency/timeout come from the same file (`review_analyzer_concurrency`, `review_analyzer_timeout`) when the driver invokes the analyzer. OCR `--timeout` is **minutes**; analyzer `--timeout` is **seconds**.
+Thresholds also live under `[thresholds]`: `review_driver_max_passes`, `review_driver_zero_novelty_passes`, `review_driver_ocr_timeout_minutes`, `review_driver_ocr_concurrency`, `review_driver_ocr_llm_timeout_seconds`. Analyzer concurrency/timeout come from the same file (`review_analyzer_concurrency`, `review_analyzer_timeout`) when the driver invokes the analyzer. OCR `--timeout` is **minutes**; `--ocr-llm-timeout` and analyzer `--timeout` are **seconds**. The driver always excludes `.review-runs/**` (and the `--output-dir` tree) from OCR.
 
 ### Stop rule
 
