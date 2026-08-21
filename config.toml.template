@@ -59,12 +59,14 @@ review_analyzer_concurrency  = 2
 review_driver_max_passes            = 5
 review_driver_zero_novelty_passes   = 2
 # review-driver → ocr review. --timeout is minutes per file (not seconds).
-# Code defaults are 10 and 8 (OCR's own defaults). 45 / 2 / 1200 is the
+# Code defaults are 10 and 8 (OCR's own defaults). 45 / 8 / 1200 is the
 # nemotron-safe set used on plant-tracking. CLI --ocr-timeout /
 # --ocr-concurrency / --ocr-llm-timeout and env REVIEW_DRIVER_OCR_FILE_TIMEOUT /
 # REVIEW_DRIVER_OCR_CONCURRENCY / REVIEW_DRIVER_OCR_LLM_TIMEOUT override.
+# The driver process cap is derived from these knobs (floor 3600s); override
+# with env REVIEW_DRIVER_OCR_TIMEOUT (seconds).
 review_driver_ocr_timeout_minutes         = 45
-review_driver_ocr_concurrency             = 2
+review_driver_ocr_concurrency             = 8
 # Per-request HTTP timeout exported as OCR_LLM_TIMEOUT (seconds). 0 = do not
 # export; OCR then uses ~/.opencodereview/config.json timeout_sec or 300s.
 review_driver_ocr_llm_timeout_seconds     = 1200

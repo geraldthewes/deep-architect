@@ -24,13 +24,17 @@ from deep_architect.review_driver import (
     DriverProgress,
     ProductionRunners,
     branch_run_parent,
+    default_ocr_report_excludes,
     default_output_excludes,
     format_ocr_session_event,
     format_ocr_summary,
     format_stop_line,
     format_trend,
+    last_ocr_invocation_log,
     load_driver_progress,
     main,
+    ocr_process_timeout_reason,
+    ocr_process_timeout_seconds,
     ocr_session_dir,
     parse_args,
     preflight_driver,
@@ -227,6 +231,17 @@ class TestFormatters:
         assert "16 failed" in text
         assert "context deadline exceeded" in text
         assert "API key" not in text
+
+    def test_format_ocr_summary_failed_includes_process_timeout(self) -> None:
+        stats = OcrRunStats(
+            comments=0,
+            status="failed",
+            message="ocr process timeout after 1h00m00s",
+        )
+        text = format_ocr_summary(stats, {}, wall_seconds=3600.0)
+        assert text.startswith("OCR      FAILED")
+        assert "ocr process timeout after 1h00m00s" in text
+        assert "deadline exceeded" not in text
 
     def test_format_stop_line_includes_detail(self) -> None:
         assert format_stop_line("failed", 2) == "Stopped: failed."
@@ -739,6 +754,7 @@ class TestProductionRunners:
         assert env["OCR_LLM_TIMEOUT"] == "1200"
         log_text = (tmp_path / "logs" / "r1-ocr.log").read_text(encoding="utf-8")
         assert "llm-http-timeout=1200s" in log_text
+        assert "process-timeout=" in log_text
 
     def test_ocr_omits_llm_timeout_env_when_unset(self, tmp_path: Path) -> None:
         output_json = tmp_path / "code-review-r1.json"
@@ -776,6 +792,8 @@ class TestProductionRunners:
         assert rc == 0
         assert mocked.call_args.kwargs["exclude"] == [
             ".review-runs/**",
+            "code-review*.json",
+            "code-review-*.json",
             "vendor/**",
         ]
         assert mocked.call_args.kwargs["ocr_llm_timeout_seconds"] == 1200
@@ -949,6 +967,8 @@ class TestProductionRunners:
 
     def test_ocr_timeout_returns_1(self, tmp_path: Path) -> None:
         output_json = tmp_path / "code-review-r1.json"
+        stale = '{"status": "failed", "message": "context deadline exceeded"}'
+        output_json.write_text(stale, encoding="utf-8")
         fake = _FakePopen(stdout="", stderr="")
         fake.wait = MagicMock(side_effect=subprocess.TimeoutExpired("ocr", 1))
         with (
@@ -965,6 +985,9 @@ class TestProductionRunners:
             )
         assert rc == 1
         fake.kill.assert_called_once()
+        log_text = (tmp_path / "logs" / "r1-ocr.log").read_text(encoding="utf-8")
+        assert "ocr timed out after" in log_text
+        assert output_json.read_text(encoding="utf-8") == stale
 
     def test_ocr_force_stop_kills_child_and_returns_130(self, tmp_path: Path) -> None:
         review_driver_mod._reset_interrupt_state()
@@ -1325,6 +1348,87 @@ class TestResolveOcrLimits:
         cfg = HarnessConfig()
         assert resolve_ocr_llm_timeout_seconds(0, cfg) == 0
         assert resolve_ocr_llm_timeout_seconds(None, cfg) == 0
+
+
+class TestOcrProcessTimeout:
+    def test_derived_timeout_45m_concurrency_2(self) -> None:
+        assert ocr_process_timeout_seconds(
+            file_timeout_minutes=45, concurrency=2
+        ) == 21720.0
+
+    def test_derived_timeout_default_knobs_under_floor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("REVIEW_DRIVER_OCR_TIMEOUT", raising=False)
+        derived = ocr_process_timeout_seconds(
+            file_timeout_minutes=10, concurrency=8
+        )
+        assert derived == 1320.0
+        assert review_driver_mod._ocr_timeout_seconds(10, 8) == 3600.0
+
+    def test_env_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("REVIEW_DRIVER_OCR_TIMEOUT", "99")
+        assert review_driver_mod._ocr_timeout_seconds(45, 2) == 99.0
+
+    def test_invalid_env_falls_through_to_derived(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REVIEW_DRIVER_OCR_TIMEOUT", "nope")
+        assert review_driver_mod._ocr_timeout_seconds(45, 2) == 21720.0
+
+
+class TestOcrLogScoping:
+    def test_last_invocation_slices_from_final_banner(self) -> None:
+        text = (
+            "OCR starting: old\n"
+            "[ocr] llm error a.py: context deadline exceeded\n"
+            "OCR starting: new\n"
+            "ocr timed out after 3600 seconds\n"
+        )
+        block = last_ocr_invocation_log(text)
+        assert block.startswith("OCR starting: new")
+        assert "deadline exceeded" not in block
+        assert "ocr timed out after 3600 seconds" in block
+
+    def test_process_timeout_reason_from_log(self) -> None:
+        log = "OCR starting: x\nocr timed out after 3600.0 seconds\n"
+        assert ocr_process_timeout_reason(log) == "ocr process timeout after 1h00m00s"
+
+    def test_default_ocr_report_excludes(self) -> None:
+        assert default_ocr_report_excludes() == [
+            "code-review*.json",
+            "code-review-*.json",
+        ]
+
+    def test_driver_kill_ignores_stale_json_and_old_deadline(
+        self, tmp_path: Path
+    ) -> None:
+        ocr_json = tmp_path / "code-review-r1.json"
+        ocr_json.write_text(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "message": "context deadline exceeded",
+                    "summary": {"comments": 0, "files_reviewed": 16},
+                }
+            ),
+            encoding="utf-8",
+        )
+        log = tmp_path / "logs" / "r1-ocr.log"
+        log.parent.mkdir()
+        log.write_text(
+            "OCR starting: first attempt\n"
+            "Error: review failed: context deadline exceeded\n"
+            "OCR starting: retry\n"
+            "ocr timed out after 3600 seconds\n",
+            encoding="utf-8",
+        )
+        runners = ScriptedRunners(novelties=[1], ocr_rcs=[1])
+        result = _run(tmp_path, runners, max_passes=1, k=2)
+        assert result.status == "failed"
+        assert result.stop_detail is not None
+        assert "process timeout" in result.stop_detail
+        assert "deadline" not in result.stop_detail
 
 
 def _stamp(hour: int = 14, minute: int = 30, second: int = 22) -> datetime:
@@ -1778,4 +1882,9 @@ class TestMain:
                 ]
             )
         assert rc == 0
-        assert mocked.call_args.kwargs["exclude"] == [".review-runs/**", "vendor/**"]
+        assert mocked.call_args.kwargs["exclude"] == [
+            ".review-runs/**",
+            "code-review*.json",
+            "code-review-*.json",
+            "vendor/**",
+        ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -59,6 +60,17 @@ DEFAULT_OCR_FILE_TIMEOUT_MINUTES = 10
 DEFAULT_OCR_CONCURRENCY = 8
 DEFAULT_OCR_LLM_TIMEOUT_SECONDS = 0
 DEFAULT_OCR_AUDIENCE = "agent"
+OCR_PROCESS_TIMEOUT_FILE_BUDGET = 16
+OCR_PROCESS_TIMEOUT_SLACK_SECONDS = 120
+DEFAULT_OCR_REPORT_EXCLUDES: tuple[str, ...] = (
+    "code-review*.json",
+    "code-review-*.json",
+)
+_OCR_START_BANNER = "OCR starting:"
+_OCR_PROCESS_TIMEOUT_RE = re.compile(
+    r"ocr timed out after ([0-9.]+) seconds",
+    re.IGNORECASE,
+)
 OCR_SESSION_POLL_SECONDS = 0.25
 OCR_SESSION_DISCOVER_SLACK_SECONDS = 5.0
 OCR_WAIT_POLL_SECONDS = 0.25
@@ -284,6 +296,11 @@ def default_output_excludes(root: Path, cwd: Path) -> list[str]:
     if posix in ("", "."):
         return []
     return [f"{posix}/**"]
+
+
+def default_ocr_report_excludes() -> list[str]:
+    """Globs that keep OCR from reviewing committed OCR JSON reports."""
+    return list(DEFAULT_OCR_REPORT_EXCLUDES)
 
 
 def _dedupe_globs(*groups: list[str]) -> list[str]:
@@ -1007,16 +1024,34 @@ def run_driver(
                 ocr_rc = 130
             if ocr_rc != 0:
                 stderr_tail = _ocr_log_text(output_dir, pass_index)
-                ocr_stats = apply_ocr_stderr(load_ocr_run_stats(ocr_json), stderr_tail)
-                if ocr_stats.status is None:
-                    ocr_stats = replace(ocr_stats, status="failed")
+                process_timeout = ocr_process_timeout_reason(stderr_tail)
                 interrupted = ocr_rc == 130 or _interrupt_requested
-                if interrupted:
+                if process_timeout:
+                    # Ignore leftover JSON from a previous attempt of this pass.
+                    ocr_stats = OcrRunStats(status="failed", message=process_timeout)
+                    reason = process_timeout
+                    logger.error(
+                        "OCR failed on pass %s (rc=%s): %s",
+                        pass_index,
+                        ocr_rc,
+                        reason,
+                    )
+                elif interrupted:
+                    ocr_stats = apply_ocr_stderr(
+                        load_ocr_run_stats(ocr_json), stderr_tail
+                    )
+                    if ocr_stats.status is None:
+                        ocr_stats = replace(ocr_stats, status="failed")
                     reason = "interrupted"
                     logger.info(
                         "OCR interrupted on pass %s (rc=%s)", pass_index, ocr_rc
                     )
                 else:
+                    ocr_stats = apply_ocr_stderr(
+                        load_ocr_run_stats(ocr_json), stderr_tail
+                    )
+                    if ocr_stats.status is None:
+                        ocr_stats = replace(ocr_stats, status="failed")
                     reason = summarize_ocr_failure(ocr_stats, stderr_tail, rc=ocr_rc)
                     logger.error(
                         "OCR failed on pass %s (rc=%s): %s",
@@ -1298,19 +1333,43 @@ def preflight_driver(
 # ---------------------------------------------------------------------------
 
 
-def _ocr_timeout_seconds() -> float:
+def ocr_process_timeout_seconds(
+    *,
+    file_timeout_minutes: int,
+    concurrency: int,
+    file_budget: int = OCR_PROCESS_TIMEOUT_FILE_BUDGET,
+    slack_seconds: int = OCR_PROCESS_TIMEOUT_SLACK_SECONDS,
+) -> float:
+    """Safety cap so the driver does not kill OCR before per-file timeouts fire.
+
+    Worst case: every file in *file_budget* uses the full ``--timeout``,
+    serialized into ``ceil(budget / concurrency)`` batches.
+    """
+    conc = max(1, concurrency)
+    budget = max(1, file_budget)
+    batches = math.ceil(budget / conc)
+    return float(batches * max(1, file_timeout_minutes) * 60 + max(0, slack_seconds))
+
+
+def _ocr_timeout_seconds(
+    file_timeout_minutes: int = DEFAULT_OCR_FILE_TIMEOUT_MINUTES,
+    concurrency: int = DEFAULT_OCR_CONCURRENCY,
+) -> float:
+    """Process cap: env ``REVIEW_DRIVER_OCR_TIMEOUT`` or derived (floored at 3600s)."""
     raw = os.environ.get("REVIEW_DRIVER_OCR_TIMEOUT")
-    if raw is None or raw.strip() == "":
-        return float(DEFAULT_OCR_TIMEOUT_SECONDS)
-    try:
-        return float(raw)
-    except ValueError:
-        logger.warning(
-            "Invalid REVIEW_DRIVER_OCR_TIMEOUT=%r, using %s",
-            raw,
-            DEFAULT_OCR_TIMEOUT_SECONDS,
-        )
-        return float(DEFAULT_OCR_TIMEOUT_SECONDS)
+    if raw is not None and raw.strip() != "":
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid REVIEW_DRIVER_OCR_TIMEOUT=%r; using derived process cap",
+                raw,
+            )
+    derived = ocr_process_timeout_seconds(
+        file_timeout_minutes=file_timeout_minutes,
+        concurrency=concurrency,
+    )
+    return max(float(DEFAULT_OCR_TIMEOUT_SECONDS), derived)
 
 
 def _pass_index_from_artifact(path: Path) -> int:
@@ -1322,14 +1381,36 @@ def _ocr_log_path(output_json: Path) -> Path:
     return output_json.parent / "logs" / f"r{_pass_index_from_artifact(output_json)}-ocr.log"
 
 
+def last_ocr_invocation_log(text: str) -> str:
+    """Return the last OCR invocation in an append-only pass log."""
+    if not text:
+        return ""
+    idx = text.rfind(_OCR_START_BANNER)
+    if idx < 0:
+        return text
+    return text[idx:]
+
+
+def ocr_process_timeout_reason(log: str) -> str | None:
+    """Parse a driver process-timeout line from the current invocation log."""
+    for line in reversed(log.splitlines()):
+        match = _OCR_PROCESS_TIMEOUT_RE.search(line.strip())
+        if match is None:
+            continue
+        seconds = float(match.group(1))
+        return f"ocr process timeout after {format_duration(seconds)}"
+    return None
+
+
 def _ocr_log_text(output_dir: Path, pass_index: int) -> str:
     path = output_dir / "logs" / f"r{pass_index}-ocr.log"
     if not path.is_file():
         return ""
     try:
-        return path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except OSError:
         return ""
+    return last_ocr_invocation_log(raw)
 
 
 _LOG_LOCK = threading.Lock()
@@ -1708,18 +1789,29 @@ def run_ocr_subprocess(
         cmd.extend(["--exclude", ",".join(exclude)])
 
     log = log_path if log_path is not None else _ocr_log_path(output_json)
-    timeout = _ocr_timeout_seconds()
+    timeout = _ocr_timeout_seconds(ocr_timeout_minutes, ocr_concurrency)
     llm_timeout_label = (
         f"{ocr_llm_timeout_seconds}s"
         if ocr_llm_timeout_seconds > 0
         else "ocr-default"
     )
+    if (
+        ocr_llm_timeout_seconds > 0
+        and ocr_llm_timeout_seconds * 3 > ocr_timeout_minutes * 60
+    ):
+        logger.warning(
+            "OCR per-file timeout %sm may be shorter than 3 HTTP calls at "
+            "OCR_LLM_TIMEOUT=%ss",
+            ocr_timeout_minutes,
+            ocr_llm_timeout_seconds,
+        )
     _append_log(
         log,
         (
             f"OCR starting: {' '.join(cmd)}\n"
             f"concurrency={ocr_concurrency} file-timeout={ocr_timeout_minutes}m "
-            f"llm-http-timeout={llm_timeout_label} log={log}\n"
+            f"llm-http-timeout={llm_timeout_label} "
+            f"process-timeout={format_duration(timeout)} log={log}\n"
         ),
         tee=verbose,
         on_child_log=on_child_log,
@@ -1948,6 +2040,7 @@ class ProductionRunners:
         merged_exclude = _dedupe_globs(
             default_output_excludes(DEFAULT_OUTPUT_DIR, self.cwd),
             default_output_excludes(self.output_dir, self.cwd),
+            default_ocr_report_excludes(),
             exclude,
         )
         return run_ocr_subprocess(
@@ -2056,7 +2149,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=[],
         help=(
             "Glob passed to ocr and review-analyzer (repeatable). "
-            "The output root is always excluded."
+            "The output root and code-review*.json reports are always excluded."
         ),
     )
     parser.add_argument(
@@ -2327,6 +2420,7 @@ def main(argv: list[str] | None = None) -> int:
     exclude = _dedupe_globs(
         default_output_excludes(DEFAULT_OUTPUT_DIR, cwd),
         default_output_excludes(output_root, cwd),
+        default_ocr_report_excludes(),
         list(args.exclude),
     )
 

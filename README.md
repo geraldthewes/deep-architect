@@ -977,7 +977,7 @@ Resume (the default) continues the newest **stopped** run (`running` / `failed`)
 
 A legacy flat `{output-dir}/progress.json` (the original layout) is still resumed in place so an in-flight run is not migrated mid-pass. `--no-resume` against that layout creates a nested sibling and leaves the flat files untouched.
 
-The output root is always passed to `ocr` and `review-analyzer` as an exclude glob (`.review-runs/**`) so the driver does not review its own artifacts.
+The output root is always passed to `ocr` and `review-analyzer` as an exclude glob (`.review-runs/**`) so the driver does not review its own artifacts. Committed OCR reports matching `code-review*.json` / `code-review-*.json` are also excluded — `.json` is a reviewable OCR type, and leftover reports from earlier passes steal slots.
 
 ### CLI Options
 
@@ -989,7 +989,7 @@ The output root is always passed to `ocr` and `review-analyzer` as an exclude gl
 | `--max-passes N` | config / `5` | Safety cap on OCR→action passes |
 | `--zero-novelty-passes K` | config / `2` | Consecutive zero-novelty passes required to converge |
 | `--resume` / `--no-resume` | resume | Continue a stopped run for this source/target. `--no-resume` starts a new timestamped run and never overwrites |
-| `--exclude GLOB` | output root | Repeatable; passed to `ocr` and `review-analyzer`. The output root is always excluded |
+| `--exclude GLOB` | output root | Repeatable; passed to `ocr` and `review-analyzer`. The output root and `code-review*.json` reports are always excluded. Generated clients (for example orval `plantTrackingAPI.ts`) are `--exclude`, not a driver default |
 | `--knowledge-dir PATH` | `<cwd>/knowledge` | Catalog / backlog directory for the analyzer |
 | `--provider NAME` | (action default) | Passed through to `review-action` |
 | `--model NAME` | (action default) | Passed through to `review-action` |
@@ -1001,7 +1001,9 @@ The output root is always passed to `ocr` and `review-analyzer` as an exclude gl
 | `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
-Thresholds also live under `[thresholds]`: `review_driver_max_passes`, `review_driver_zero_novelty_passes`, `review_driver_ocr_timeout_minutes`, `review_driver_ocr_concurrency`, `review_driver_ocr_llm_timeout_seconds`. Analyzer concurrency/timeout come from the same file (`review_analyzer_concurrency`, `review_analyzer_timeout`) when the driver invokes the analyzer. OCR `--timeout` is **minutes**; `--ocr-llm-timeout` and analyzer `--timeout` are **seconds**. The driver always excludes `.review-runs/**` (and the `--output-dir` tree) from OCR.
+Thresholds also live under `[thresholds]`: `review_driver_max_passes`, `review_driver_zero_novelty_passes`, `review_driver_ocr_timeout_minutes`, `review_driver_ocr_concurrency`, `review_driver_ocr_llm_timeout_seconds`. Analyzer concurrency/timeout come from the same file (`review_analyzer_concurrency`, `review_analyzer_timeout`) when the driver invokes the analyzer. OCR `--timeout` is **minutes**; `--ocr-llm-timeout` and analyzer `--timeout` are **seconds**. The driver always excludes `.review-runs/**` (and the `--output-dir` tree) and `code-review*.json` from OCR.
+
+The OCR **process** cap (when the driver SIGKILLs `ocr`) is derived from per-file `--timeout` × `ceil(16 / concurrency)` plus 2 minutes slack, floored at 3600s. Override with env `REVIEW_DRIVER_OCR_TIMEOUT` (seconds). The nemotron-safe set used on plant-tracking is `--timeout 45` / `--concurrency 8` / `OCR_LLM_TIMEOUT=1200`.
 
 ### Stop rule
 
