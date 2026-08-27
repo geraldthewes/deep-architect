@@ -27,6 +27,7 @@ from deep_architect.review_driver import (
     DriverRunMeta,
     ProgressReporter,
     format_duration,
+    format_pass_fraction,
     request_force_stop,
     request_interrupt,
 )
@@ -107,7 +108,7 @@ def format_header(meta: DriverRunMeta, *, pass_index: int = 0) -> str:
     resume = "   [bold]resume[/bold]" if meta.resume else ""
     return (
         f"[bold]{meta.source}[/bold] → [bold]{meta.target}[/bold]{sha_bit}\n"
-        f"[bold]pass:[/bold] {pass_index}/{meta.max_passes}   "
+        f"[bold]pass:[/bold] {format_pass_fraction(pass_index, meta.max_passes)}   "
         f"[bold]K:[/bold] {meta.k}   "
         f"[bold]output:[/bold] {meta.output_dir}{resume}"
     )
@@ -137,6 +138,13 @@ def format_summary(
     )
 
 
+def _progress_bar_total(max_passes: int, completed: int) -> int:
+    """ProgressBar total. Unlimited (max_passes=0) stays one step ahead of done."""
+    if max_passes > 0:
+        return max(max_passes, 1)
+    return max(completed + 1, 1)
+
+
 def format_progress_label(
     pass_index: int,
     max_passes: int,
@@ -151,7 +159,7 @@ def format_progress_label(
     else:
         phase_label = "—"
     return (
-        f"[bold]Pass {pass_index}/{max_passes}[/bold]  "
+        f"[bold]Pass {format_pass_fraction(pass_index, max_passes)}[/bold]  "
         f"[bold blue]{phase_label}[/bold blue]  "
         f"[dim]Elapsed[/dim] {format_duration(elapsed_s)}"
     )
@@ -519,7 +527,7 @@ class ReviewDriverApp(App[DriverTuiResult]):
                 id="progress-label",
             )
             yield ProgressBar(
-                total=max(self._max_passes, 1),
+                total=_progress_bar_total(self._max_passes, 0),
                 show_eta=False,
                 id="progress-bar",
             )
@@ -560,7 +568,7 @@ class ReviewDriverApp(App[DriverTuiResult]):
         if self._attach_child_logs is not None:
             self._attach_child_logs(self._on_child_log)
         bar = self.query_one("#progress-bar", ProgressBar)
-        bar.update(total=max(self._max_passes, 1), progress=0)
+        bar.update(total=_progress_bar_total(self._max_passes, 0), progress=0)
         self.query_one("#activity-log", RichLog).write(
             Text("TUI started — logging is confined to this pane.", style="dim")
         )
@@ -787,7 +795,10 @@ class ReviewDriverApp(App[DriverTuiResult]):
             completed = 0
         elif self._progress is None:
             completed = max(shown_pass - 1, 0)
-        bar.update(total=max(self._max_passes, 1), progress=completed)
+        bar.update(
+            total=_progress_bar_total(self._max_passes, completed),
+            progress=completed,
+        )
         self.query_one("#summary-strip", Static).update(
             format_summary(
                 novelty=self._novelty,

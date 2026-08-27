@@ -114,6 +114,10 @@ class TestDecideStop:
             decide_stop(novelty_history=[1, 0, 0], k=2, max_passes=3) == StopReason.CONVERGED
         )
 
+    def test_max_passes_zero_is_unlimited(self) -> None:
+        assert decide_stop(novelty_history=[1] * 20, k=2, max_passes=0) == StopReason.CONTINUE
+        assert decide_stop(novelty_history=[1, 0, 0], k=2, max_passes=0) == StopReason.CONVERGED
+
     def test_consecutive_zero_novelty_empty(self) -> None:
         assert consecutive_zero_novelty([]) == 0
         assert consecutive_zero_novelty([3, 1, 0, 0]) == 2

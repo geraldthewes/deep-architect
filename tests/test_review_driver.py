@@ -28,6 +28,7 @@ from deep_architect.review_driver import (
     default_output_excludes,
     format_ocr_session_event,
     format_ocr_summary,
+    format_pass_fraction,
     format_stop_line,
     format_trend,
     last_ocr_invocation_log,
@@ -243,6 +244,10 @@ class TestFormatters:
         assert "ocr process timeout after 1h00m00s" in text
         assert "deadline exceeded" not in text
 
+    def test_format_pass_fraction_unlimited(self) -> None:
+        assert format_pass_fraction(3, 5) == "3/5"
+        assert format_pass_fraction(3, 0) == "3/∞"
+
     def test_format_stop_line_includes_detail(self) -> None:
         assert format_stop_line("failed", 2) == "Stopped: failed."
         assert (
@@ -334,6 +339,14 @@ class TestRunDriver:
         assert result.status == "max_passes"
         assert result.novelty_history == [1, 1, 1]
         assert result.current_pass == 3
+
+    def test_max_passes_zero_runs_until_converged(self, tmp_path: Path) -> None:
+        runners = ScriptedRunners(novelties=[1, 1, 0, 0])
+        result = _run(tmp_path, runners, max_passes=0, k=2)
+        assert result.status == "converged"
+        assert result.novelty_history == [1, 1, 0, 0]
+        assert result.current_pass == 4
+        assert runners.calls.count("ocr") == 4
 
     def test_ocr_failure_on_pass_2(self, tmp_path: Path) -> None:
         runners = ScriptedRunners(novelties=[3, 1], ocr_rcs=[0, 1])
@@ -1298,6 +1311,10 @@ class TestParseArgs:
         with pytest.raises(SystemExit):
             parse_args(["--source", "feat", "--tui", "--no-tui"])
 
+    def test_max_passes_zero_is_accepted(self) -> None:
+        args = parse_args(["--source", "feat", "--max-passes", "0"])
+        assert args.max_passes == 0
+
     def test_ocr_timeout_and_concurrency_flags(self) -> None:
         args = parse_args(
             [
@@ -1797,6 +1814,14 @@ class TestMain:
             )
         assert rc == 0
         assert mocked.call_args.kwargs["resume"] is False
+
+    def test_max_passes_negative_exits(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        del tmp_path
+        rc = main(["--source", "feat", "--max-passes", "-1", "--no-tui"])
+        assert rc == 1
+        assert "must be >= 0" in capsys.readouterr().err
 
     def test_max_passes_exit_1(self, tmp_path: Path) -> None:
         progress = DriverProgress(

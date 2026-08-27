@@ -94,10 +94,11 @@ def decide_stop(
     """Decide after a pass has been appended to *novelty_history*.
 
     Converged takes priority when the last pass also hits max-passes.
+    *max_passes* ``0`` means unlimited (never ``MAX_PASSES``).
     """
     if consecutive_zero_novelty(novelty_history) >= k:
         return StopReason.CONVERGED
-    if len(novelty_history) >= max_passes:
+    if max_passes > 0 and len(novelty_history) >= max_passes:
         return StopReason.MAX_PASSES
     return StopReason.CONTINUE
 

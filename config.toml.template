@@ -56,6 +56,7 @@ review_analyzer_timeout      = 300
 # stays stable against a slow local model.
 review_analyzer_concurrency  = 2
 # review-driver: outer-loop stop caps (CLI --max-passes / --zero-novelty-passes override)
+# review_driver_max_passes 0 = unlimited (stop only on K consecutive zero-novelty passes)
 review_driver_max_passes            = 5
 review_driver_zero_novelty_passes   = 2
 # review-driver → ocr review. --timeout is minutes per file (not seconds).

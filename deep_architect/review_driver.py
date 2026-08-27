@@ -511,8 +511,18 @@ def elapsed_to_seconds(elapsed: int | float | str | None) -> float | None:
     return hours * 3600 + minutes * 60 + secs
 
 
+def format_pass_fraction(pass_index: int, max_passes: int) -> str:
+    """``1/5`` or ``1/∞`` when *max_passes* is 0 (unlimited)."""
+    if max_passes <= 0:
+        return f"{pass_index}/∞"
+    return f"{pass_index}/{max_passes}"
+
+
 def format_pass_header(pass_index: int, max_passes: int) -> str:
-    return f"── Pass {pass_index}/{max_passes} ─────────────────────────────────────────"
+    return (
+        f"── Pass {format_pass_fraction(pass_index, max_passes)} "
+        f"─────────────────────────────────────────"
+    )
 
 
 def format_ocr_summary(
@@ -774,7 +784,7 @@ def write_driver_report(output_dir: Path, progress: DriverProgress) -> Path:
         f"- Source: `{progress.source}` (`{progress.source_sha or 'unresolved'}`)",
         f"- Target: `{progress.target}` (`{progress.target_sha or 'unresolved'}`)",
         f"- K: {progress.k}",
-        f"- Max passes: {progress.max_passes}",
+        f"- Max passes: {'unlimited' if progress.max_passes <= 0 else progress.max_passes}",
         f"- Stop reason: {progress.status}"
         + (f" — {progress.stop_detail}" if progress.stop_detail else ""),
         f"- Novelty history: {progress.novelty_history}",
@@ -989,7 +999,10 @@ def run_driver(
     save_driver_progress(output_dir, progress)
 
     try:
-        for pass_index in range(start, max_passes + 1):
+        pass_index = start
+        while True:
+            if max_passes > 0 and pass_index > max_passes:
+                break
             progress.passes = [p for p in progress.passes if p.pass_index != pass_index]
             ocr_json = output_dir / f"code-review-r{pass_index}.json"
             feedback_dir = output_dir / f"feedback-r{pass_index}"
@@ -1218,6 +1231,7 @@ def run_driver(
 
             if reason is not StopReason.CONTINUE:
                 break
+            pass_index += 1
     except Exception:
         logger.exception("Review driver failed")
         progress.status = "failed"
@@ -2125,7 +2139,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--max-passes",
         type=int,
         default=None,
-        help="Safety cap on OCR→action passes (default: config / 5)",
+        help=(
+            "Safety cap on OCR→action passes (default: config / 5). "
+            "0 = unlimited; stop only when novelty is 0 for K consecutive passes"
+        ),
     )
     parser.add_argument(
         "--zero-novelty-passes",
@@ -2374,6 +2391,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.max_passes is not None
         else cfg.thresholds.review_driver_max_passes
     )
+    if max_passes < 0:
+        print("Error: --max-passes must be >= 0 (0 = unlimited)", file=sys.stderr)
+        return 1
     k = (
         args.zero_novelty_passes
         if args.zero_novelty_passes is not None

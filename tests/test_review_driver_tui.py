@@ -103,6 +103,11 @@ class TestFormatHelpers:
         assert "resume" in text
         assert "2/5" in text
 
+    def test_header_unlimited_max_passes(self) -> None:
+        text = format_header(_meta(max_passes=0), pass_index=3)
+        assert "3/∞" in text
+        assert "3/0" not in text
+
     def test_summary_counts(self) -> None:
         text = format_summary(
             novelty=1,

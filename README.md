@@ -919,7 +919,7 @@ backends (default 300s when unset).
 
 ## Review Driver
 
-`review-driver` is the unattended PR-first orchestrator: it runs `ocr review` → `review-analyzer` → `review-action` for up to `--max-passes` iterations and stops when the count of high/medium `VALID` findings is 0 for K consecutive passes. It does **not** replace the analyzer or action CLIs; it calls them.
+`review-driver` is the unattended PR-first orchestrator: it runs `ocr review` → `review-analyzer` → `review-action` until high/medium `VALID` findings are 0 for K consecutive passes, or `--max-passes` is hit (`0` = no cap). It does **not** replace the analyzer or action CLIs; it calls them.
 
 The same command is used locally and in CI. There is no confirm between passes. On a TTY it opens an observational dashboard; piped or CI runs stay plain-text.
 
@@ -986,7 +986,7 @@ The output root is always passed to `ocr` and `review-analyzer` as an exclude gl
 | `--source BRANCH` | (required) | PR branch or SHA; `HEAD` must already be this commit |
 | `--target BRANCH` | `main` | Base branch for the OCR diff (`ocr --from`) |
 | `--output-dir PATH` | `.review-runs` | Root for review runs. Artifacts land in `{root}/{branch}/{timestamp}/` |
-| `--max-passes N` | config / `5` | Safety cap on OCR→action passes |
+| `--max-passes N` | config / `5` | Safety cap on OCR→action passes. `0` = unlimited (stop only when high/medium VALID is 0 for K consecutive passes) |
 | `--zero-novelty-passes K` | config / `2` | Consecutive zero-novelty passes required to converge |
 | `--resume` / `--no-resume` | resume | Continue a stopped run for this source/target. `--no-resume` starts a new timestamped run and never overwrites |
 | `--exclude GLOB` | output root | Repeatable; passed to `ocr` and `review-analyzer`. The output root and `code-review*.json` reports are always excluded. Generated clients (for example orval `plantTrackingAPI.ts`) are `--exclude`, not a driver default |
@@ -1007,7 +1007,7 @@ The OCR **process** cap (when the driver SIGKILLs `ocr`) is derived from per-fil
 
 ### Stop rule
 
-Stop when the count of this-pass **high/medium `VALID`** findings is 0 for K consecutive passes (default K=2), or `--max-passes` is hit. The driver never stops just because the OCR comment count is small, and it does **not** require OCR to be empty. Low-severity `VALID`, `BACKLOG`, `REJECTED`, `TIMEOUT`, and `DUPLICATE` are not novelty.
+Stop when the count of this-pass **high/medium `VALID`** findings is 0 for K consecutive passes (default K=2), or `--max-passes` is hit (`0` disables the cap). The driver never stops just because the OCR comment count is small, and it does **not** require OCR to be empty. Low-severity `VALID`, `BACKLOG`, `REJECTED`, `TIMEOUT`, and `DUPLICATE` are not novelty.
 
 ### Interactive TUI
 
