@@ -42,6 +42,8 @@ from deep_architect.quality_checks import (
 )
 
 if TYPE_CHECKING:
+    import git
+
     from deep_architect.agents.client import RunStats
 
 # Re-export parse helpers for tests and public API compatibility.
@@ -97,6 +99,9 @@ def _install_sigint_handler() -> None:
 # ---------------------------------------------------------------------------
 
 DEFAULT_OUTPUT_DIR = Path("feedback")
+# review-driver's default output root. Always excluded from quality-check,
+# restore, and commit paths even when review-action is invoked standalone.
+DEFAULT_COMMIT_EXCLUDE_DIR = Path(".review-runs")
 
 # OCR severity rank for --min-severity. Missing / unknown ranks as 0 and
 # never meets an explicit floor.
@@ -111,22 +116,48 @@ def severity_meets_floor(severity: str, min_severity: str) -> bool:
     return rank >= floor
 
 
-def _exclude_output_dir(paths: list[Path], output_dir: Path) -> list[Path]:
-    """Drop paths under output_dir.
+def _exclude_output_dir(paths: list[Path], roots: list[Path]) -> list[Path]:
+    """Drop paths that are any of *roots* or live under them.
 
-    Finding markdown and the summary file are review-action's own ephemeral
-    working state (review-analyzer's scratch output plus the Action Taken
-    audit trail appended on disk) — they must never be staged into a git
-    commit, only the actual code files a fix touches.
+    Finding markdown, review-driver artifacts (``.review-runs/``), and any
+    extra ``--exclude-from-commit`` trees are ephemeral working state — they
+    must never be quality-checked, restored, or staged into a git commit.
+    Only the actual code files a fix touches belong in ``modified``.
     """
-    output_dir_resolved = output_dir.resolve()
-    kept = []
+    resolved_roots = [root.resolve() for root in roots]
+    kept: list[Path] = []
     for p in paths:
         resolved = p.resolve()
-        if resolved == output_dir_resolved or output_dir_resolved in resolved.parents:
+        if any(
+            resolved == root or root in resolved.parents for root in resolved_roots
+        ):
             continue
         kept.append(p)
     return kept
+
+
+def _commit_exclude_roots(
+    md_file: Path,
+    repo_root: Path,
+    extra: list[Path] | None = None,
+) -> list[Path]:
+    """Finding dir + ``.review-runs/`` + caller-supplied extra roots."""
+    roots: list[Path] = [md_file.parent, repo_root / DEFAULT_COMMIT_EXCLUDE_DIR]
+    if extra:
+        roots.extend(extra)
+    return roots
+
+
+def _modified_since_snapshot(
+    repo: git.Repo,
+    pre_fix_dirty: set[Path],
+    exclude_roots: list[Path],
+) -> list[Path]:
+    """Dirty files introduced after *pre_fix_dirty*, minus excluded trees."""
+    delta = [
+        p for p in get_modified_files(repo) if p.resolve() not in pre_fix_dirty
+    ]
+    return _exclude_output_dir(delta, exclude_roots)
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +348,7 @@ def _process_single_finding(
     skip_llm_checks: bool = False,
     quality_checks_override: Path | None = None,
     *,
+    commit_exclude_dirs: list[Path] | None = None,
     on_phase: Callable[[ProgressEvent], None] | None = None,
     completed: int = 0,
     total: int = 0,
@@ -416,6 +448,9 @@ def _process_single_finding(
             return ("skipped", False, already_satisfied_reason)
 
     repo_root = Path(repo.working_dir)
+    exclude_roots = _commit_exclude_roots(
+        md_file, repo_root, commit_exclude_dirs
+    )
     checks_cfg = load_quality_checks(
         repo_root,
         override=quality_checks_override,
@@ -435,6 +470,7 @@ def _process_single_finding(
     # Apply fix with retries
     success = False
     last_error: str | None = None
+    pre_fix_dirty = {p.resolve() for p in get_modified_files(repo)}
 
     _emit_phase(
         on_phase,
@@ -621,7 +657,7 @@ def _process_single_finding(
             stats=stats,
         )
 
-        modified = _exclude_output_dir(get_modified_files(repo), md_file.parent)
+        modified = _modified_since_snapshot(repo, pre_fix_dirty, exclude_roots)
         matched = match_profiles(checks_cfg, modified, repo_root)
         prog_failures = new_failures(
             run_checks(matched, checks_cfg, repo_root), baseline, modified
@@ -891,6 +927,7 @@ def process_findings(
     quality_checks_override: Path | None = None,
     min_severity: str | None = None,
     *,
+    commit_exclude_dirs: list[Path] | None = None,
     run_started_at: str | None = None,
     coding_agent: str | None = None,
     on_result: Callable[[ProgressEvent], None] | None = None,
@@ -1097,6 +1134,7 @@ def process_findings(
             harness_config,
             skip_llm_checks=skip_llm_checks,
             quality_checks_override=quality_checks_override,
+            commit_exclude_dirs=commit_exclude_dirs,
             on_phase=on_phase,
             completed=completed,
             total=total,
@@ -1239,6 +1277,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Skip VALID findings below this OCR severity "
             "(low, medium, high). Unset = no severity floor"
+        ),
+    )
+    parser.add_argument(
+        "--exclude-from-commit",
+        action="append",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Directory tree that must never be staged into a fix commit "
+            "(repeatable). The findings directory and .review-runs/ are "
+            "always excluded."
         ),
     )
     tui_group = parser.add_mutually_exclusive_group()
@@ -1536,6 +1586,7 @@ def main(argv: list[str] | None = None) -> int:
             skip_llm_checks=args.skip_llm_checks,
             quality_checks_override=args.quality_checks,
             min_severity=args.min_severity,
+            commit_exclude_dirs=args.exclude_from_commit,
             run_started_at=run_started_at,
             coding_agent=coding_agent,
             on_result=on_result,

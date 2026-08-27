@@ -2017,6 +2017,8 @@ def run_action_main(
         "--no-tui",
         "--min-severity",
         ACTION_MIN_SEVERITY,
+        "--exclude-from-commit",
+        str(output_dir),
     ]
     if provider:
         argv.extend(["--provider", provider])

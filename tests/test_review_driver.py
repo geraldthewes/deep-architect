@@ -1142,6 +1142,7 @@ class TestProductionRunners:
         assert "--no-tui" in argv
         assert "--tui" not in argv
         assert argv[argv.index("--min-severity") + 1] == "medium"
+        assert argv[argv.index("--exclude-from-commit") + 1] == str(tmp_path)
         assert str(feedback) in argv
 
 

@@ -685,6 +685,7 @@ Defaults to `feedback/` if no directory is specified.
 | `--skip-llm-checks` | off | Run programmatic quality checks only, skip the LLM style-rule judge |
 | `--quality-checks <path>` | (auto-discovered) | Explicit path to a `.quality-checks.toml` file |
 | `--min-severity <low\|medium\|high>` | unset (no floor) | Skip `VALID` findings below this OCR severity. `review-driver` always passes `medium` |
+| `--exclude-from-commit PATH` | findings dir + `.review-runs/` | Extra directory tree that must never be staged into a fix commit (repeatable). `review-driver` always passes the current run dir |
 | `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
 
@@ -793,12 +794,15 @@ Review-Finding: abc12345-0.md
 Generated-by: deep-architect review-action
 ```
 
-Files under the output directory (`feedback/` by default) are never committed by
-`review-action` itself — only the target code a fix touches is. Each finding's
-`## Action Taken` block and `review-action_summary.md` are written to disk (so resume and
-`--force` behave correctly across runs) but left as ephemeral working state; committing or
-gitignoring that directory is left to you. `review-action_summary.md` in particular keeps
-growing with one block per invocation, so periodically clearing or archiving it is your call.
+A fix commit contains only files this finding changed. Paths under the findings
+directory, `.review-runs/`, and any `--exclude-from-commit` tree are never
+quality-checked, restored, or staged — gitignored or not. Pre-existing dirty
+files (leftover analyzer dirs, scratch) are snapshotted before `apply_fix` and
+left out of the commit. Each finding's `## Action Taken` block and
+`review-action_summary.md` stay on disk as ephemeral working state so resume and
+`--force` work across runs; gitignoring that directory is still your call.
+`review-action_summary.md` in particular keeps growing with one block per
+invocation, so periodically clearing or archiving it is up to you.
 
 ### Quality checks
 
@@ -928,7 +932,7 @@ The same command is used locally and in CI. There is no confirm between passes. 
 - Run from the **application repo root**, on the PR branch, with a clean **tracked** tree (untracked files are allowed).
 - `ocr` (OpenCodeReview) on `PATH`. Override the binary with `OCR_BIN`.
 - **PROJ-0016** catalog/prior-feedback memory and **PROJ-0017** action gates (`--min-severity`) are required for the loop to terminate honestly. Without 0016, do not treat `converged` as “nothing left to discuss” — backlog themes can reappear as `VALID`. Without 0017 the driver will not start (it always passes `--min-severity medium` to `review-action`).
-- Add `.review-runs/` to the **application** `.gitignore`. Artifacts are CI-cacheable; committing them is the operator’s choice.
+- Add `.review-runs/` to the **application** `.gitignore`. Artifacts are CI-cacheable. `review-action` never commits them (gitignored or not); gitignore is defense in depth so they stay out of `git status`.
 
 ### Usage
 
@@ -948,7 +952,7 @@ review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
 
 `--source` is the PR branch. `--target` defaults to `main`. These map onto OCR as `--target` → `ocr --from` and `--source` → `ocr --to`.
 
-`HEAD` must already equal `--source`. The driver does **not** checkout. Dirty **tracked** files outside the output directory are refused. Untracked files are not blocked, but `review-action` may commit every dirty file `get_modified_files` sees except the feedback dir — keep stray edits out of the tree.
+`HEAD` must already equal `--source`. The driver does **not** checkout. Dirty **tracked** files outside the output directory are refused. Untracked files are not blocked. `review-action` commits only files this finding changed — never `.review-runs/`, the findings directory, or paths that were already dirty before the fix.
 
 ### Default output layout
 

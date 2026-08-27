@@ -25,6 +25,7 @@ from deep_architect.review_action_harness import (
     ProgressEvent,
     ReviewFinding,
     RunMeta,
+    _exclude_output_dir,
     _process_single_finding,
     build_detailed_summary,
     current_run_summary_text,
@@ -925,6 +926,57 @@ class TestQualityCheckLoop:
         # fail-closed: working tree restored to the pre-fix baseline
         assert target.read_text() == "GOOD\n"
 
+    def test_quality_check_restore_does_not_delete_review_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed quality-check loop must not restore/unlink driver artifacts."""
+        repo, target, output_dir = self._setup(tmp_path, monkeypatch)
+        md_file = output_dir / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "BAD"))
+
+        run_dir = tmp_path / ".review-runs" / "PROJ-0013" / "20260821T115106Z"
+        run_dir.mkdir(parents=True)
+        progress = run_dir / "progress.json"
+        progress.write_text('{"pass": 1}\n')
+        report = run_dir / "REPORT.md"
+        report.write_text("# report\n")
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("BAD\n")
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        harness_config = HarnessConfig()
+        harness_config.thresholds.check_max_fix_iterations = 1
+
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=repo,
+            ),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=self._checks_cfg(),
+            ),
+            patch(
+                "deep_architect.review_action_harness.git_commit"
+            ) as mock_commit,
+        ):
+            status, committed, error = _process_single_finding(
+                md_file, agent, 0, 0.0, False, harness_config
+            )
+
+        assert status == "error"
+        assert committed is False
+        assert error is not None and "iteration" in error
+        mock_commit.assert_not_called()
+        assert target.read_text() == "GOOD\n"
+        assert progress.read_text() == '{"pass": 1}\n'
+        assert report.read_text() == "# report\n"
+
     def test_pre_existing_failure_alone_does_not_block(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1632,6 +1684,81 @@ class TestProcessFindingsPersistence:
         assert "feedback/sibling-1.md" in set(repo.untracked_files)
         assert "feedback/finding-0.md" in set(repo.untracked_files)
 
+    def test_review_runs_and_leftover_feedback_excluded_from_fix_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Driver artifacts and leftover analyzer dirs must not ride a fix commit.
+
+        Mirrors plant-tracking: dirty ``.review-runs/`` (REPORT, OCR JSON, logs,
+        sibling feedback-rN) plus an untracked ``feedback-proj-old/`` at repo
+        root. Only the source file the agent edited belongs in the commit.
+        """
+        monkeypatch.chdir(tmp_path)
+        repo = _init_repo(tmp_path)
+        target = tmp_path / "target.py"
+        target.write_text("GOOD\n")
+        repo.index.add(["target.py"])
+        repo.index.commit("add target")
+
+        run_dir = tmp_path / ".review-runs" / "PROJ-0013" / "20260821T115106Z"
+        feedback_r5 = run_dir / "feedback-r5"
+        feedback_r6 = run_dir / "feedback-r6"
+        logs = run_dir / "logs"
+        for d in (feedback_r5, feedback_r6, logs):
+            d.mkdir(parents=True)
+
+        (run_dir / "REPORT.md").write_text("# report\n")
+        (run_dir / "code-review-r1.json").write_text("{}\n")
+        (run_dir / "progress.json").write_text("{}\n")
+        (logs / "r1-action.log").write_text("log\n")
+        (feedback_r6 / "INDEX.md").write_text("# prior pass\n")
+
+        leftover = tmp_path / "feedback-proj-old"
+        leftover.mkdir()
+        (leftover / "old.md").write_text("# leftover analyzer output\n")
+
+        md_file = feedback_r5 / "finding-0.md"
+        md_file.write_text(_finding_markdown("target.py", "GOOD", "GOOD2"))
+
+        async def apply_fix(*args: object, **kwargs: object) -> bool:
+            target.write_text("GOOD2\n")
+            return True
+
+        agent = OpencodeAgent()
+        agent.apply_fix = apply_fix  # type: ignore[method-assign]
+        agent.fix_check_failures = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deep_architect.review_action_harness.validate_git_repo",
+                return_value=repo,
+            ),
+            patch(
+                "deep_architect.review_action_harness.load_quality_checks",
+                return_value=QualityChecksConfig(),
+            ),
+        ):
+            status, committed, error = _process_single_finding(
+                md_file,
+                agent,
+                0,
+                0.0,
+                False,
+                HarnessConfig(),
+                commit_exclude_dirs=[run_dir],
+            )
+
+        assert (status, committed, error) == ("committed", True, None)
+        assert set(repo.head.commit.stats.files.keys()) == {"target.py"}
+        assert (run_dir / "REPORT.md").read_text() == "# report\n"
+        assert (leftover / "old.md").read_text() == "# leftover analyzer output\n"
+        assert (run_dir / "REPORT.md").as_posix() not in set(
+            repo.head.commit.stats.files.keys()
+        )
+        untracked = set(repo.untracked_files)
+        assert any(p.startswith(".review-runs/") for p in untracked)
+        assert any(p.startswith("feedback-proj-old/") for p in untracked)
+
     def test_skip_errors_flag(self, tmp_path: Path) -> None:
         """Test that --skip-errors skips errored findings."""
         output_dir = tmp_path / "feedback"
@@ -1807,6 +1934,34 @@ class TestProcessFindingsPersistence:
 
 
 # ---------------------------------------------------------------------------
+# _exclude_output_dir
+# ---------------------------------------------------------------------------
+
+
+class TestExcludeOutputDir:
+    def test_drops_paths_under_any_root(self, tmp_path: Path) -> None:
+        feedback = tmp_path / "feedback"
+        runs = tmp_path / ".review-runs" / "feat" / "ts"
+        leftover = tmp_path / "feedback-proj-old"
+        src = tmp_path / "src" / "app.py"
+        for d in (feedback, runs, leftover, src.parent):
+            d.mkdir(parents=True)
+        finding = feedback / "a.md"
+        report = runs / "REPORT.md"
+        old = leftover / "old.md"
+        finding.write_text("x")
+        report.write_text("y")
+        old.write_text("z")
+        src.write_text("code")
+
+        kept = _exclude_output_dir(
+            [finding, report, old, src],
+            [feedback, tmp_path / ".review-runs"],
+        )
+        assert kept == [old, src]
+
+
+# ---------------------------------------------------------------------------
 # parse_args
 # ---------------------------------------------------------------------------
 
@@ -1853,6 +2008,25 @@ class TestParseArgs:
     def test_min_severity_rejects_unknown(self) -> None:
         with pytest.raises(SystemExit):
             parse_args(["feedback/", "--min-severity", "critical"])
+
+    def test_exclude_from_commit_repeatable(self) -> None:
+        args = parse_args(
+            [
+                "feedback/",
+                "--exclude-from-commit",
+                ".review-runs/run-a",
+                "--exclude-from-commit",
+                "/tmp/custom-out",
+            ]
+        )
+        assert args.exclude_from_commit == [
+            Path(".review-runs/run-a"),
+            Path("/tmp/custom-out"),
+        ]
+
+    def test_exclude_from_commit_default_unset(self) -> None:
+        args = parse_args(["feedback/"])
+        assert args.exclude_from_commit is None
 
 
 # ---------------------------------------------------------------------------
@@ -2025,7 +2199,15 @@ class TestSummaryFile:
         agent = OpencodeAgent()
         agent.apply_fix = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
-        modified_side_effects: list[object] = [[], RuntimeError("boom mid-run")]
+        # Each finding now calls get_modified_files twice: a pre-fix
+        # snapshot, then the quality-check loop. First finding consumes
+        # two empty lists and commits; the second finding's snapshot
+        # raises so the summary written after finding 1 is what survives.
+        modified_side_effects: list[object] = [
+            [],
+            [],
+            RuntimeError("boom mid-run"),
+        ]
 
         def get_modified_files_side_effect(*args: object, **kwargs: object) -> object:
             result = modified_side_effects.pop(0)
