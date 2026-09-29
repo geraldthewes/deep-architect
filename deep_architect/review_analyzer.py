@@ -911,23 +911,51 @@ permission to skip a second file's real defect.
 """
 
 
+def _load_intent_text(path: Path | None) -> str | None:
+    """Read ``--intent-file``. None when the flag was not passed."""
+    if path is None:
+        return None
+    if not path.is_file():
+        raise FileNotFoundError(f"Intent file not found: {path}")
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        raise ValueError(f"Intent file is empty: {path}")
+    return text
+
+
+def _intent_block(intent: str | None) -> str:
+    """Review-intent section, empty when this run has no intent."""
+    if intent is None or not intent.strip():
+        return ""
+    return (
+        "\n## Change intent\n\n"
+        f"{intent.strip()}\n\n"
+        "Classification rule: a comment that asks to undo or avoid something "
+        "this intent requires is REJECTED, unless the comment identifies a "
+        "defect in how that requirement was implemented.\n\n"
+    )
+
+
 def construct_analysis_prompt(
     finding: dict[str, Any],
     *,
     catalog_heads: str | None = None,
     catalog_bodies: list[tuple[str, str]] | None = None,
     prior_feedback_index: str | None = None,
+    intent: str | None = None,
 ) -> str:
     """Build an LLM analysis prompt for a single OCR finding.
 
     When *catalog_heads* is None or empty, the catalog section is omitted
     (baseline behavior). *prior_feedback_index* is similarly optional.
+    *intent* is the change's ticket or requirements, when the driver has one.
     """
     extra = _catalog_context_sections(
         catalog_heads=catalog_heads,
         catalog_bodies=catalog_bodies,
         prior_feedback_index=prior_feedback_index,
     )
+    intent_text = _intent_block(intent)
     has_catalog = bool(catalog_heads and catalog_heads.strip())
     rules = ("\n" + _CATALOG_TRIAGE_RULES + "\n") if has_catalog else ""
     json_shape = (
@@ -946,6 +974,7 @@ def construct_analysis_prompt(
             f"**Suggested Code**:\n```\n{finding.get('suggestion_code', '(none)')}\n```\n"
             f"**Review Comment**: {finding['content']}\n"
             f"{extra}"
+            f"{intent_text}"
             f"{rules}"
             "Please:\n"
             "1. Confirm the issue: Is this a real problem that needs fixing?\n"
@@ -965,6 +994,7 @@ def construct_analysis_prompt(
         f"**Message**: {finding['message']}\n"
         f"**Type**: {finding.get('type', 'warning')}\n"
         f"{extra}"
+        f"{intent_text}"
         f"{rules}"
         "Please:\n"
         "1. Confirm the issue: Is this a real problem that needs attention?\n"
@@ -1201,6 +1231,7 @@ def analyze_finding(
     catalog_heads: str | None = None,
     knowledge_dir: Path | None = None,
     prior_feedback_index: str | None = None,
+    intent: str | None = None,
 ) -> AnalysisResult:
     """Analyze a single finding through opencode with circuit-breaker protection.
 
@@ -1236,6 +1267,7 @@ def analyze_finding(
         catalog_heads=heads,
         catalog_bodies=catalog_bodies,
         prior_feedback_index=prior_feedback_index,
+        intent=intent,
     )
     t0 = time.monotonic()
 
@@ -1293,6 +1325,7 @@ def process_findings_concurrently(
     catalog: list[CatalogEntry] | None = None,
     knowledge_dir: Path | None = None,
     prior_feedback_index: str | None = None,
+    intent: str | None = None,
 ) -> list[tuple[dict[str, Any], AnalysisResult]]:
     """Process findings through LLM with controlled concurrency, writing
     each result to disk immediately (when *output_dir* is given) so progress
@@ -1402,6 +1435,7 @@ def process_findings_concurrently(
             catalog_heads=catalog_heads,
             knowledge_dir=knowledge_dir,
             prior_feedback_index=prior_feedback_index,
+            intent=intent,
         )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -2223,6 +2257,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--intent-file",
+        type=Path,
+        default=None,
+        help=(
+            "Markdown file describing why the change was made. Included in "
+            "each triage prompt. A comment that contradicts it is REJECTED "
+            "unless it is a defect in how that requirement was implemented."
+        ),
+    )
+    parser.add_argument(
         "--prior-feedback",
         action="append",
         default=[],
@@ -2371,6 +2415,12 @@ def main(argv: list[str] | None = None) -> int:
             knowledge_dir,
         )
 
+    try:
+        intent_text = _load_intent_text(getattr(args, "intent_file", None))
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
     prior_dirs = expand_prior_feedback_dirs(
         list(getattr(args, "prior_feedback", None) or [])
     )
@@ -2410,6 +2460,7 @@ def main(argv: list[str] | None = None) -> int:
             catalog=catalog,
             knowledge_dir=knowledge_dir,
             prior_feedback_index=prior_feedback_index,
+            intent=intent_text,
         )
         results_box[:] = results
         counts = _tally_counts(results)

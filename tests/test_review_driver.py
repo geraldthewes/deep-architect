@@ -303,6 +303,44 @@ class TestProgressIO:
         assert loaded.source == "feat"
         assert loaded.novelty_history == [3]
         assert loaded.current_pass == 1
+        assert loaded.intent_label == "none"
+        assert loaded.intent_path is None
+
+    def test_legacy_progress_without_intent_fields(self, tmp_path: Path) -> None:
+        (tmp_path / "progress.json").write_text(
+            json.dumps(
+                {
+                    "source": "feat",
+                    "target": "main",
+                    "source_sha": "aaa",
+                    "target_sha": "bbb",
+                    "max_passes": 5,
+                    "k": 2,
+                    "output_dir": str(tmp_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+        loaded = load_driver_progress(tmp_path)
+        assert loaded.intent_label == "none"
+        assert loaded.intent_path is None
+
+    def test_report_names_intent(self, tmp_path: Path) -> None:
+        intent = tmp_path / "intent.md"
+        progress = DriverProgress(
+            source="feat",
+            target="main",
+            source_sha="aaa",
+            target_sha="bbb",
+            max_passes=5,
+            k=2,
+            output_dir=str(tmp_path),
+            intent_label="ticket PROJ-0013",
+            intent_path=str(intent),
+        )
+        report = write_driver_report(tmp_path, progress)
+        text = report.read_text(encoding="utf-8")
+        assert f"Intent: ticket PROJ-0013 (`{intent}`)" in text
 
 
 class TestRunDriver:
@@ -728,7 +766,26 @@ class TestProductionRunners:
         assert argv[argv.index("--timeout") + 1] == "10"
         assert argv[argv.index("--concurrency") + 1] == "8"
         assert argv[argv.index("--exclude") + 1] == "**/generated/*"
+        assert "--background-file" not in argv
         assert output_json.read_text(encoding="utf-8") == '{"comments":[]}\n'
+
+    def test_ocr_argv_passes_background_file(self, tmp_path: Path) -> None:
+        output_json = tmp_path / "code-review-r1.json"
+        intent = tmp_path / "intent.md"
+        fake = _FakePopen(stdout='{"comments":[]}\n', stderr="")
+        with patch("deep_architect.review_driver.subprocess.Popen", return_value=fake) as mocked:
+            rc = run_ocr_subprocess(
+                source="feat",
+                target="main",
+                output_json=output_json,
+                exclude=[],
+                cwd=tmp_path,
+                ocr_bin="ocr",
+                background_file=intent,
+            )
+        assert rc == 0
+        argv = mocked.call_args[0][0]
+        assert argv[argv.index("--background-file") + 1] == str(intent)
 
     def test_ocr_argv_uses_timeout_and_concurrency(self, tmp_path: Path) -> None:
         output_json = tmp_path / "code-review-r1.json"
@@ -1277,6 +1334,42 @@ class TestShouldUseTui:
 
 
 class TestParseArgs:
+    def test_background_flags(self) -> None:
+        args = parse_args(
+            [
+                "--source",
+                "feat",
+                "--background",
+                "Add rate limiting",
+                "--background-file",
+                "docs/req.md",
+            ]
+        )
+        assert args.background == "Add rate limiting"
+        assert args.background_file == Path("docs/req.md")
+
+    def test_analyzer_argv_includes_intent_file(self, tmp_path: Path) -> None:
+        seen: list[list[str]] = []
+
+        def _fake_main(argv: list[str] | None = None) -> int:
+            assert argv is not None
+            seen.append(argv)
+            return 0
+
+        intent = tmp_path / "intent.md"
+        with patch("deep_architect.review_analyzer.main", _fake_main):
+            rc = run_analyzer_main(
+                ocr_json=tmp_path / "code-review-r1.json",
+                feedback_dir=tmp_path / "feedback-r1",
+                prior_feedback=[],
+                knowledge_dir=None,
+                exclude=[],
+                output_dir=tmp_path,
+                intent_file=intent,
+            )
+        assert rc == 0
+        assert seen[0][seen[0].index("--intent-file") + 1] == str(intent)
+
     def test_source_required_target_and_output_defaults(self) -> None:
         args = parse_args(["--source", "feat"])
         assert args.source == "feat"

@@ -478,6 +478,7 @@ uv run review-analyzer <ocr-file.json> [options]
 | `--retry-timeouts` | off | Re-analyze only findings whose prior report is `TIMEOUT` (or legacy timed-out `BACKLOG`) |
 | `--no-write-backlog` | off | Disable promotion of `BACKLOG` findings into `knowledge/backlog/` (write-backlog is **on** by default) |
 | `--knowledge-dir <path>` | `<cwd>/knowledge` | Knowledge root for **catalog-aware triage** and backlog promotion (run from the target repo root) |
+| `--intent-file <path>` | (none) | Why the change was made. A comment that contradicts this intent is `REJECTED` unless it is a defect in how that requirement was implemented |
 | `--prior-feedback <dir>` | (none) | Prior feedback directory for multi-pass theme memory (repeatable; comma-separated also OK). **Read-only** — never mutates old feedback files |
 | `--tui` | auto | Force the interactive full-screen TUI dashboard |
 | `--no-tui` | auto | Force plain-text progress (disable TUI auto-detect) |
@@ -952,6 +953,18 @@ review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
 
 `--source` is the PR branch. `--target` defaults to `main`. These map onto OCR as `--target` → `ocr --from` and `--source` → `ocr --to`.
 
+### Change intent
+
+OCR reviews defects in the diff. It does not know why the change exists unless the driver passes a background file. The driver resolves that once, before the first pass, and writes `{run-dir}/intent.md`. OCR receives it as `--background-file`. The analyzer receives the same file as `--intent-file`, and rejects a comment that asks to undo something the intent requires unless the comment is a defect in how that requirement was implemented.
+
+Resolution order:
+
+1. `--background` and/or `--background-file`. An explicit source suppresses ticket lookup. Both together are merged, text first.
+2. Otherwise a `PROJ-<digits>` id in `--source`, then in the current branch name. The file is `{knowledge-dir}/tickets/PROJ-XXXX.md`. A missing ticket logs a warning and the review runs with no intent.
+3. Otherwise no intent. `REPORT.md` records `Intent: none`.
+
+OCR aborts a background file above 8000 characters. Text at or under that limit is passed through, including the instruction prefix the driver adds. Text over the limit is not truncated. On a TTY the driver asks whether to summarize, then shows the summary and asks whether to use it. A no at either question exits before OCR; a rejected summary is left at `intent-summary.md`. When stdin is not a TTY (CI, pipes), the driver summarizes with the analyzer's opencode model (`standard/coder`) and continues. The original is kept as `intent-source.md`. Resume reuses `intent.md` and does not ask or summarize again. `--no-resume` resolves again.
+
 `HEAD` must already equal `--source`. The driver does **not** checkout. Dirty **tracked** files outside the output directory are refused. Untracked files are not blocked. `review-action` commits only files this finding changed — never `.review-runs/`, the findings directory, or paths that were already dirty before the fix.
 
 ### Default output layout
@@ -965,6 +978,7 @@ review-driver --source "$HEAD_BRANCH" --target main --output-dir .review-runs
     20260819T143022Z/
       progress.json
       REPORT.md
+      intent.md                 # present when a ticket or --background was resolved
       review-driver.log
       logs/r1-ocr.log
       logs/r1-analyzer.log
@@ -994,7 +1008,9 @@ The output root is always passed to `ocr` and `review-analyzer` as an exclude gl
 | `--zero-novelty-passes K` | config / `2` | Consecutive zero-novelty passes required to converge |
 | `--resume` / `--no-resume` | resume | Continue a stopped run for this source/target. `--no-resume` starts a new timestamped run and never overwrites |
 | `--exclude GLOB` | output root | Repeatable; passed to `ocr` and `review-analyzer`. The output root and `code-review*.json` reports are always excluded. Generated clients (for example orval `plantTrackingAPI.ts`) are `--exclude`, not a driver default |
-| `--knowledge-dir PATH` | `<cwd>/knowledge` | Catalog / backlog directory for the analyzer |
+| `--knowledge-dir PATH` | `<cwd>/knowledge` | Catalog / backlog directory for the analyzer, and where a `PROJ-####` ticket is loaded |
+| `--background TEXT` | (none) | Why this change was made. Passed to OCR. Suppresses ticket lookup |
+| `--background-file PATH` | (none) | Markdown ticket or requirements file. Suppresses ticket lookup. A missing file fails the run |
 | `--provider NAME` | (action default) | Passed through to `review-action` |
 | `--model NAME` | (action default) | Passed through to `review-action` |
 | `--ocr-timeout MINUTES` | config / `10` | Per-file OCR timeout (`ocr --timeout`; **minutes**, not seconds) |

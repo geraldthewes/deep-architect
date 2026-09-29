@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from deep_architect.action_report import SUMMARY_FILENAME, load_action_report
 from deep_architect.config import HarnessConfig, _resolve_default_config_path, load_config
 from deep_architect.logger import get_logger
+from deep_architect.review_intent import IntentError, prepare_review_intent
 from deep_architect.review_novelty import (
     OcrRunStats,
     StopReason,
@@ -209,6 +210,8 @@ class DriverProgress(BaseModel):
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     output_dir: str
     stop_detail: str | None = None
+    intent_label: str = "none"
+    intent_path: str | None = None
 
 
 class ReviewStepRunners(Protocol):
@@ -775,6 +778,13 @@ def _force_tui_from_args(args: argparse.Namespace) -> bool | None:
     return None
 
 
+def format_intent_line(progress: DriverProgress) -> str:
+    """One REPORT.md line naming the intent OCR and the analyzer used."""
+    if progress.intent_label == "none" or not progress.intent_path:
+        return "- Intent: none"
+    return f"- Intent: {progress.intent_label} (`{progress.intent_path}`)"
+
+
 def write_driver_report(output_dir: Path, progress: DriverProgress) -> Path:
     """Refresh REPORT.md from *progress* so a crash still has a partial report."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -788,6 +798,7 @@ def write_driver_report(output_dir: Path, progress: DriverProgress) -> Path:
         f"- Stop reason: {progress.status}"
         + (f" — {progress.stop_detail}" if progress.stop_detail else ""),
         f"- Novelty history: {progress.novelty_history}",
+        format_intent_line(progress),
         "",
         "Stop is the count of high/medium VALID findings, **not** the OCR comment count.",
         "",
@@ -939,6 +950,8 @@ def run_driver(
     source_sha: str = "",
     target_sha: str = "",
     reporter: ProgressReporter | None = None,
+    intent_label: str = "none",
+    intent_path: str | None = None,
 ) -> DriverProgress:
     """Run OCR → analyzer → action until stop predicates fire.
 
@@ -978,6 +991,8 @@ def run_driver(
             max_passes=max_passes,
             k=k,
             output_dir=str(output_dir),
+            intent_label=intent_label,
+            intent_path=intent_path,
         )
 
     sink.start(
@@ -1774,6 +1789,7 @@ def run_ocr_subprocess(
     ocr_llm_timeout_seconds: int = DEFAULT_OCR_LLM_TIMEOUT_SECONDS,
     audience: str = DEFAULT_OCR_AUDIENCE,
     session_dir: Path | None = None,
+    background_file: Path | None = None,
 ) -> int:
     """Run ``ocr review`` with ``--from`` = target and ``--to`` = source.
 
@@ -1799,6 +1815,8 @@ def run_ocr_subprocess(
         "--concurrency",
         str(ocr_concurrency),
     ]
+    if background_file is not None:
+        cmd.extend(["--background-file", str(background_file)])
     if exclude:
         cmd.extend(["--exclude", ",".join(exclude)])
 
@@ -1978,6 +1996,7 @@ def run_analyzer_main(
     output_dir: Path,
     verbose: bool = False,
     on_child_log: Callable[[str], None] | None = None,
+    intent_file: Path | None = None,
 ) -> int:
     from deep_architect.review_analyzer import main as analyzer_main
 
@@ -1989,6 +2008,8 @@ def run_analyzer_main(
     ]
     if knowledge_dir is not None:
         argv.extend(["--knowledge-dir", str(knowledge_dir)])
+    if intent_file is not None:
+        argv.extend(["--intent-file", str(intent_file)])
     for prior in prior_feedback:
         argv.extend(["--prior-feedback", str(prior)])
     for glob in exclude:
@@ -2049,6 +2070,8 @@ class ProductionRunners:
     ocr_concurrency: int = DEFAULT_OCR_CONCURRENCY
     ocr_llm_timeout_seconds: int = DEFAULT_OCR_LLM_TIMEOUT_SECONDS
     ocr_audience: str = DEFAULT_OCR_AUDIENCE
+    background_file: Path | None = None
+    intent_file: Path | None = None
 
     def run_ocr(
         self, *, source: str, target: str, output_json: Path, exclude: list[str]
@@ -2072,6 +2095,7 @@ class ProductionRunners:
             ocr_concurrency=self.ocr_concurrency,
             ocr_llm_timeout_seconds=self.ocr_llm_timeout_seconds,
             audience=self.ocr_audience,
+            background_file=self.background_file,
         )
 
     def run_analyzer(
@@ -2092,6 +2116,7 @@ class ProductionRunners:
             output_dir=self.output_dir,
             verbose=self.verbose,
             on_child_log=self.on_child_log,
+            intent_file=self.intent_file,
         )
 
     def run_action(self, *, feedback_dir: Path) -> int:
@@ -2176,6 +2201,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="knowledge/ directory for analyzer catalog memory (default: <cwd>/knowledge)",
+    )
+    parser.add_argument(
+        "--background",
+        default=None,
+        help=(
+            "Why this change was made. Passed to OCR as review background. "
+            "Suppresses PROJ ticket lookup. Combined with --background-file "
+            "when both are set."
+        ),
+    )
+    parser.add_argument(
+        "--background-file",
+        type=Path,
+        default=None,
+        help=(
+            "Markdown ticket or requirements file used as review background. "
+            "Suppresses PROJ ticket lookup. Missing path fails the run."
+        ),
     )
     parser.add_argument(
         "--provider",
@@ -2345,6 +2388,15 @@ def _non_negative_int_from_env(name: str) -> int | None:
     return value
 
 
+def _current_branch(repo: Path) -> str | None:
+    """Branch name used to find a PROJ ticket when ``--source`` has no id."""
+    try:
+        return git.Repo(repo).active_branch.name
+    except (TypeError, git.exc.GitError):
+        logger.warning("Could not read the current branch name for ticket lookup")
+        return None
+
+
 def _load_driver_config(config_path: Path | None) -> HarnessConfig:
     cfg = HarnessConfig()
     path = config_path if config_path is not None else _resolve_default_config_path()
@@ -2446,6 +2498,22 @@ def main(argv: list[str] | None = None) -> int:
         list(args.exclude),
     )
 
+    try:
+        prepared_intent = prepare_review_intent(
+            run_dir=run_dir,
+            repo_root=cwd,
+            source=args.source,
+            knowledge_dir=args.knowledge_dir,
+            background=args.background,
+            background_file=args.background_file,
+            branch_name=_current_branch(cwd),
+            reuse_existing=resuming_run,
+            interactive=sys.stdin.isatty(),
+        )
+    except IntentError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
     child_logs = ChildLogFanout()
     runners = ProductionRunners(
         cwd=cwd,
@@ -2460,6 +2528,8 @@ def main(argv: list[str] | None = None) -> int:
         ocr_concurrency=ocr_concurrency,
         ocr_llm_timeout_seconds=ocr_llm_timeout_seconds,
         ocr_audience="human" if use_tui else DEFAULT_OCR_AUDIENCE,
+        background_file=prepared_intent.path,
+        intent_file=prepared_intent.path,
     )
 
     def _run_pipeline(reporter: ProgressReporter) -> DriverProgress:
@@ -2476,6 +2546,10 @@ def main(argv: list[str] | None = None) -> int:
             source_sha=source_sha,
             target_sha=target_sha,
             reporter=reporter,
+            intent_label=prepared_intent.label,
+            intent_path=(
+                str(prepared_intent.path) if prepared_intent.path is not None else None
+            ),
         )
 
     try:

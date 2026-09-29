@@ -367,6 +367,33 @@ class TestConstructAnalysisPrompt:
         assert "Prior feedback" in prompt
         assert "verdict=BACKLOG" in prompt
 
+    def test_intent_section_and_reject_rule(self) -> None:
+        finding = {
+            "type": "comment",
+            "path": "a.py",
+            "content": "Remove the rate limiter",
+            "start_line": 1,
+            "end_line": 1,
+        }
+        prompt = construct_analysis_prompt(
+            finding, intent="Add rate limiting to the login API."
+        )
+        assert "## Change intent" in prompt
+        assert "Add rate limiting to the login API." in prompt
+        assert "asks to undo or avoid something this intent requires" in prompt
+        assert "REJECTED" in prompt
+
+    def test_missing_intent_omits_section(self) -> None:
+        finding = {
+            "type": "comment",
+            "path": "a.py",
+            "content": "x",
+            "start_line": 1,
+            "end_line": 1,
+        }
+        prompt = construct_analysis_prompt(finding)
+        assert "## Change intent" not in prompt
+
 
 class TestPriorFeedbackIndex:
 
