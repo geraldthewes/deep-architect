@@ -1,6 +1,9 @@
 install:
     uv sync
     uv tool install --editable . --force
+    mkdir -p ~/.claude/skills
+    ln -sfn "{{justfile_directory()}}/skills/deep-architect" ~/.claude/skills/deep-architect
+    ln -sfn "{{justfile_directory()}}/skills/deep-review" ~/.claude/skills/deep-review
 
 sync:
     uv sync

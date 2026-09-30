@@ -52,6 +52,23 @@ review-action --help
 review-driver --help
 ```
 
+### Claude Code skills
+
+`just install` also symlinks two [Claude Code skills](https://code.claude.com/docs/en/skills) from `skills/` into `~/.claude/skills/`, so Claude can drive these tools from any repo:
+
+| Skill | What it does |
+|-------|--------------|
+| `/deep-architect` | Runs `adversarial-architect` one sprint at a time in the background, then summarizes the critic scores, remaining issues and files written, and asks whether to continue, reset the sprint, or stop. Handles the prior-checkpoint prompt by deciding `--resume` / `--reset-sprint` up front. `/deep-architect status` reports progress without launching. |
+| `/deep-review` | Runs `review-driver` (or `review-analyzer` → `review-action` by hand) from the target repo root, with preflight checks, and summarizes `REPORT.md` / `SUMMARY.md` / `review-action_summary.md`. Asks before anything that creates commits. |
+
+Without `just`, link them manually:
+
+```bash
+mkdir -p ~/.claude/skills
+ln -sfn "$PWD/skills/deep-architect" ~/.claude/skills/deep-architect
+ln -sfn "$PWD/skills/deep-review" ~/.claude/skills/deep-review
+```
+
 ---
 
 ## Configuration
